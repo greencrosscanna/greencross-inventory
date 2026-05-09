@@ -161,6 +161,53 @@
   .card-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .card-value { font-size: 20px; font-weight: 700; }
 
+  /* ── Beta decision feed ── */
+  .beta-tab { display: none; }
+  .beta-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .beta-toolbar input,
+  .beta-toolbar select {
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; min-height: 34px; padding: 7px 10px; font-size: 13px;
+  }
+  .beta-toolbar input { flex: 1 1 180px; min-width: 0; }
+  .beta-action-btn {
+    background: rgba(29,158,117,.16); color: var(--green); border: 1px solid rgba(29,158,117,.35);
+    border-radius: 6px; min-height: 34px; padding: 7px 11px; font-size: 12px; font-weight: 700;
+    cursor: pointer;
+  }
+  .beta-summary {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px;
+  }
+  .beta-metric {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .beta-metric-val { font-size: 20px; font-weight: 800; line-height: 1; }
+  .beta-metric-lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-top: 4px; }
+  .beta-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 860px; }
+  .beta-table th {
+    color: var(--muted); text-align: left; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--border);
+  }
+  .beta-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.05); vertical-align: middle; }
+  .beta-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .beta-product { font-weight: 700; max-width: 310px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .beta-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+  .beta-reason {
+    display: inline-block; margin: 1px 3px 1px 0; padding: 2px 6px; border-radius: 999px;
+    background: rgba(255,255,255,.07); color: var(--muted); font-size: 10px; font-weight: 700;
+  }
+  .beta-reason.order { background: rgba(29,158,117,.14); color: var(--green); }
+  .beta-reason.transfer { background: rgba(239,159,39,.15); color: var(--amber); }
+  .beta-reason.kill { background: rgba(240,149,149,.14); color: var(--red); }
+  @media (max-width: 640px) {
+    .beta-summary { grid-template-columns: repeat(2, 1fr); }
+    .beta-toolbar select { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  }
+
   /* ── Table rows ── */
   .data-row {
     display: flex; align-items: center; justify-content: space-between;
@@ -1274,6 +1321,7 @@
         <button class="tab" data-tab="transfers" id="tabTransfers">Transfers <span class="cart-badge" id="transferBadge" style="display:none"></span></button>
         <button class="tab" data-tab="performance">Performance</button>
         <button class="tab" data-tab="flags">Flags</button>
+        <button class="tab beta-tab" data-tab="beta" id="betaTabBtn">Beta</button>
         <button class="tab scanner-tab" data-tab="scanner" id="scannerTabBtn" style="display:none;align-items:center;gap:4px">
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Scan
 </button>
@@ -1639,6 +1687,13 @@
     </div>
   </div>
 
+  <!-- ══ BETA DECISION FEED ══ -->
+  <div class="panel" id="panel-beta">
+    <div id="betaContent">
+      <div class="state-msg"><div class="spinner"></div><br>Loading beta feed…</div>
+    </div>
+  </div>
+
   <div class="panel" id="panel-scanner">
     <div class="scanner-wrap">
       <!-- Live camera view (hidden when camera unavailable) -->
@@ -1895,6 +1950,9 @@ let state = {
   budgetData: null,
   inv28Sales: null, // 28-day sales for inventory summary bar
   inv28Cogs:  null, // 28-day cogs for inventory summary bar
+  betaEnabled: false,
+  betaFeed: null,
+  betaFilter: { reason: '', status: '', q: '' },
   excludedRows: JSON.parse(localStorage.getItem(CACHE_PREFIX + 'excluded') || '{}'),
   restockShowAll: false,
 };
@@ -2623,12 +2681,155 @@ function renderAll() {
 }
 
 // ════════════════════════════════════════════════════════
+// BETA DECISION FEED
+// ════════════════════════════════════════════════════════
+function betaOptInFromUrl() {
+  const params = new URLSearchParams(location.search || '');
+  if (params.get('beta') === '1') localStorage.setItem('gc_beta_tools', '1');
+  if (params.get('beta') === '0') localStorage.removeItem('gc_beta_tools');
+  return localStorage.getItem('gc_beta_tools') === '1';
+}
+
+function initBetaTools() {
+  state.betaEnabled = betaOptInFromUrl();
+  const btn = document.getElementById('betaTabBtn');
+  if (btn) btn.style.display = state.betaEnabled ? 'inline-flex' : 'none';
+}
+
+async function loadBetaFeed() {
+  if (!state.betaEnabled) return;
+  const el = document.getElementById('betaContent');
+  el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading beta feed…</div>';
+  try {
+    const params = {
+      action: 'decisionfeed',
+      beta: '1',
+      store: state.store,
+      reason: state.betaFilter.reason || '',
+      status: state.betaFilter.status || '',
+      q: state.betaFilter.q || '',
+      limit: 500,
+    };
+    state.betaFeed = await proxyFetch(params);
+    renderBetaFeed();
+  } catch (err) {
+    el.innerHTML = `<div class="state-msg error-msg">Beta feed error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function betaReasonClass(code) {
+  if (/TRANSFER/.test(code)) return 'transfer';
+  if (/KILL/.test(code)) return 'kill';
+  if (/OOS|LOW|LONG|GREEN/.test(code)) return 'order';
+  return '';
+}
+
+function renderBetaFeed() {
+  const el = document.getElementById('betaContent');
+  const feed = state.betaFeed || { rows: [], total: 0, summary: {} };
+  const rows = feed.rows || [];
+  const summary = feed.summary || {};
+  const generated = feed.generatedAt ? new Date(feed.generatedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : 'Not generated';
+  const reasonValue = state.betaFilter.reason || '';
+  const statusValue = state.betaFilter.status || '';
+  const qValue = state.betaFilter.q || '';
+  const limited = feed.limited ? `<span style="color:var(--muted);font-size:11px">Showing first ${rows.length} of ${feed.total}</span>` : `<span style="color:var(--muted);font-size:11px">${feed.total || rows.length} rows</span>`;
+
+  const body = rows.map(r => {
+    const doh = r.doh == null || Number.isNaN(r.doh) ? '—' : (r.doh < 1 ? '<1d' : r.doh.toFixed(1) + 'd');
+    const reasonHtml = String(r.reasonCodes || '').split(',').filter(Boolean).map(code => {
+      const clean = escapeHtml(code.trim());
+      return `<span class="beta-reason ${betaReasonClass(code)}">${clean}</span>`;
+    }).join('') || '<span style="color:var(--muted)">—</span>';
+    const action = r.recommendedTransferQty > 0
+      ? `Move ${r.recommendedTransferQty}${r.donorStore ? ` from ${escapeHtml(storeDisplay(r.donorStore))}` : ''}`
+      : r.recommendedOrderQty > 0 ? `Order ${r.recommendedOrderQty}` : 'Review';
+    return `<tr>
+      <td>
+        <div class="beta-product" title="${escapeHtml(r.productName)}">${escapeHtml(r.productName)}</div>
+        <div class="beta-sub">${escapeHtml([r.sku, r.brand, fmtCat(r.category)].filter(Boolean).join(' · '))}</div>
+      </td>
+      <td style="color:${storeColor(r.store)}">${escapeHtml(storeDisplay(r.store))}</td>
+      <td class="num">${r.qty}</td>
+      <td class="num">${r.sold7}</td>
+      <td class="num">${r.sold14}</td>
+      <td class="num">${r.sold28}</td>
+      <td class="num">${doh}</td>
+      <td>${escapeHtml(action)}</td>
+      <td>${reasonHtml}</td>
+      <td class="num">${r.confidence}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="beta-toolbar">
+      <input type="search" id="betaSearch" placeholder="Search product, SKU, brand…" value="${escapeHtml(qValue)}" oninput="queueBetaFilter()">
+      <select id="betaReason" onchange="setBetaReason(this.value)">
+        <option value=""${reasonValue === '' ? ' selected' : ''}>All actions</option>
+        <option value="OOS"${reasonValue === 'OOS' ? ' selected' : ''}>OOS</option>
+        <option value="LOW_DOH"${reasonValue === 'LOW_DOH' ? ' selected' : ''}>Low DOH</option>
+        <option value="TRANSFER_AVAILABLE"${reasonValue === 'TRANSFER_AVAILABLE' ? ' selected' : ''}>Transfers</option>
+        <option value="GREEN_CROSS_OVERSTOCK"${reasonValue === 'GREEN_CROSS_OVERSTOCK' ? ' selected' : ''}>Green Cross</option>
+        <option value="LONG_LEAD_SKU"${reasonValue === 'LONG_LEAD_SKU' ? ' selected' : ''}>Long lead</option>
+        <option value="KILL_LIST"${reasonValue === 'KILL_LIST' ? ' selected' : ''}>Kill list</option>
+      </select>
+      <select id="betaStatus" onchange="setBetaStatus(this.value)">
+        <option value=""${statusValue === '' ? ' selected' : ''}>All status</option>
+        <option value="oos"${statusValue === 'oos' ? ' selected' : ''}>OOS</option>
+        <option value="critical"${statusValue === 'critical' ? ' selected' : ''}>Critical</option>
+        <option value="low"${statusValue === 'low' ? ' selected' : ''}>Low</option>
+        <option value="watch"${statusValue === 'watch' ? ' selected' : ''}>Watch</option>
+        <option value="slow"${statusValue === 'slow' ? ' selected' : ''}>Slow</option>
+      </select>
+      <button class="beta-action-btn" onclick="loadBetaFeed()">Refresh</button>
+    </div>
+    <div class="beta-summary">
+      <div class="beta-metric"><div class="beta-metric-val">${feed.total || 0}</div><div class="beta-metric-lbl">Matching Rows</div></div>
+      <div class="beta-metric"><div class="beta-metric-val">${summary.orderLines || 0}</div><div class="beta-metric-lbl">Order Lines</div></div>
+      <div class="beta-metric"><div class="beta-metric-val">${summary.orderUnits || 0}</div><div class="beta-metric-lbl">Order Units</div></div>
+      <div class="beta-metric"><div class="beta-metric-val">${summary.transferLines || 0}</div><div class="beta-metric-lbl">Transfer Lines</div></div>
+    </div>
+    <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Beta decision feed · ${escapeHtml(generated)}</span>
+      ${limited}
+    </div>
+    <div class="card inv-table-wrap">
+      <table class="beta-table">
+        <thead><tr>
+          <th>Product</th><th>Store</th><th class="num">Qty</th><th class="num">7</th><th class="num">14</th><th class="num">28</th>
+          <th class="num">DOH</th><th>Action</th><th>Reasons</th><th class="num">Conf</th>
+        </tr></thead>
+        <tbody>${body || '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:28px">No matching beta decisions.</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+function setBetaReason(v) {
+  state.betaFilter.reason = v;
+  loadBetaFeed();
+}
+
+function setBetaStatus(v) {
+  state.betaFilter.status = v;
+  loadBetaFeed();
+}
+
+function queueBetaFilter() {
+  clearTimeout(window._betaFilterTimer);
+  window._betaFilterTimer = setTimeout(() => {
+    state.betaFilter.q = document.getElementById('betaSearch')?.value || '';
+    loadBetaFeed();
+  }, 350);
+}
+
+// ════════════════════════════════════════════════════════
 // INITIALIZATION & EVENT WIRING
 // ════════════════════════════════════════════════════════
 function init() {
   // Restore density preference
   const savedDensity = localStorage.getItem('gc_density');
   if (savedDensity === 'compact') document.body.classList.add('density-compact');
+  initBetaTools();
 
   // Bootstrap: merge hardcoded CAT_SHORT into localStorage so settings drawer shows them,
   // then reload CAT_SHORT from the merged result so localStorage is the single source of truth.
@@ -2659,6 +2860,7 @@ function init() {
       state.tab = btn.dataset.tab;
       document.getElementById('panel-' + state.tab).classList.add('active');
       const isInv = state.tab === 'inventory';
+      const isBeta = state.tab === 'beta';
       document.getElementById('invFilters').classList.toggle('visible', isInv);
       document.getElementById('tagPills').classList.toggle('visible', isInv);
       document.getElementById('invSummaryBar').classList.toggle('visible', isInv);
@@ -2666,13 +2868,14 @@ function init() {
       row.classList.toggle('visible', isInv);
       row.classList.toggle('expanded', isInv && state.catRowExpanded);
       if (isInv) updateCatToggleBtn();
-      document.querySelector('.date-controls').style.display = isInv ? 'none' : '';
+      document.querySelector('.date-controls').style.display = (isInv || isBeta) ? 'none' : '';
       if (isInv && !state.inventoryData) loadInventoryData();
       if (isInv && state.inventoryData)  renderInventory();
       if (state.tab === 'performance' && state.cogsData) renderAll();
       if (state.tab === 'flags') renderFlags();
       if (state.tab === 'orders') renderOrders();
       if (state.tab === 'transfers') renderTransfers();
+      if (isBeta) loadBetaFeed();
       const isScanner = state.tab === 'scanner';
       const ctrlBar = document.querySelector('.controls-bar');
       if (ctrlBar) ctrlBar.style.display = isScanner ? 'none' : '';
@@ -2697,6 +2900,8 @@ function init() {
         document.getElementById('inventoryContent').innerHTML =
           '<div class="load-progress"><div class="spinner"></div><br>Loading…</div>';
         loadInventoryData();
+      } else if (state.tab === 'beta') {
+        loadBetaFeed();
       } else {
         renderAll();
       }
@@ -2723,8 +2928,10 @@ function init() {
     state.inv28Cogs  = null;
     state.inventoryData = null;
     state.velocityData  = null;
+    state.betaFeed = null;
     setLoadingAll();
     if (state.tab === 'inventory') loadInventoryData();
+    else if (state.tab === 'beta') loadBetaFeed();
     else loadData();
   });
 

@@ -116,6 +116,7 @@ function doGet(e) {
     if (params.action === 'schema')         return jsonOut(getSchema());
     if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
     if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
+    if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
     return jsonOut({ error: 'Unknown action' });
   } catch (err) {
     return jsonOut({ error: err.message, stack: err.stack });
@@ -770,6 +771,82 @@ function removeDecisionFeedStoreRows_(sheet, store) {
   for (let i = stores.length - 1; i >= 0; i--) {
     if (stores[i] === store) sheet.deleteRow(i + 2);
   }
+}
+
+function readBetaDecisionFeed(params) {
+  if (getDataMode() !== 'beta' && params.beta !== '1') {
+    return { ok: false, error: 'Beta decision feed requires beta=1 or GC_DATA_MODE=beta.' };
+  }
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { ok: true, rows: [], total: 0, spreadsheetId: BETA_SPREADSHEET_ID };
+  }
+
+  const values = sheet.getDataRange().getValues();
+  const headers = values.shift().map(h => String(h || ''));
+  const idx = {};
+  headers.forEach((h, i) => { idx[h] = i; });
+  const store = String(params.store || '').trim();
+  const status = String(params.status || '').trim().toLowerCase();
+  const reason = String(params.reason || '').trim().toUpperCase();
+  const search = String(params.q || '').trim().toLowerCase();
+  const limit = Math.min(Math.max(parseInt(params.limit || '300', 10) || 300, 1), 1000);
+
+  const rows = [];
+  const summary = { orderLines: 0, transferLines: 0, killList: 0, orderUnits: 0, transferUnits: 0 };
+  let total = 0;
+  for (const raw of values) {
+    const rowStore = String(raw[idx.store] || '');
+    const rowStatus = String(raw[idx.status] || '').toLowerCase();
+    const rowReason = String(raw[idx.reasonCodes] || '').toUpperCase();
+    const haystack = [
+      raw[idx.productName], raw[idx.sku], raw[idx.brand], raw[idx.category], rowStore, rowReason,
+    ].join(' ').toLowerCase();
+    if (store && store !== 'All' && rowStore !== store) continue;
+    if (status && rowStatus !== status) continue;
+    if (reason && rowReason.indexOf(reason) === -1) continue;
+    if (search && haystack.indexOf(search) === -1) continue;
+    total++;
+    const orderQty = Number(raw[idx.recommendedOrderQty] || 0);
+    const transferQty = Number(raw[idx.recommendedTransferQty] || 0);
+    if (orderQty > 0) { summary.orderLines++; summary.orderUnits += orderQty; }
+    if (transferQty > 0) { summary.transferLines++; summary.transferUnits += transferQty; }
+    if (rowReason.indexOf('KILL_LIST') !== -1) summary.killList++;
+    if (rows.length >= limit) continue;
+    rows.push({
+      generatedAt: raw[idx.generatedAt] || '',
+      store: rowStore,
+      productName: raw[idx.productName] || '',
+      sku: raw[idx.sku] || '',
+      brand: raw[idx.brand] || '',
+      category: raw[idx.category] || '',
+      qty: Number(raw[idx.qty] || 0),
+      sold7: Number(raw[idx.sold7] || 0),
+      sold14: Number(raw[idx.sold14] || 0),
+      sold28: Number(raw[idx.sold28] || 0),
+      vel14: Number(raw[idx.vel14] || 0),
+      doh: raw[idx.doh] === '' ? null : Number(raw[idx.doh] || 0),
+      status: raw[idx.status] || '',
+      recommendedOrderQty: orderQty,
+      recommendedTransferQty: transferQty,
+      donorStore: raw[idx.donorStore] || '',
+      reasonCodes: raw[idx.reasonCodes] || '',
+      confidence: Number(raw[idx.confidence] || 0),
+      imageUrl: raw[idx.imageUrl] || '',
+      notes: raw[idx.notes] || '',
+    });
+  }
+
+  return {
+    ok: true,
+    rows,
+    total,
+    summary,
+    limited: total > rows.length,
+    spreadsheetId: BETA_SPREADSHEET_ID,
+    generatedAt: rows[0] ? rows[0].generatedAt : '',
+  };
 }
 
 // ─── VELOCITY — ROLLING WINDOW (180-day, incremental) ────────────────────────
