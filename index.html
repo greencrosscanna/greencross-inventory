@@ -4756,7 +4756,12 @@ function toggleStoreHistory(rowEl, store, sku) {
     .then(data => {
       histEl.dataset.loaded = '1';
       const rows = data.rows || [];
-      if (!rows.length) { histEl.innerHTML = '<div style="padding:8px;color:var(--muted);font-size:12px">No sales in 30 days</div>'; return; }
+      if (!rows.length) {
+        const dbg = data._debug;
+        const dbgTxt = dbg ? `<div style="font-size:9px;color:var(--muted);margin-top:4px;word-break:break-all">lookup: "${(dbg.nameLower||'').slice(0,40)}"<br>sheet: ${(dbg.storeNames||[]).map(n=>'"'+n.slice(0,40)+'"').join(' | ') || 'none'}</div>` : '';
+        histEl.innerHTML = `<div style="padding:8px;color:var(--muted);font-size:12px">No sales in 30 days${dbgTxt}</div>`;
+        return;
+      }
       histEl.innerHTML = `
         <div style="padding:4px 0 8px;font-size:11px">
           <div style="display:grid;grid-template-columns:80px 1fr 32px;gap:4px 8px;padding:0 10px">
