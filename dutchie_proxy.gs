@@ -545,11 +545,17 @@ function buildProductIdDict() {
         if (!pid || dict[pid]) continue;
         const name = (item.productName || '').trim();
         if (!name) continue;
-        // orderedImages is the canonical Dutchie image array (GET /products)
+        // Image priority per Dutchie /products schema:
+        // 1. orderedImages (sorted by sortOrder) — may be empty even when images exist
+        // 2. imageUrls[] array
+        // 3. imageUrl string
         let imgUrl = '';
         if (Array.isArray(item.orderedImages) && item.orderedImages.length > 0) {
           const sorted = item.orderedImages.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
           imgUrl = sorted[0].imageUrl || '';
+        }
+        if (!imgUrl && Array.isArray(item.imageUrls) && item.imageUrls.length > 0) {
+          imgUrl = item.imageUrls[0] || '';
         }
         if (!imgUrl) {
           const imgRaw = item.imageUrl || item.productImageUrl || item.imgUrl || item.photo || item.image || '';
@@ -2066,52 +2072,68 @@ function loginUser(params) {
 }
 
 // ─── PER-STORE TRANSACTION HISTORY (scanner tap-to-expand) ────────────────────
-// Returns 30-day sales transactions for a specific store + SKU.
 // ?action=storetxhistory&store=Bend&name=Product+Name&days=30
-// Reads the vel sheet directly — productName (col 3) is the reliable match key.
+// Strategy: look up productId from the product catalog, then fetch live
+// Dutchie transactions and filter by productId (bulletproof matching).
 function getStoreTxHistory(params) {
   const store = params.store || '';
   const name  = (params.name || params.sku || '').trim();
   const days  = Math.min(parseInt(params.days || '30'), 60);
   if (!store || !name) return { error: 'store and name params required' };
+  if (!STORE_KEYS[store]) return { error: 'Unknown store: ' + store };
 
-  const cutoffStr  = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const nameLower  = name.toLowerCase();
-  const sheet      = getVelSheet();
-  const lastRow    = sheet.getLastRow();
-  if (lastRow < 2) return { store, name, days, rows: [] };
+  // Step 1: find productId from the cached product catalog
+  const prodDict  = buildProductIdDict();
+  const nameLower = name.toLowerCase();
+  let targetPid   = null;
+  for (const [pid, prod] of Object.entries(prodDict)) {
+    if ((prod.name || '').toLowerCase() === nameLower) { targetPid = pid; break; }
+  }
+  // Fuzzy fallback: catalog name contains or is contained by lookup name
+  if (!targetPid) {
+    for (const [pid, prod] of Object.entries(prodDict)) {
+      const pn = (prod.name || '').toLowerCase();
+      if (pn.includes(nameLower) || nameLower.includes(pn)) { targetPid = pid; break; }
+    }
+  }
+  if (!targetPid) return { store, name, days, rows: [], _debug: 'productId not found in catalog' };
 
-  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
-  // VEL_COLS = ['date','store','productId','productName','brand','category','sku','qty']
-  //              0       1        2           3            4        5        6     7
+  // Step 2: fetch Retail transactions for this store over the date window
+  const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
+  const from = new Date(Date.now() - days * 86400000).toISOString();
+  const to   = new Date().toISOString();
+  const url  = DUTCHIE_BASE + '/reporting/transactions'
+    + '?FromDateUTC=' + encodeURIComponent(from)
+    + '&ToDateUTC='   + encodeURIComponent(to)
+    + '&IncludeDetail=true';
+
+  const resp = UrlFetchApp.fetch(url, { headers: hdrs, muteHttpExceptions: true });
+  if (resp.getResponseCode() !== 200) return { error: 'Dutchie HTTP ' + resp.getResponseCode() };
+
+  const raw  = JSON.parse(resp.getContentText());
+  const txns = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
 
   const byDate = {};
-  const storeNames = [];  // debug: names found for this store
-  for (const row of data) {
-    const rowDate  = row[0] instanceof Date
-      ? Utilities.formatDate(row[0], Session.getScriptTimeZone(), 'yyyy-MM-dd')
-      : String(row[0]).slice(0, 10);
-    const rowStore = String(row[1]);
-    const rowName  = String(row[3] || '').trim();
-    const rowQty   = Number(row[7]) || 0;
-
-    if (rowStore !== store) continue;
-    if (storeNames.indexOf(rowName) < 0 && storeNames.length < 5) storeNames.push(rowName);
-    if (rowDate < cutoffStr) continue;
-    if (rowQty <= 0) continue;
-
-    // Match by name: exact (case-insensitive), or contains
-    const rowLower = rowName.toLowerCase();
-    if (rowLower !== nameLower && !rowLower.includes(nameLower) && !nameLower.includes(rowLower)) continue;
-
-    byDate[rowDate] = (byDate[rowDate] || 0) + rowQty;
+  for (const tx of txns) {
+    if (tx.transactionType && tx.transactionType !== 'Retail') continue;
+    if (tx.isVoid) continue;
+    if (!Array.isArray(tx.items)) continue;
+    const dateStr = (tx.transactionDateLocalTime || tx.transactionDate || '').slice(0, 10);
+    if (!dateStr) continue;
+    for (const item of tx.items) {
+      if (item.isReturned) continue;
+      if (String(item.productId) !== String(targetPid)) continue;
+      const qty = Number(item.quantity || 0);
+      if (qty <= 0) continue;
+      byDate[dateStr] = (byDate[dateStr] || 0) + qty;
+    }
   }
 
   const rows = Object.entries(byDate)
     .map(([date, qty]) => ({ date, qty, by: '', isReturn: false }))
     .sort((a, b) => b.date.localeCompare(a.date));
 
-  return { store, name, days, rows, _debug: { nameLower, storeNames, totalRows: data.length } };
+  return { store, name, days, rows };
 }
 
 // Run once from GAS editor to seed users (never exposed as HTTP action)
