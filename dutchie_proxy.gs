@@ -578,6 +578,7 @@ function patternMatches_(pattern, value) {
 
 function pickReorderRule_(p, config) {
   return config.reorderRules.find(r =>
+    ruleAppliesToProduct_(r, p) &&
     patternMatches_(r.categoryPattern, p.category) &&
     patternMatches_(r.brandPattern, p.brand) &&
     patternMatches_(r.vendorPattern, p.vendor)
@@ -589,6 +590,18 @@ function pickReorderRule_(p, config) {
     orderMultiple: 1,
     transferMinQty: 1,
   };
+}
+
+function ruleAppliesToProduct_(rule, p) {
+  const name = String(rule.ruleName || '').toLowerCase();
+  const category = String(p.category || '').toLowerCase();
+  if (name.indexOf('slow') >= 0) {
+    return p.status === 'slow' || (p.sold28 || 0) <= 3;
+  }
+  if (name.indexOf('green cross') >= 0) {
+    return /apparel|accessor|paraphernalia|battery|lighter/i.test(category + ' ' + p.name);
+  }
+  return true;
 }
 
 function pickVendorLead_(p, config) {
@@ -663,6 +676,7 @@ function buildDecisionFeedRows(targetStores) {
     const minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
     const orderMultiple = (override && override.orderMultiple) || rule.orderMultiple || 1;
     const transferFirst = (override && override.transferFirst) || rule.ruleName.toLowerCase().indexOf('transfer first') >= 0;
+    const overstock = override && override.overstock;
     const reasonCodes = [];
     const flagKey = sku + '|' + p.store;
 
@@ -670,7 +684,7 @@ function buildDecisionFeedRows(targetStores) {
     if (p.status === 'critical') reasonCodes.push('LOW_DOH');
     if (p.status === 'low') reasonCodes.push('LOW_STOCK');
     if (transferFirst) reasonCodes.push('TRANSFER_FIRST');
-    if (override && override.overstock) reasonCodes.push('GREEN_CROSS_OVERSTOCK');
+    if (overstock || rule.ruleName.toLowerCase().indexOf('green cross') >= 0) reasonCodes.push('GREEN_CROSS_OVERSTOCK');
     if (override && override.leadTimeDays) reasonCodes.push('LONG_LEAD_SKU');
     if (flagged.has(flagKey)) reasonCodes.push('FLAGGED_REVIEW');
     if (killed[flagKey]) reasonCodes.push('KILL_LIST');
