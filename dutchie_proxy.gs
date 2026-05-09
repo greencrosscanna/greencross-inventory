@@ -3,7 +3,9 @@
 // Execute as: USER_DEPLOYING | Access: ANYONE_ANONYMOUS
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const SPREADSHEET_ID              = '1OBNzkBrJtLIlf8xknVlGd6Jb8nlkg4_KG-Gq6BD7HHY';
+const LIVE_SPREADSHEET_ID         = '1OBNzkBrJtLIlf8xknVlGd6Jb8nlkg4_KG-Gq6BD7HHY';
+const BETA_SPREADSHEET_ID         = '1expq2qh9uRU51BdBKq_GmYgyHLrRhmryPtWjDJsWdxg';
+const SPREADSHEET_ID              = LIVE_SPREADSHEET_ID;
 const SALES_HISTORY_SPREADSHEET_ID = '18f8iwnnMucXog5fMsLN2VwEoC6kFu3h-b8MDpZlc7ks';
 const SALES_HISTORY_GID            = 1938453538;
 const SNAPSHOT_SHEET_NAME          = 'Inv Snapshot';
@@ -32,6 +34,14 @@ const SHEET_GIDS = {
 const LEAD_TIME_DAYS    = 5;
 const SAFETY_STOCK_DAYS = 7;
 const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 12 days
+
+function getDataMode() {
+  return (PropertiesService.getScriptProperties().getProperty('GC_DATA_MODE') || 'live').toLowerCase();
+}
+
+function getDataSpreadsheetId() {
+  return getDataMode() === 'beta' ? BETA_SPREADSHEET_ID : LIVE_SPREADSHEET_ID;
+}
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 function testEmail() {
@@ -100,6 +110,7 @@ function doGet(e) {
     if (params.action === 'storetxhistory') return jsonOut(getStoreTxHistory(params));
     if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
+    if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
     return jsonOut({ error: 'Unknown action' });
   } catch (err) {
     return jsonOut({ error: err.message, stack: err.stack });
@@ -501,7 +512,7 @@ const VEL_WINDOW_DAYS = 180;
 const VEL_COLS = ['date','store','productId','productName','brand','category','sku','qty'];
 
 function getVelSheet() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   let sheet = ss.getSheetByName(VEL_SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(VEL_SHEET_NAME);
@@ -943,7 +954,7 @@ function getQuarantine(params) {
 function buildNameSkuFromSnapshot() {
   const nameToSku = {};
   try {
-    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
     const sheet = ss.getSheetByName(SKU_DICT_SHEET_NAME);
     if (!sheet) return nameToSku;
     const lastRow = sheet.getLastRow();
@@ -1646,7 +1657,7 @@ function getOOSMap() {
   const cached = cache.get(cacheKey);
   if (cached) { try { return JSON.parse(cached); } catch(e) {} }
 
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!sheet || sheet.getLastRow() < 2) return {};
 
@@ -1756,7 +1767,7 @@ function getLeafLinkOrders() {
 // Called by time-based trigger. Appends one row per product per store to the
 // Inv Snapshot sheet, then purges entries older than 90 days.
 function snapshotInventory() {
-  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
   const sheet = getOrCreateSnapshotSheet(ss);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -1827,7 +1838,7 @@ function setupSnapshotTrigger() {
 
 // ─── SHEET HELPERS ────────────────────────────────────────────────────────────
 function getSheetByGid(gid) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   for (const s of ss.getSheets()) {
     if (s.getSheetId() === gid) return s;
   }
@@ -1932,7 +1943,7 @@ function getSchema() {
 // ─── ONE-TIME BACKFILL ─────────────────────────────────────────────────────────
 // Run once from the Apps Script editor to seed the SKU Dict from existing snapshot data.
 function backfillSkuDict() {
-  const ss       = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss       = SpreadsheetApp.openById(getDataSpreadsheetId());
   const snapshot = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!snapshot) { Logger.log('No snapshot sheet found'); return; }
   const lastRow = snapshot.getLastRow();
