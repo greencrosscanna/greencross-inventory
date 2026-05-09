@@ -316,18 +316,29 @@
   .scan-stat-val.bad  { color: var(--red); }
   .scan-stat-lbl { font-size: 9px; color: var(--muted); margin-top: 2px; letter-spacing: .5px; text-transform: uppercase; }
   .scan-stores { display: flex; flex-direction: column; gap: 5px; }
+  .scan-store-head {
+    display: grid;
+    grid-template-columns: minmax(72px,1fr) 34px 34px 34px 34px 42px 14px;
+    gap: 5px;
+    padding: 0 10px 2px;
+    color: var(--muted);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+  }
   .scan-store-row {
     display: grid;
-    grid-template-columns: 1fr 36px 48px 16px;
+    grid-template-columns: minmax(72px,1fr) 34px 34px 34px 34px 42px 14px;
     align-items: center;
     padding: 7px 10px;
     background: rgba(255,255,255,.03);
     border-radius: 6px;
-    gap: 6px;
+    gap: 5px;
   }
   .scan-store-name { font-size: 12px; color: var(--muted); }
   .scan-store-qty  { font-size: 13px; font-weight: 700; color: var(--text); text-align: right; }
-  .scan-store-doh  { font-size: 11px; color: var(--muted); min-width: 44px; text-align: right; }
+  .scan-store-sold { font-size: 12px; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+  .scan-store-doh  { font-size: 11px; color: var(--muted); min-width: 0; text-align: right; }
   .scan-store-chevron { font-size: 13px; color: var(--muted); text-align: right; }
   .scan-store-history { border-radius: 0 0 6px 6px; background: rgba(255,255,255,.02); margin-top: -4px; margin-bottom: 2px; }
   .scan-no-result  { text-align: center; padding: 32px 16px; color: var(--muted); }
@@ -1784,9 +1795,18 @@ function fmtDate(s) {
   const d = new Date(s + 'T12:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[c]));
+}
 
 // ── Cache ────────────────────────────────────────────────
-const CACHE_PREFIX = 'gc_inv4_';
+const CACHE_PREFIX = 'gc_inv5_';
 function cacheGet(key) {
   const raw = localStorage.getItem(CACHE_PREFIX + key);
   if (!raw) return null;
@@ -1806,7 +1826,22 @@ function cacheSet(key, data, ttlMs) {
     for (const [store, products] of Object.entries(data.stores)) {
       slim.stores[store] = {};
       for (const [name, v] of Object.entries(products)) {
-        slim.stores[store][name] = { sku: v.sku, brand: v.brand || '', vel7: v.vel7, vel14: v.vel14, vel21: v.vel21, vel28: v.vel28, vel30: v.vel30, vel90: v.vel90 };
+        slim.stores[store][name] = {
+          sku: v.sku,
+          brand: v.brand || '',
+          vel7: v.vel7,
+          vel14: v.vel14,
+          vel21: v.vel21,
+          vel28: v.vel28,
+          vel30: v.vel30,
+          vel90: v.vel90,
+          qty7: v.qty7,
+          qty14: v.qty14,
+          qty21: v.qty21,
+          qty28: v.qty28,
+          qty30: v.qty30,
+          qty90: v.qty90,
+        };
       }
     }
     toStore = slim;
@@ -2808,6 +2843,7 @@ function enrichProduct(p, storeName, velMap) {
     brand:      p.brand    || vel.brand    || '',
     category:   p.category || vel.category || 'Other',
     vel7: v7, vel14: v14, vel21: v21, vel28: v28, vel30: v30, vel90: v90, velWindow: velW,
+    qty7: vel.qty7 || 0, qty14: vel.qty14 || 0, qty21: vel.qty21 || 0, qty28: vel.qty28 || 0, qty30: vel.qty30 || 0, qty90: vel.qty90 || 0,
     doh, status, reorderQty, isFlower, isNew, isHot, isDead, isBackstock,
   };
 }
@@ -3031,6 +3067,12 @@ async function loadInventoryData() {
           vel21:     vel.vel21 || 0,
           vel28:     vel.vel28 || 0,
           vel30:     vel.vel30 || 0,
+          qty7:      vel.qty7  || 0,
+          qty14:     vel.qty14 || 0,
+          qty21:     vel.qty21 || 0,
+          qty28:     vel.qty28 || 0,
+          qty30:     vel.qty30 || 0,
+          qty90:     vel.qty90 || 0,
           doh:       0,
           status:    'oos',
           reorderQty,
@@ -4871,6 +4913,28 @@ function lookupScanCode(code) {
   }
 }
 
+function scanVelocityEntry(p, vel) {
+  const storeVel = (vel && vel[p.store]) || {};
+  if (storeVel[p.name]) return storeVel[p.name];
+  const sku = String(p.sku || '').trim();
+  if (sku) {
+    const skuDigits = sku.replace(/[^0-9]/g, '');
+    const bySku = Object.values(storeVel).find(v => {
+      const vSku = String(v.sku || '').trim();
+      return vSku && (vSku === sku || (skuDigits && vSku.replace(/[^0-9]/g, '') === skuDigits));
+    });
+    if (bySku) return bySku;
+  }
+  return p || {};
+}
+
+function scanSold(v, days) {
+  const direct = Number(v && v['qty' + days]);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const rate = Number(v && v['vel' + days]);
+  return Number.isFinite(rate) && rate > 0 ? Math.round(rate * days) : 0;
+}
+
 function renderScanResult(products, code, vel) {
   // Collapse viewfinder/file area
   ['scannerCamArea','scannerFileArea','scannerManualArea'].forEach(id => {
@@ -4881,16 +4945,40 @@ function renderScanResult(products, code, vel) {
   const first = products[0];
   const emoji = catEmoji(first.category);
 
-  // Aggregate velocity
-  let vel7 = 0, vel30 = 0;
+  const storeGroups = {};
   for (const p of products) {
-    const sv = vel[p.store] || {};
-    const pv = sv[p.sku] || {};
-    vel7  += pv.vel7  || p.vel7  || 0;
-    vel30 += pv.vel30 || p.vel30 || 0;
+    if (!storeGroups[p.store]) {
+      storeGroups[p.store] = {
+        ...p,
+        qty: 0,
+        qtyFloor: 0,
+        qtyBack: 0,
+        qtyDistro: 0,
+        value: 0,
+        dohVals: [],
+      };
+    }
+    const g = storeGroups[p.store];
+    g.qty += p.qty || 0;
+    g.qtyFloor += p.qtyFloor || 0;
+    g.qtyBack += p.qtyBack || 0;
+    g.qtyDistro += p.qtyDistro || 0;
+    g.value += p.value || 0;
+    if (p.doh != null) g.dohVals.push(p.doh);
+    const ve = scanVelocityEntry(p, vel);
+    g.velEntry = g.velEntry || ve;
   }
-  vel7  = Math.round(vel7  * 10) / 10;
-  vel30 = Math.round(vel30 * 10) / 10;
+  const storeProducts = Object.values(storeGroups).map(g => ({
+    ...g,
+    doh: g.dohVals.length ? Math.min(...g.dohVals) : g.doh,
+    sold7: scanSold(g.velEntry, 7),
+    sold14: scanSold(g.velEntry, 14),
+    sold28: scanSold(g.velEntry, 28),
+  }));
+
+  const sold7  = storeProducts.reduce((s, p) => s + p.sold7, 0);
+  const sold14 = storeProducts.reduce((s, p) => s + p.sold14, 0);
+  const sold28 = storeProducts.reduce((s, p) => s + p.sold28, 0);
   const totalQty = products.reduce((s, p) => s + (p.qty || 0), 0);
 
   // DOH
@@ -4898,8 +4986,8 @@ function renderScanResult(products, code, vel) {
   const doh = inStock ? inStock.doh : null;
   const dohTxt = doh != null ? (doh >= 100 ? '100+' : doh.toFixed(1)) : '—';
   const dohCls = doh == null ? '' : doh < 7 ? 'bad' : doh < 21 ? 'warn' : 'good';
-  const vel7Cls  = vel7  > 14 ? 'good' : vel7  > 0 ? 'warn' : '';
-  const vel30Cls = vel30 > 40 ? 'good' : vel30 > 0 ? 'warn' : '';
+  const sold7Cls  = sold7  > 14 ? 'good' : sold7  > 0 ? 'warn' : '';
+  const sold28Cls = sold28 > 40 ? 'good' : sold28 > 0 ? 'warn' : '';
 
   // Compute tags from enriched product data
   const enriched = (state.inventoryData || []).find(p => p.sku === first.sku || p.name === first.name);
@@ -4920,16 +5008,19 @@ function renderScanResult(products, code, vel) {
     : `<div class="scan-cat-icon">${emoji}</div>`;
 
   // Store rows — grid-aligned columns
-  const storeRows = [...products]
+  const storeRows = storeProducts
     .sort((a, b) => (b.qty || 0) - (a.qty || 0))
     .map(p => {
       const pdoh = p.doh != null ? p.doh.toFixed(1) + 'd' : '—';
       const qtyTxt = p.qty > 0 ? p.qty : 'OOS';
       const qtyStyle = p.qty > 0 ? '' : 'color:var(--muted)';
       const shortStore = p.store.replace(' - Green Cross Cannabis Emporium','').replace('Green Cross','GX');
-      return `<div class="scan-store-row" onclick="toggleStoreHistory(this,'${p.store}','${p.name.replace(/'/g,"\\'").replace(/"/g,'&quot;')}')" style="cursor:pointer">
+      return `<div class="scan-store-row" data-store="${escapeHtml(p.store)}" data-name="${escapeHtml(p.name)}" onclick="toggleStoreHistory(this,this.dataset.store,this.dataset.name)" style="cursor:pointer">
         <span class="scan-store-name">${shortStore}</span>
         <span class="scan-store-qty" style="${qtyStyle}">${qtyTxt}</span>
+        <span class="scan-store-sold">${p.sold7 || '—'}</span>
+        <span class="scan-store-sold">${p.sold14 || '—'}</span>
+        <span class="scan-store-sold">${p.sold28 || '—'}</span>
         <span class="scan-store-doh">${pdoh}</span>
         <span class="scan-store-chevron">›</span>
       </div>
@@ -4948,9 +5039,13 @@ function renderScanResult(products, code, vel) {
       </div>
       <div class="scan-stats">
         <div class="scan-stat"><div class="scan-stat-val ${dohCls}">${dohTxt}</div><div class="scan-stat-lbl">DOH</div></div>
-        <div class="scan-stat"><div class="scan-stat-val ${vel7Cls}">${vel7 || '—'}</div><div class="scan-stat-lbl">Vel 7d</div></div>
-        <div class="scan-stat"><div class="scan-stat-val ${vel30Cls}">${vel30 || '—'}</div><div class="scan-stat-lbl">Vel 30d</div></div>
+        <div class="scan-stat"><div class="scan-stat-val ${sold7Cls}">${sold7 || '—'}</div><div class="scan-stat-lbl">Sold 7d</div></div>
+        <div class="scan-stat"><div class="scan-stat-val">${sold14 || '—'}</div><div class="scan-stat-lbl">Sold 14d</div></div>
+        <div class="scan-stat"><div class="scan-stat-val ${sold28Cls}">${sold28 || '—'}</div><div class="scan-stat-lbl">Sold 28d</div></div>
         <div class="scan-stat"><div class="scan-stat-val">${totalQty}</div><div class="scan-stat-lbl">Total</div></div>
+      </div>
+      <div class="scan-store-head">
+        <span>Store</span><span style="text-align:right">Qty</span><span style="text-align:right">7</span><span style="text-align:right">14</span><span style="text-align:right">28</span><span style="text-align:right">DOH</span><span></span>
       </div>
       <div class="scan-stores">${storeRows}</div>
       <button class="scan-again-btn" onclick="scanAgain()">Scan another</button>

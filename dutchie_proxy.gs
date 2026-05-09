@@ -755,7 +755,6 @@ function buildVelocityMap() {
       e.vel28 = Math.round((e.qty28 / 28) * 100) / 100;
       e.vel30 = Math.round((e.qty30 / 30) * 100) / 100;
       e.vel90 = Math.round((e.qty90 / 90) * 100) / 100;
-      delete e.qty7; delete e.qty14; delete e.qty21; delete e.qty28; delete e.qty30; delete e.qty90;
     }
   }
 
