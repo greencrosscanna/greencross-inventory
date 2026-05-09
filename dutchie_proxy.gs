@@ -609,7 +609,7 @@ function productKey_(p) {
   return String(p.sku || p.name || '').trim();
 }
 
-function buildDecisionFeedRows() {
+function buildDecisionFeedRows(targetStores) {
   const generatedAt = new Date().toISOString();
   const velMap = buildVelocityMap();
   const config = loadBetaDecisionConfig();
@@ -618,8 +618,9 @@ function buildDecisionFeedRows() {
   const flagged = new Set(shared.flagged || []);
   const byKey = {};
   const rows = [];
+  const storesToBuild = targetStores && targetStores.length ? targetStores : STORES;
 
-  for (const store of STORES) {
+  for (const store of storesToBuild) {
     const inv = getInventory({ store });
     if (inv.error) continue;
     for (const p of inv.products || []) {
@@ -731,15 +732,30 @@ function generateBetaDecisionFeed(params) {
   if (getDataMode() !== 'beta' && params.force !== '1') {
     return { ok: false, error: 'Set GC_DATA_MODE=beta or pass force=1 to generate beta decision feed.' };
   }
-  const rows = buildDecisionFeedRows();
+  const requestedStore = params.store || '';
+  const targetStores = requestedStore && requestedStore !== 'all' ? [requestedStore] : STORES;
+  const rows = buildDecisionFeedRows(targetStores);
   const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
   let sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(DECISION_FEED_SHEET_NAME);
-  sheet.clearContents();
-  sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
-  if (rows.length) sheet.getRange(2, 1, rows.length, DECISION_FEED_COLS.length).setValues(rows);
+  if (!params.append || sheet.getLastRow() === 0) {
+    sheet.clearContents();
+    sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
+  } else if (requestedStore) {
+    removeDecisionFeedStoreRows_(sheet, requestedStore);
+  }
+  if (rows.length) sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DECISION_FEED_COLS.length).setValues(rows);
   sheet.setFrozenRows(1);
-  return { ok: true, rows: rows.length, spreadsheetId: BETA_SPREADSHEET_ID, generatedAt: rows[0] ? rows[0][0] : new Date().toISOString() };
+  return { ok: true, store: requestedStore || 'all', rows: rows.length, spreadsheetId: BETA_SPREADSHEET_ID, generatedAt: rows[0] ? rows[0][0] : new Date().toISOString() };
+}
+
+function removeDecisionFeedStoreRows_(sheet, store) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const stores = sheet.getRange(2, 2, lastRow - 1, 1).getValues().map(r => String(r[0] || ''));
+  for (let i = stores.length - 1; i >= 0; i--) {
+    if (stores[i] === store) sheet.deleteRow(i + 2);
+  }
 }
 
 // ─── VELOCITY — ROLLING WINDOW (180-day, incremental) ────────────────────────
