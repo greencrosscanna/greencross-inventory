@@ -4441,6 +4441,22 @@ function startNativeLiveScanner() {
   }, 350);
 }
 
+function getCloseCameraConfig() {
+  return {
+    facingMode: { ideal: 'environment' },
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    focusMode: { ideal: 'continuous' },
+    focusDistance: { ideal: 0 },
+    zoom: { ideal: 1 },
+    advanced: [
+      { focusMode: 'continuous' },
+      { focusDistance: 0 },
+      { zoom: 1 },
+    ],
+  };
+}
+
 function initScanner() {
   if (_scannerActive) return;
   const hint = document.getElementById('scannerHint');
@@ -4485,33 +4501,43 @@ function initScanner() {
       const formatsToSupport = wantFmts.map(k => fmts[k]).filter(v => v !== undefined);
 
       _scanner = new Html5Qrcode('scannerCamInner');
-      _scanner.start(
-        { facingMode: 'environment' },
-        {
-          fps: 10,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            return {
-              width: Math.floor(viewfinderWidth * 0.76),
-              height: Math.floor(viewfinderHeight * 0.52),
-            };
+      const scannerConfig = {
+        fps: 10,
+        qrbox: (viewfinderWidth, viewfinderHeight) => {
+          return {
+            width: Math.floor(viewfinderWidth * 0.76),
+            height: Math.floor(viewfinderHeight * 0.52),
+          };
+        },
+        aspectRatio: 1.6,
+        ...(formatsToSupport.length ? { formatsToSupport } : {})
+      };
+      function startWithCamera(cameraConfig, retried) {
+        _scanner.start(
+          cameraConfig,
+          scannerConfig,
+          (code) => {
+            handleScannerCode(code);
           },
-          aspectRatio: 1.6,
-          ...(formatsToSupport.length ? { formatsToSupport } : {})
-        },
-        (code) => {
-          handleScannerCode(code);
-        },
-        () => {}
-      ).then(() => {
-        _scannerActive = true;
-        hint.textContent = 'Point at a product barcode or QR label';
-        startScannerDiagnostics();
-        startNativeLiveScanner();
-      }).catch(err => {
-        // Permission denied or camera unavailable
-        console.warn('Camera start failed:', err);
-        showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.');
-      });
+          () => {}
+        ).then(() => {
+          _scannerActive = true;
+          hint.textContent = 'Point at a product barcode or QR label';
+          SCAN_DIAG.last = retried ? 'cam:env' : 'cam:close';
+          startScannerDiagnostics();
+          startNativeLiveScanner();
+        }).catch(err => {
+          if (!retried) {
+            SCAN_DIAG.last = 'cam-retry';
+            startWithCamera({ facingMode: 'environment' }, true);
+            return;
+          }
+          // Permission denied or camera unavailable
+          console.warn('Camera start failed:', err);
+          showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.');
+        });
+      }
+      startWithCamera(getCloseCameraConfig(), false);
     } catch(e) {
       // Synchronous error (e.g. Html5Qrcode constructor fails)
       console.error('startCamera error:', e);
