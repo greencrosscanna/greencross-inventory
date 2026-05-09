@@ -10,6 +10,10 @@ const SALES_HISTORY_SPREADSHEET_ID = '18f8iwnnMucXog5fMsLN2VwEoC6kFu3h-b8MDpZlc7
 const SALES_HISTORY_GID            = 1938453538;
 const SNAPSHOT_SHEET_NAME          = 'Inv Snapshot';
 const SKU_DICT_SHEET_NAME          = 'Product SKU Dict';
+const SKU_OVERRIDES_SHEET_NAME     = 'Config - SKU Overrides';
+const REORDER_RULES_SHEET_NAME     = 'Config - Reorder Rules';
+const VENDOR_LEAD_TIMES_SHEET_NAME = 'Config - Vendor Lead Times';
+const DECISION_FEED_SHEET_NAME     = 'Decision Feed';
 const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 
 const STORE_KEYS = {
@@ -111,6 +115,7 @@ function doGet(e) {
     if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
     if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
+    if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
     return jsonOut({ error: 'Unknown action' });
   } catch (err) {
     return jsonOut({ error: err.message, stack: err.stack });
@@ -494,6 +499,247 @@ function getInventory(params) {
   const result = { store, products };
   try { scriptCache.put(cacheKey, JSON.stringify(result), INV_CACHE_TTL); } catch(e) {}
   return result;
+}
+
+// ─── BETA DECISION FEED ───────────────────────────────────────────────────────
+const DECISION_FEED_COLS = [
+  'generatedAt','store','productName','sku','brand','category','qty','sold7','sold14','sold28',
+  'vel14','doh','status','recommendedOrderQty','recommendedTransferQty','donorStore',
+  'reasonCodes','confidence','openOrderQty','imageUrl','lastSeen','notes'
+];
+
+function sheetToObjects_(sheetName, spreadsheetId) {
+  const ss = SpreadsheetApp.openById(spreadsheetId || getDataSpreadsheetId());
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const values = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
+  const headers = values[0].map(h => String(h || '').trim());
+  return values.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i) => { if (h) obj[h] = row[i]; });
+    return obj;
+  }).filter(obj => Object.values(obj).some(v => v !== '' && v !== null));
+}
+
+function loadBetaDecisionConfig() {
+  const skuOverrides = {};
+  for (const row of sheetToObjects_(SKU_OVERRIDES_SHEET_NAME, BETA_SPREADSHEET_ID)) {
+    const sku = String(row.sku || '').trim();
+    if (!sku || String(row.enabled).toLowerCase() === 'false') continue;
+    skuOverrides[sku] = {
+      sku,
+      overrideType: String(row.overrideType || '').trim(),
+      leadTimeDays: Number(row.leadTimeDays) || null,
+      minOrderQty: Number(row.minOrderQty) || null,
+      orderMultiple: Number(row.orderMultiple) || null,
+      transferFirst: row.transferFirst === true || String(row.transferFirst).toLowerCase() === 'true',
+      overstock: row.overstock === true || String(row.overstock).toLowerCase() === 'true',
+      killCandidate: row.killCandidate === true || String(row.killCandidate).toLowerCase() === 'true',
+      notes: String(row.notes || ''),
+    };
+  }
+
+  const reorderRules = sheetToObjects_(REORDER_RULES_SHEET_NAME, BETA_SPREADSHEET_ID)
+    .filter(r => String(r.enabled).toLowerCase() !== 'false')
+    .map(r => ({
+      ruleName: String(r.ruleName || ''),
+      categoryPattern: String(r.categoryPattern || ''),
+      brandPattern: String(r.brandPattern || ''),
+      vendorPattern: String(r.vendorPattern || ''),
+      leadTimeDays: Number(r.leadTimeDays) || LEAD_TIME_DAYS,
+      safetyStockDays: Number(r.safetyStockDays) || SAFETY_STOCK_DAYS,
+      minOrderQty: Number(r.minOrderQty) || 1,
+      orderMultiple: Number(r.orderMultiple) || 1,
+      transferMinQty: Number(r.transferMinQty) || 1,
+      priority: Number(r.priority) || 999,
+      notes: String(r.notes || ''),
+    }))
+    .sort((a, b) => a.priority - b.priority);
+
+  const vendorLeadTimes = sheetToObjects_(VENDOR_LEAD_TIMES_SHEET_NAME, BETA_SPREADSHEET_ID)
+    .filter(r => String(r.active).toLowerCase() !== 'false')
+    .map(r => ({
+      vendor: String(r.vendor || ''),
+      brand: String(r.brand || ''),
+      category: String(r.category || ''),
+      leadTimeDays: Number(r.leadTimeDays) || null,
+      buyerNotes: String(r.buyerNotes || ''),
+    }));
+
+  return { skuOverrides, reorderRules, vendorLeadTimes };
+}
+
+function patternMatches_(pattern, value) {
+  const p = String(pattern || '').trim();
+  if (!p || p === '*') return true;
+  const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp('^' + escaped + '$', 'i').test(String(value || ''));
+}
+
+function pickReorderRule_(p, config) {
+  return config.reorderRules.find(r =>
+    patternMatches_(r.categoryPattern, p.category) &&
+    patternMatches_(r.brandPattern, p.brand) &&
+    patternMatches_(r.vendorPattern, p.vendor)
+  ) || {
+    ruleName: 'Default',
+    leadTimeDays: LEAD_TIME_DAYS,
+    safetyStockDays: SAFETY_STOCK_DAYS,
+    minOrderQty: 1,
+    orderMultiple: 1,
+    transferMinQty: 1,
+  };
+}
+
+function pickVendorLead_(p, config) {
+  return config.vendorLeadTimes.find(r =>
+    patternMatches_(r.vendor || '*', p.vendor || '') &&
+    patternMatches_(r.brand || '*', p.brand || '') &&
+    patternMatches_(r.category || '*', p.category || '')
+  ) || null;
+}
+
+function roundToMultiple_(qty, multiple) {
+  const m = Number(multiple) || 1;
+  if (qty <= 0) return 0;
+  return Math.ceil(qty / m) * m;
+}
+
+function productKey_(p) {
+  return String(p.sku || p.name || '').trim();
+}
+
+function buildDecisionFeedRows() {
+  const generatedAt = new Date().toISOString();
+  const velMap = buildVelocityMap();
+  const config = loadBetaDecisionConfig();
+  const shared = getSharedState();
+  const killed = shared.killed || {};
+  const flagged = new Set(shared.flagged || []);
+  const byKey = {};
+  const rows = [];
+
+  for (const store of STORES) {
+    const inv = getInventory({ store });
+    if (inv.error) continue;
+    for (const p of inv.products || []) {
+      const vel = (velMap[store] || {})[p.name] || {};
+      const v14 = vel.vel14 || 0;
+      const v30 = vel.vel30 || 0;
+      const v7 = vel.vel7 || 0;
+      const primaryVel = v14 > 0 ? v14 : (v30 > 0 ? v30 : v7);
+      const doh = p.qty === 0 ? 0 : (primaryVel > 0 ? Math.round((p.qty / primaryVel) * 10) / 10 : null);
+      const status = p.qty === 0 ? 'oos' : (doh == null ? 'slow' : (doh < 3 ? 'critical' : doh < 7 ? 'low' : doh < 14 ? 'watch' : 'ok'));
+      const full = {
+        ...p,
+        store,
+        brand: p.brand || vel.brand || '',
+        category: p.category || vel.category || 'Other',
+        vel7: v7,
+        vel14: v14,
+        vel30: v30,
+        sold7: vel.qty7 || Math.round(v7 * 7) || 0,
+        sold14: vel.qty14 || Math.round(v14 * 14) || 0,
+        sold28: vel.qty28 || Math.round((vel.vel28 || 0) * 28) || 0,
+        doh,
+        status,
+      };
+      const key = productKey_(full);
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(full);
+      rows.push(full);
+    }
+  }
+
+  return rows.map(p => {
+    const sku = String(p.sku || '').trim();
+    const override = config.skuOverrides[sku] || null;
+    const rule = pickReorderRule_(p, config);
+    const vendorLead = pickVendorLead_(p, config);
+    const leadTimeDays = (override && override.leadTimeDays) || (vendorLead && vendorLead.leadTimeDays) || rule.leadTimeDays;
+    const safetyStockDays = rule.safetyStockDays || SAFETY_STOCK_DAYS;
+    const targetDays = leadTimeDays + safetyStockDays;
+    const minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
+    const orderMultiple = (override && override.orderMultiple) || rule.orderMultiple || 1;
+    const transferFirst = (override && override.transferFirst) || rule.ruleName.toLowerCase().indexOf('transfer first') >= 0;
+    const reasonCodes = [];
+    const flagKey = sku + '|' + p.store;
+
+    if (p.status === 'oos') reasonCodes.push('OOS');
+    if (p.status === 'critical') reasonCodes.push('LOW_DOH');
+    if (p.status === 'low') reasonCodes.push('LOW_STOCK');
+    if (transferFirst) reasonCodes.push('TRANSFER_FIRST');
+    if (override && override.overstock) reasonCodes.push('GREEN_CROSS_OVERSTOCK');
+    if (override && override.leadTimeDays) reasonCodes.push('LONG_LEAD_SKU');
+    if (flagged.has(flagKey)) reasonCodes.push('FLAGGED_REVIEW');
+    if (killed[flagKey]) reasonCodes.push('KILL_LIST');
+
+    const needed = p.vel14 > 0 ? Math.max(0, p.vel14 * targetDays - p.qty) : 0;
+    let recommendedOrderQty = needed > 0 ? Math.max(minOrderQty, roundToMultiple_(needed, orderMultiple)) : 0;
+    let recommendedTransferQty = 0;
+    let donorStore = '';
+
+    const needsReplenishment = recommendedOrderQty > 0 || p.status === 'oos' || p.status === 'critical' || p.status === 'low';
+    if (needsReplenishment) {
+      const donor = (byKey[productKey_(p)] || [])
+        .filter(d => d.store !== p.store && (d.qty || 0) >= (rule.transferMinQty || 1) && (d.doh == null || d.doh > targetDays * 1.5))
+        .sort((a, b) => (b.qty || 0) - (a.qty || 0))[0];
+      if (donor) {
+        donorStore = donor.store;
+        recommendedTransferQty = Math.min(recommendedOrderQty || rule.transferMinQty || 1, Math.max(0, Math.floor(donor.qty - Math.max(1, donor.vel14 * targetDays))));
+        if (recommendedTransferQty > 0) {
+          reasonCodes.push('TRANSFER_AVAILABLE');
+          if (transferFirst) recommendedOrderQty = 0;
+        }
+      }
+    }
+
+    const confidence = reasonCodes.includes('KILL_LIST') ? 20
+      : reasonCodes.includes('TRANSFER_AVAILABLE') ? 80
+      : recommendedOrderQty > 0 ? 70
+      : reasonCodes.length ? 60
+      : 40;
+
+    return [
+      generatedAt,
+      p.store,
+      p.name,
+      sku,
+      p.brand || '',
+      p.category || '',
+      p.qty || 0,
+      p.sold7 || 0,
+      p.sold14 || 0,
+      p.sold28 || 0,
+      p.vel14 || 0,
+      p.doh == null ? '' : p.doh,
+      p.status,
+      recommendedOrderQty,
+      recommendedTransferQty,
+      donorStore,
+      reasonCodes.join(','),
+      confidence,
+      0,
+      p.img || '',
+      p.lastMod || '',
+      (override && override.notes) || (vendorLead && vendorLead.buyerNotes) || rule.notes || '',
+    ];
+  }).sort((a, b) => (b[17] - a[17]) || String(a[1]).localeCompare(String(b[1])) || String(a[2]).localeCompare(String(b[2])));
+}
+
+function generateBetaDecisionFeed(params) {
+  if (getDataMode() !== 'beta' && params.force !== '1') {
+    return { ok: false, error: 'Set GC_DATA_MODE=beta or pass force=1 to generate beta decision feed.' };
+  }
+  const rows = buildDecisionFeedRows();
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(DECISION_FEED_SHEET_NAME);
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
+  if (rows.length) sheet.getRange(2, 1, rows.length, DECISION_FEED_COLS.length).setValues(rows);
+  sheet.setFrozenRows(1);
+  return { ok: true, rows: rows.length, spreadsheetId: BETA_SPREADSHEET_ID, generatedAt: rows[0] ? rows[0][0] : new Date().toISOString() };
 }
 
 // ─── VELOCITY — ROLLING WINDOW (180-day, incremental) ────────────────────────
