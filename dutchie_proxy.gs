@@ -791,7 +791,7 @@ function readBetaDecisionFeed(params) {
   const status = String(params.status || '').trim().toLowerCase();
   const reason = String(params.reason || '').trim().toUpperCase();
   const search = String(params.q || '').trim().toLowerCase();
-  const limit = Math.min(Math.max(parseInt(params.limit || '300', 10) || 300, 1), 1000);
+  const limit = Math.min(Math.max(parseInt(params.limit || '300', 10) || 300, 1), 10000);
 
   const rows = [];
   const summary = { orderLines: 0, transferLines: 0, killList: 0, orderUnits: 0, transferUnits: 0 };
