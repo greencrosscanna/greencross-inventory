@@ -4206,6 +4206,8 @@ function llStatusInfo(status) {
 // ── Scanner ───────────────────────────────────────────────────────────────────
 let _scanner = null;
 let _scannerActive = false;
+let _nativeScanTimer = null;
+let _nativeScanBusy = false;
 
 const CAT_EMOJI = {
   'Flower': '🌿', 'Pre-Roll': '🚬', '1g Pre-Roll': '🚬', 'Infused Pre-Roll': '🚬',
@@ -4238,8 +4240,97 @@ function showFileArea(msg) {
   }
   // Remember denial so next load skips the camera attempt entirely
   try { localStorage.setItem('gc_camera_denied', '1'); } catch(e) {}
+  stopNativeLiveScanner();
   _scannerActive = false;
   _scanner = null;
+}
+
+function handleScannerCode(code) {
+  if (!code) return;
+  stopScanner();
+  const camArea = document.getElementById('scannerCamArea');
+  if (camArea) camArea.style.display = 'none';
+  const manArea = document.getElementById('scannerManualArea');
+  if (manArea) manArea.style.display = 'none';
+  document.getElementById('scannerResult').innerHTML = '<div class="scanner-idle"><div class="spinner"></div></div>';
+  setTimeout(() => lookupScanCode(String(code).trim()), 120);
+}
+
+function stopNativeLiveScanner() {
+  if (_nativeScanTimer) clearInterval(_nativeScanTimer);
+  _nativeScanTimer = null;
+  _nativeScanBusy = false;
+}
+
+function makeScannerCrop(src, x, y, w, h, scale = 1.8) {
+  const sx = Math.max(0, Math.round(x));
+  const sy = Math.max(0, Math.round(y));
+  const sw = Math.min(src.width - sx, Math.round(w));
+  const sh = Math.min(src.height - sy, Math.round(h));
+  if (sw < 80 || sh < 80) return null;
+  const maxSide = 900;
+  const s = Math.min(scale, maxSide / Math.max(sw, sh));
+  const c = document.createElement('canvas');
+  c.width  = Math.max(1, Math.round(sw * s));
+  c.height = Math.max(1, Math.round(sh * s));
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+
+function buildLiveScannerVariants(src) {
+  const w = src.width, h = src.height;
+  const variants = [src];
+  [
+    [w * 0.02, h * 0.08, w * 0.42, h * 0.42, 2.4], // QR on left side of framed label
+    [w * 0.08, h * 0.14, w * 0.36, h * 0.34, 2.8],
+    [w * 0.04, h * 0.14, w * 0.82, h * 0.46, 1.8], // whole label band
+    [0,        h * 0.06, w * 0.55, h * 0.56, 1.9],
+    [w * 0.16, h * 0.10, w * 0.68, h * 0.56, 1.5],
+  ].forEach(r => {
+    const c = makeScannerCrop(src, r[0], r[1], r[2], r[3], r[4]);
+    if (c) variants.push(c);
+  });
+  return variants;
+}
+
+function startNativeLiveScanner() {
+  if (!('BarcodeDetector' in window) || _nativeScanTimer) return;
+  BarcodeDetector.getSupportedFormats()
+    .then(formats => {
+      const wanted = ['qr_code', 'ean_13', 'upc_a', 'code_128', 'code_39', 'data_matrix'];
+      const useFormats = wanted.filter(f => formats.includes(f));
+      if (!useFormats.length) return;
+      const detector = new BarcodeDetector({ formats: useFormats });
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      _nativeScanTimer = setInterval(async () => {
+        if (_nativeScanBusy || !_scannerActive) return;
+        const video = document.querySelector('#scannerCamInner video');
+        if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+        _nativeScanBusy = true;
+        try {
+          const maxSide = 900;
+          const s = Math.min(maxSide / Math.max(video.videoWidth, video.videoHeight), 1);
+          canvas.width  = Math.round(video.videoWidth * s);
+          canvas.height = Math.round(video.videoHeight * s);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          for (const variant of buildLiveScannerVariants(canvas)) {
+            const hits = await detector.detect(variant);
+            if (hits && hits.length && hits[0].rawValue) {
+              handleScannerCode(hits[0].rawValue);
+              return;
+            }
+          }
+        } catch(e) {
+          // Non-fatal; html5-qrcode continues scanning in parallel.
+        } finally {
+          _nativeScanBusy = false;
+        }
+      }, 350);
+    })
+    .catch(() => {});
 }
 
 function initScanner() {
@@ -4304,20 +4395,13 @@ function initScanner() {
           ...(formatsToSupport.length ? { formatsToSupport } : {})
         },
         (code) => {
-          if (!code) return;
-          // Stop camera entirely and collapse viewfinder — restored on "Scan another"
-          stopScanner();
-          const camArea = document.getElementById('scannerCamArea');
-          if (camArea) camArea.style.display = 'none';
-          const manArea = document.getElementById('scannerManualArea');
-          if (manArea) manArea.style.display = 'none';
-          document.getElementById('scannerResult').innerHTML = '<div class="scanner-idle"><div class="spinner"></div></div>';
-          setTimeout(() => lookupScanCode(code.trim()), 120);
+          handleScannerCode(code);
         },
         () => {}
       ).then(() => {
         _scannerActive = true;
         hint.textContent = 'Point at a product barcode or QR label';
+        startNativeLiveScanner();
       }).catch(err => {
         // Permission denied or camera unavailable
         console.warn('Camera start failed:', err);
@@ -4516,6 +4600,7 @@ function tryCameraAgain() {
 }
 
 function stopScanner() {
+  stopNativeLiveScanner();
   if (_scanner && _scannerActive) {
     _scanner.stop().catch(() => {});
     _scannerActive = false;
