@@ -4282,10 +4282,14 @@ function makeScannerCrop(src, x, y, w, h, scale = 1.8) {
 function buildLiveScannerVariants(src) {
   const w = src.width, h = src.height;
   const variants = [src];
+  const aimX = w * 0.12, aimY = h * 0.20, aimW = w * 0.76, aimH = h * 0.52;
   [
-    [w * 0.02, h * 0.08, w * 0.42, h * 0.42, 2.4], // QR on left side of framed label
-    [w * 0.08, h * 0.14, w * 0.36, h * 0.34, 2.8],
-    [w * 0.04, h * 0.14, w * 0.82, h * 0.46, 1.8], // whole label band
+    [aimX, aimY, aimW, aimH, 1.7],                            // exactly what the green frame shows
+    [aimX, aimY, aimW * 0.34, aimH * 0.52, 3.2],              // QR in upper-left of label
+    [aimX, aimY, aimW * 0.44, aimH * 0.70, 2.8],
+    [aimX + aimW * 0.02, aimY + aimH * 0.02, aimW * 0.32, aimH * 0.42, 3.4],
+    [aimX, aimY + aimH * 0.18, aimW * 0.42, aimH * 0.54, 2.8],
+    [w * 0.04, h * 0.14, w * 0.82, h * 0.46, 1.8],           // broad label band fallback
     [0,        h * 0.06, w * 0.55, h * 0.56, 1.9],
     [w * 0.16, h * 0.10, w * 0.68, h * 0.56, 1.5],
   ].forEach(r => {
@@ -4293,6 +4297,31 @@ function buildLiveScannerVariants(src) {
     if (c) variants.push(c);
   });
   return variants;
+}
+
+function drawDisplayedVideoFrame(video, canvas, ctx) {
+  const area = document.getElementById('scannerCamArea');
+  const rect = area ? area.getBoundingClientRect() : video.getBoundingClientRect();
+  const destW = Math.max(1, Math.round(rect.width || video.clientWidth || 390));
+  const destH = Math.max(1, Math.round(rect.height || video.clientHeight || 260));
+  const srcW = video.videoWidth;
+  const srcH = video.videoHeight;
+  const srcAspect = srcW / srcH;
+  const destAspect = destW / destH;
+  let sx = 0, sy = 0, sw = srcW, sh = srcH;
+  // Match CSS object-fit: cover so scanner crops line up with the visible green frame.
+  if (srcAspect > destAspect) {
+    sw = Math.round(srcH * destAspect);
+    sx = Math.round((srcW - sw) / 2);
+  } else {
+    sh = Math.round(srcW / destAspect);
+    sy = Math.round((srcH - sh) / 2);
+  }
+  const maxW = 900;
+  const s = Math.min(maxW / destW, 1);
+  canvas.width  = Math.round(destW * s);
+  canvas.height = Math.round(destH * s);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
 }
 
 function startNativeLiveScanner() {
@@ -4311,11 +4340,7 @@ function startNativeLiveScanner() {
         if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
         _nativeScanBusy = true;
         try {
-          const maxSide = 900;
-          const s = Math.min(maxSide / Math.max(video.videoWidth, video.videoHeight), 1);
-          canvas.width  = Math.round(video.videoWidth * s);
-          canvas.height = Math.round(video.videoHeight * s);
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          drawDisplayedVideoFrame(video, canvas, ctx);
           for (const variant of buildLiveScannerVariants(canvas)) {
             const hits = await detector.detect(variant);
             if (hits && hits.length && hits[0].rawValue) {
@@ -4387,9 +4412,10 @@ function initScanner() {
         {
           fps: 10,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-            const size = Math.floor(Math.min(280, minEdge * 0.72));
-            return { width: size, height: size };
+            return {
+              width: Math.floor(viewfinderWidth * 0.76),
+              height: Math.floor(viewfinderHeight * 0.52),
+            };
           },
           aspectRatio: 1.6,
           ...(formatsToSupport.length ? { formatsToSupport } : {})
