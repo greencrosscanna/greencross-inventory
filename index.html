@@ -241,7 +241,7 @@
 
   /* ── LL Order Sheet modal ── */
   /* ── Scanner tab — visibility controlled programmatically after inventory loads ── */
-  .scanner-tab { display: none !important; }
+  .scanner-tab { display: none; }
 
   .scanner-wrap {
     display: flex; flex-direction: column; height: calc(100vh - 110px);
@@ -3034,7 +3034,7 @@ async function loadInventoryData() {
 
     state.inventoryData = allProducts;
     const scanBtn = document.getElementById('scannerTabBtn');
-    if (scanBtn) scanBtn.style.display = '';
+    if (scanBtn) scanBtn.style.display = 'inline-flex';
     buildInvFilterOptions(allProducts);
     clearInterval(_quoteTimer);
 
