@@ -4295,6 +4295,11 @@ function initScanner() {
         { facingMode: 'environment' },
         {
           fps: 10,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+            const size = Math.floor(Math.min(280, minEdge * 0.72));
+            return { width: size, height: size };
+          },
           aspectRatio: 1.6,
           ...(formatsToSupport.length ? { formatsToSupport } : {})
         },
@@ -4408,10 +4413,13 @@ function handleScannerFile(input) {
   function buildScannerDecodeVariants(src) {
     const out = [{ label: 'full', canvas: src }];
     const w = src.width, h = src.height;
-    // Dutchie labels often put a tiny QR at the left side of the price/product band.
-    addCropVariant(out, src, 'left-label', 0, h * 0.28, w * 0.55, h * 0.34, 2.4);
-    addCropVariant(out, src, 'label-band', w * 0.04, h * 0.28, w * 0.80, h * 0.36, 2.0);
-    addCropVariant(out, src, 'mid-left', 0, h * 0.18, w * 0.58, h * 0.46, 2.0);
+    // Dutchie labels often put a tiny QR near the left edge of the price/product band.
+    // Try tight square-ish QR crops before the broader barcode crops.
+    addCropVariant(out, src, 'qr-left-mid', 0, h * 0.34, w * 0.34, h * 0.26, 3.0);
+    addCropVariant(out, src, 'qr-left-upper', 0, h * 0.24, w * 0.34, h * 0.26, 3.0);
+    addCropVariant(out, src, 'qr-label-left', 0, h * 0.30, w * 0.42, h * 0.34, 2.8);
+    addCropVariant(out, src, 'label-band', w * 0.04, h * 0.30, w * 0.84, h * 0.36, 2.0);
+    addCropVariant(out, src, 'mid-left', 0, h * 0.18, w * 0.58, h * 0.50, 2.0);
     addCropVariant(out, src, 'center', w * 0.18, h * 0.22, w * 0.64, h * 0.52, 1.8);
     // A few broad overlapping tiles catch labels that are rotated or framed differently.
     addCropVariant(out, src, 'tile-lu', 0, h * 0.12, w * 0.55, h * 0.42, 1.8);
