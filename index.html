@@ -4209,6 +4209,8 @@ let _scannerActive = false;
 let _nativeScanTimer = null;
 let _nativeScanBusy = false;
 let _jsQrLoading = false;
+let _scanDiagTimer = null;
+const SCAN_DIAG = { frames: 0, variants: 0, jq: 'na', bd: 'na', last: '' };
 
 const CAT_EMOJI = {
   'Flower': '🌿', 'Pre-Roll': '🚬', '1g Pre-Roll': '🚬', 'Infused Pre-Roll': '🚬',
@@ -4246,6 +4248,34 @@ function showFileArea(msg) {
   _scanner = null;
 }
 
+function scanDiagText() {
+  return `scan frames:${SCAN_DIAG.frames} vars:${SCAN_DIAG.variants} jsQR:${SCAN_DIAG.jq} BD:${SCAN_DIAG.bd} ${SCAN_DIAG.last}`;
+}
+
+function renderScannerDebugBase() {
+  const result = document.getElementById('scannerResult');
+  if (!result) return;
+  const isMob = document.documentElement.classList.contains('is-mobile') || document.body?.classList.contains('is-mobile');
+  result.innerHTML = `<div id="scannerDiagLine" style="font-size:10px;color:var(--muted);font-family:monospace;padding:8px 0;line-height:1.6">` +
+    `sw:${screen.width} iw:${window.innerWidth} mob:${isMob} inv:${(state.inventoryData||[]).length}<br>` +
+    `ua:${(navigator.userAgent||'').slice(0,60)}<br>${scanDiagText()}</div>`;
+}
+
+function updateScannerDiagLine() {
+  const el = document.getElementById('scannerDiagLine');
+  if (el) el.innerHTML = el.innerHTML.replace(/scan frames:.*$/, scanDiagText());
+}
+
+function startScannerDiagnostics() {
+  if (_scanDiagTimer) return;
+  _scanDiagTimer = setInterval(updateScannerDiagLine, 1000);
+}
+
+function stopScannerDiagnostics() {
+  if (_scanDiagTimer) clearInterval(_scanDiagTimer);
+  _scanDiagTimer = null;
+}
+
 function handleScannerCode(code) {
   if (!code) return;
   stopScanner();
@@ -4261,6 +4291,7 @@ function stopNativeLiveScanner() {
   if (_nativeScanTimer) clearInterval(_nativeScanTimer);
   _nativeScanTimer = null;
   _nativeScanBusy = false;
+  stopScannerDiagnostics();
 }
 
 function makeScannerCrop(src, x, y, w, h, scale = 1.8) {
@@ -4301,13 +4332,16 @@ function buildLiveScannerVariants(src) {
 }
 
 function decodeWithJsQR(canvas) {
-  if (!window.jsQR) return null;
+  if (!window.jsQR) { SCAN_DIAG.jq = _jsQrLoading ? 'loading' : 'missing'; return null; }
   try {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const hit = window.jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+    SCAN_DIAG.jq = hit && hit.data ? 'hit' : '0';
     return hit && hit.data ? hit.data : null;
   } catch(e) {
+    SCAN_DIAG.jq = 'err';
+    SCAN_DIAG.last = 'jq:' + String(e && e.message || e).slice(0, 24);
     return null;
   }
 }
@@ -4317,8 +4351,16 @@ function loadJsQR() {
   _jsQrLoading = true;
   const s = document.createElement('script');
   s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
-  s.onload = () => { _jsQrLoading = false; };
-  s.onerror = () => { _jsQrLoading = false; };
+  s.onload = () => { _jsQrLoading = false; SCAN_DIAG.jq = 'loaded'; };
+  s.onerror = () => {
+    _jsQrLoading = false;
+    SCAN_DIAG.jq = 'cdn-err';
+    const f = document.createElement('script');
+    f.src = 'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js';
+    f.onload = () => { SCAN_DIAG.jq = 'loaded2'; };
+    f.onerror = () => { SCAN_DIAG.jq = 'cdn2-err'; };
+    document.head.appendChild(f);
+  };
   document.head.appendChild(s);
 }
 
@@ -4357,9 +4399,12 @@ function startNativeLiveScanner() {
       .then(formats => {
         const wanted = ['qr_code', 'ean_13', 'upc_a', 'code_128', 'code_39', 'data_matrix'];
         const useFormats = wanted.filter(f => formats.includes(f));
+        SCAN_DIAG.bd = useFormats.length ? useFormats.length + 'fmts' : '0fmts';
         return useFormats.length ? new BarcodeDetector({ formats: useFormats }) : null;
       })
-      .catch(() => null);
+      .catch(e => { SCAN_DIAG.bd = 'err'; SCAN_DIAG.last = 'bd:' + String(e && e.message || e).slice(0, 24); return null; });
+  } else {
+    SCAN_DIAG.bd = 'missing';
   }
   _nativeScanTimer = setInterval(async () => {
     if (_nativeScanBusy || !_scannerActive) return;
@@ -4369,7 +4414,10 @@ function startNativeLiveScanner() {
     try {
       const detector = detectorPromise ? await detectorPromise : null;
       drawDisplayedVideoFrame(video, canvas, ctx);
-      for (const variant of buildLiveScannerVariants(canvas)) {
+      const variants = buildLiveScannerVariants(canvas);
+      SCAN_DIAG.frames++;
+      SCAN_DIAG.variants = variants.length;
+      for (const variant of variants) {
         const qrHit = decodeWithJsQR(variant);
         if (qrHit) {
           handleScannerCode(qrHit);
@@ -4378,6 +4426,7 @@ function startNativeLiveScanner() {
         if (detector) {
           const hits = await detector.detect(variant);
           if (hits && hits.length && hits[0].rawValue) {
+            SCAN_DIAG.bd = 'hit';
             handleScannerCode(hits[0].rawValue);
             return;
           }
@@ -4385,6 +4434,7 @@ function startNativeLiveScanner() {
       }
     } catch(e) {
       // Non-fatal; html5-qrcode continues scanning in parallel.
+      SCAN_DIAG.last = 'live:' + String(e && e.message || e).slice(0, 24);
     } finally {
       _nativeScanBusy = false;
     }
@@ -4396,13 +4446,7 @@ function initScanner() {
   const hint = document.getElementById('scannerHint');
 
   // Debug info — always overwrite result area so we can see current state.
-  const result = document.getElementById('scannerResult');
-  if (result) {
-    const isMob = document.documentElement.classList.contains('is-mobile') || document.body?.classList.contains('is-mobile');
-    result.innerHTML = `<div style="font-size:10px;color:var(--muted);font-family:monospace;padding:8px 0;line-height:1.6">` +
-      `sw:${screen.width} iw:${window.innerWidth} mob:${isMob} inv:${(state.inventoryData||[]).length}<br>` +
-      `ua:${(navigator.userAgent||'').slice(0,60)}</div>`;
-  }
+  renderScannerDebugBase();
 
   // Load server-side UPC map once (lazy, non-blocking)
   if (!state.upcMap) {
@@ -4461,6 +4505,7 @@ function initScanner() {
       ).then(() => {
         _scannerActive = true;
         hint.textContent = 'Point at a product barcode or QR label';
+        startScannerDiagnostics();
         startNativeLiveScanner();
       }).catch(err => {
         // Permission denied or camera unavailable
