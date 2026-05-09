@@ -4208,6 +4208,7 @@ let _scanner = null;
 let _scannerActive = false;
 let _nativeScanTimer = null;
 let _nativeScanBusy = false;
+let _jsQrLoading = false;
 
 const CAT_EMOJI = {
   'Flower': '🌿', 'Pre-Roll': '🚬', '1g Pre-Roll': '🚬', 'Infused Pre-Roll': '🚬',
@@ -4299,6 +4300,28 @@ function buildLiveScannerVariants(src) {
   return variants;
 }
 
+function decodeWithJsQR(canvas) {
+  if (!window.jsQR) return null;
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const hit = window.jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+    return hit && hit.data ? hit.data : null;
+  } catch(e) {
+    return null;
+  }
+}
+
+function loadJsQR() {
+  if (window.jsQR || _jsQrLoading) return;
+  _jsQrLoading = true;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+  s.onload = () => { _jsQrLoading = false; };
+  s.onerror = () => { _jsQrLoading = false; };
+  document.head.appendChild(s);
+}
+
 function drawDisplayedVideoFrame(video, canvas, ctx) {
   const area = document.getElementById('scannerCamArea');
   const rect = area ? area.getBoundingClientRect() : video.getBoundingClientRect();
@@ -4325,37 +4348,47 @@ function drawDisplayedVideoFrame(video, canvas, ctx) {
 }
 
 function startNativeLiveScanner() {
-  if (!('BarcodeDetector' in window) || _nativeScanTimer) return;
-  BarcodeDetector.getSupportedFormats()
-    .then(formats => {
-      const wanted = ['qr_code', 'ean_13', 'upc_a', 'code_128', 'code_39', 'data_matrix'];
-      const useFormats = wanted.filter(f => formats.includes(f));
-      if (!useFormats.length) return;
-      const detector = new BarcodeDetector({ formats: useFormats });
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      _nativeScanTimer = setInterval(async () => {
-        if (_nativeScanBusy || !_scannerActive) return;
-        const video = document.querySelector('#scannerCamInner video');
-        if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
-        _nativeScanBusy = true;
-        try {
-          drawDisplayedVideoFrame(video, canvas, ctx);
-          for (const variant of buildLiveScannerVariants(canvas)) {
-            const hits = await detector.detect(variant);
-            if (hits && hits.length && hits[0].rawValue) {
-              handleScannerCode(hits[0].rawValue);
-              return;
-            }
-          }
-        } catch(e) {
-          // Non-fatal; html5-qrcode continues scanning in parallel.
-        } finally {
-          _nativeScanBusy = false;
+  if (_nativeScanTimer) return;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  let detectorPromise = null;
+  if ('BarcodeDetector' in window) {
+    detectorPromise = BarcodeDetector.getSupportedFormats()
+      .then(formats => {
+        const wanted = ['qr_code', 'ean_13', 'upc_a', 'code_128', 'code_39', 'data_matrix'];
+        const useFormats = wanted.filter(f => formats.includes(f));
+        return useFormats.length ? new BarcodeDetector({ formats: useFormats }) : null;
+      })
+      .catch(() => null);
+  }
+  _nativeScanTimer = setInterval(async () => {
+    if (_nativeScanBusy || !_scannerActive) return;
+    const video = document.querySelector('#scannerCamInner video');
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+    _nativeScanBusy = true;
+    try {
+      const detector = detectorPromise ? await detectorPromise : null;
+      drawDisplayedVideoFrame(video, canvas, ctx);
+      for (const variant of buildLiveScannerVariants(canvas)) {
+        const qrHit = decodeWithJsQR(variant);
+        if (qrHit) {
+          handleScannerCode(qrHit);
+          return;
         }
-      }, 350);
-    })
-    .catch(() => {});
+        if (detector) {
+          const hits = await detector.detect(variant);
+          if (hits && hits.length && hits[0].rawValue) {
+            handleScannerCode(hits[0].rawValue);
+            return;
+          }
+        }
+      }
+    } catch(e) {
+      // Non-fatal; html5-qrcode continues scanning in parallel.
+    } finally {
+      _nativeScanBusy = false;
+    }
+  }, 350);
 }
 
 function initScanner() {
@@ -4379,6 +4412,7 @@ function initScanner() {
       .then(m => { state.upcMap = m || {}; })
       .catch(() => {});
   }
+  loadJsQR();
 
   // Non-secure context (HTTP on non-localhost): getUserMedia is blocked.
   if (!window.isSecureContext) {
@@ -4542,6 +4576,9 @@ function handleScannerFile(input) {
   // Decoder 1 — native iOS/Android BarcodeDetector API (iOS 17+, no library needed)
   // Handles EAN-13, UPC-A, QR, Code128, etc. natively and very reliably.
   function tryNativeBarcodeDetector(canvas) {
+    const qrHit = decodeWithJsQR(canvas);
+    if (qrHit) { _decoderLog += 'JQ:hit '; finishSuccess(qrHit); return; }
+    if (!window.jsQR && !_jsQrLoading) loadJsQR();
     if (!('BarcodeDetector' in window)) { _decoderLog += 'BD:na '; tryHtml5QR(canvas); return; }
     BarcodeDetector.getSupportedFormats().then(formats => {
       _decoderLog += `BD:${formats.length}fmts `;
