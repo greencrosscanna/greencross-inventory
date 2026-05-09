@@ -2638,7 +2638,10 @@ function init() {
       if (state.tab === 'flags') renderFlags();
       if (state.tab === 'orders') renderOrders();
       if (state.tab === 'transfers') renderTransfers();
-      if (state.tab === 'scanner') initScanner();
+      const isScanner = state.tab === 'scanner';
+      const ctrlBar = document.querySelector('.controls-bar');
+      if (ctrlBar) ctrlBar.style.display = isScanner ? 'none' : '';
+      if (isScanner) initScanner();
       else stopScanner();
     });
   });
@@ -4668,7 +4671,7 @@ function renderScanResult(products, code, vel) {
       const qtyTxt = p.qty > 0 ? p.qty : 'OOS';
       const qtyStyle = p.qty > 0 ? '' : 'color:var(--muted)';
       const shortStore = p.store.replace(' - Green Cross Cannabis Emporium','').replace('Green Cross','GX');
-      return `<div class="scan-store-row" onclick="toggleStoreHistory(this,'${p.store}','${p.sku.replace(/'/g,"\\'")}')" style="cursor:pointer">
+      return `<div class="scan-store-row" onclick="toggleStoreHistory(this,'${p.store}','${p.name.replace(/'/g,"\\'").replace(/"/g,'&quot;')}')" style="cursor:pointer">
         <span class="scan-store-name">${shortStore}</span>
         <span class="scan-store-qty" style="${qtyStyle}">${qtyTxt}</span>
         <span class="scan-store-doh">${pdoh}</span>
@@ -4748,7 +4751,7 @@ function toggleStoreHistory(rowEl, store, sku) {
   if (histEl.dataset.loaded) { histEl.style.display = 'block'; return; }
   histEl.style.display = 'block';
   histEl.innerHTML = '<div style="padding:8px;color:var(--muted);font-size:12px">Loading…</div>';
-  fetch(PROXY_URL + '?action=storetxhistory&store=' + encodeURIComponent(store) + '&sku=' + encodeURIComponent(sku) + '&days=30')
+  fetch(PROXY_URL + '?action=storetxhistory&store=' + encodeURIComponent(store) + '&name=' + encodeURIComponent(sku) + '&days=30')
     .then(r => r.json())
     .then(data => {
       histEl.dataset.loaded = '1';
