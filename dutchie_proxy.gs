@@ -623,6 +623,48 @@ function productKey_(p) {
   return String(p.sku || p.name || '').trim();
 }
 
+function transferDays_(a, b) {
+  const salem = { 'Center': true, 'Commercial': true, 'Portland Rd': true, 'River Rd': true };
+  const aS = !!salem[a], bS = !!salem[b];
+  if (aS && bS) return 3;
+  if (aS || bS) return 7;
+  return 10;
+}
+
+function loadExistingDecisionDonors_(targetSet) {
+  try {
+    const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return [];
+    const values = sheet.getDataRange().getValues();
+    const headers = values.shift().map(h => String(h || ''));
+    const idx = {};
+    headers.forEach((h, i) => { idx[h] = i; });
+    return values
+      .filter(r => !targetSet.has(String(r[idx.store] || '')))
+      .map(r => ({
+        store: String(r[idx.store] || ''),
+        name: String(r[idx.productName] || ''),
+        sku: String(r[idx.sku] || ''),
+        brand: String(r[idx.brand] || ''),
+        category: String(r[idx.category] || ''),
+        qty: Number(r[idx.qty] || 0),
+        vel7: 0,
+        vel14: Number(r[idx.vel14] || 0),
+        vel30: 0,
+        sold7: Number(r[idx.sold7] || 0),
+        sold14: Number(r[idx.sold14] || 0),
+        sold28: Number(r[idx.sold28] || 0),
+        doh: r[idx.doh] === '' ? null : Number(r[idx.doh] || 0),
+        status: String(r[idx.status] || ''),
+      }))
+      .filter(r => r.store && r.name);
+  } catch (err) {
+    Logger.log('loadExistingDecisionDonors_ failed: ' + err.message);
+    return [];
+  }
+}
+
 function buildDecisionFeedRows(targetStores) {
   const generatedAt = new Date().toISOString();
   const velMap = buildVelocityMap();
@@ -632,9 +674,17 @@ function buildDecisionFeedRows(targetStores) {
   const flagged = new Set(shared.flagged || []);
   const byKey = {};
   const rows = [];
-  const storesToBuild = targetStores && targetStores.length ? targetStores : STORES;
+  const targetSet = new Set((targetStores && targetStores.length ? targetStores : STORES));
 
-  for (const store of storesToBuild) {
+  if (targetSet.size < STORES.length) {
+    for (const donor of loadExistingDecisionDonors_(targetSet)) {
+      const key = productKey_(donor);
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(donor);
+    }
+  }
+
+  for (const store of targetSet) {
     const inv = getInventory({ store });
     if (inv.error) continue;
     for (const p of inv.products || []) {
@@ -662,7 +712,7 @@ function buildDecisionFeedRows(targetStores) {
       const key = productKey_(full);
       if (!byKey[key]) byKey[key] = [];
       byKey[key].push(full);
-      rows.push(full);
+      if (targetSet.has(store)) rows.push(full);
     }
   }
 
@@ -697,15 +747,36 @@ function buildDecisionFeedRows(targetStores) {
 
     const needsReplenishment = recommendedOrderQty > 0 || p.status === 'oos' || p.status === 'critical' || p.status === 'low';
     if (needsReplenishment) {
-      const donor = (byKey[productKey_(p)] || [])
-        .filter(d => d.store !== p.store && (d.qty || 0) >= (rule.transferMinQty || 1) && (d.doh == null || d.doh > targetDays * 1.5))
-        .sort((a, b) => (b.qty || 0) - (a.qty || 0))[0];
+      const minTransferQty = rule.transferMinQty || 1;
+      const recipientVel = p.vel14 || p.vel30 || p.vel7 || 0;
+      const recipientNeed = Math.max(recommendedOrderQty || 0, Math.ceil(recipientVel * targetDays) || 0, minTransferQty);
+      const donors = (byKey[productKey_(p)] || [])
+        .filter(d => d.store !== p.store && (d.qty || 0) >= minTransferQty)
+        .map(d => {
+          const days = transferDays_(d.store, p.store);
+          const donorVel = d.vel14 || d.vel30 || d.vel7 || 0;
+          const reserveDays = days + safetyStockDays + targetDays;
+          const reserveQty = donorVel > 0 ? Math.ceil(donorVel * reserveDays) : minTransferQty;
+          const safeQty = Math.floor((d.qty || 0) - reserveQty);
+          const postDoh = donorVel > 0 ? ((d.qty || 0) - Math.min(safeQty, recipientNeed)) / donorVel : 999;
+          return { ...d, days, donorVel, safeQty, postDoh };
+        })
+        .filter(d => d.safeQty >= minTransferQty)
+        .sort((a, b) =>
+          a.days - b.days ||
+          b.safeQty - a.safeQty ||
+          (b.doh || 0) - (a.doh || 0) ||
+          (b.qty || 0) - (a.qty || 0)
+        );
+      const donor = donors[0];
       if (donor) {
         donorStore = donor.store;
-        recommendedTransferQty = Math.min(recommendedOrderQty || rule.transferMinQty || 1, Math.max(0, Math.floor(donor.qty - Math.max(1, donor.vel14 * targetDays))));
+        recommendedTransferQty = Math.min(donor.safeQty, recipientNeed);
         if (recommendedTransferQty > 0) {
           reasonCodes.push('TRANSFER_AVAILABLE');
-          if (transferFirst) recommendedOrderQty = 0;
+          recommendedOrderQty = transferFirst
+            ? 0
+            : Math.max(0, recommendedOrderQty - recommendedTransferQty);
         }
       }
     }
@@ -767,10 +838,13 @@ function generateBetaDecisionFeed(params) {
 function removeDecisionFeedStoreRows_(sheet, store) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  const stores = sheet.getRange(2, 2, lastRow - 1, 1).getValues().map(r => String(r[0] || ''));
-  for (let i = stores.length - 1; i >= 0; i--) {
-    if (stores[i] === store) sheet.deleteRow(i + 2);
-  }
+  const values = sheet.getDataRange().getValues();
+  const header = values.shift();
+  const kept = values.filter(r => String(r[1] || '') !== store);
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  if (kept.length) sheet.getRange(2, 1, kept.length, header.length).setValues(kept);
+  sheet.setFrozenRows(1);
 }
 
 function readBetaDecisionFeed(params) {

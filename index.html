@@ -2841,7 +2841,16 @@ function queueBetaFilter() {
 }
 
 function betaDecisionKey(store, sku, name) {
-  return String(store || '') + '::' + (String(sku || '').trim() || normName(name || ''));
+  return String(store || '') + '::' + (String(sku || '').trim() || betaNormName(name || ''));
+}
+
+function betaNormName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/\b(\d+)\s*pack\b/g, '$1pk')
+    .replace(/\b(\d+)\s*piece\b/g, '$1pc')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function buildBetaDecisionMap(rows) {
@@ -4180,11 +4189,34 @@ function renderInventory() {
     return `<div class="buyer-rec-line"${title ? ` title="${escapeHtml(title)}"` : ''}>${parts.join('')}</div>`;
   }
 
+  function mkGroupBuyerRecLine(items) {
+    if (!state.betaEnabled || !items || !items.length) return '';
+    let orderQty = 0, transferQty = 0, reviewCount = 0;
+    const contexts = new Set();
+    for (const p of items) {
+      const d = betaDecisionForProduct(p);
+      if (!d) continue;
+      orderQty += d.recommendedOrderQty || 0;
+      transferQty += d.recommendedTransferQty || 0;
+      const reasons = String(d.reasonCodes || '').split(',').filter(Boolean);
+      if (!(d.recommendedOrderQty > 0) && !(d.recommendedTransferQty > 0) && reasons.length) reviewCount++;
+      if (reasons.includes('GREEN_CROSS_OVERSTOCK')) contexts.add('GC');
+      if (reasons.includes('LONG_LEAD_SKU')) contexts.add('Long lead');
+      if (reasons.includes('TRANSFER_FIRST')) contexts.add('Transfer first');
+    }
+    const parts = [];
+    if (orderQty > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${orderQty}</span>`);
+    if (transferQty > 0) parts.push(`<span class="buyer-rec-pill transfer">Move ${transferQty}</span>`);
+    if (!parts.length && reviewCount > 0) parts.push(`<span class="buyer-rec-pill review">Review ${reviewCount}</span>`);
+    for (const ctx of contexts) parts.push(`<span class="buyer-rec-pill context">${escapeHtml(ctx)}</span>`);
+    return parts.length ? `<div class="buyer-rec-line">${parts.join('')}</div>` : '';
+  }
+
   function betaTransferSuggestionFor(p, d) {
     if (!d || !d.donorStore || !(d.recommendedTransferQty > 0)) return null;
     const donor = (state.inventoryData || []).find(x =>
       x.store === d.donorStore &&
-      ((p.sku && x.sku === p.sku) || normName(x.name) === normName(p.name))
+      ((p.sku && x.sku === p.sku) || betaNormName(x.name) === betaNormName(p.name))
     );
     if (!donor) return null;
     const qty = Math.min(d.recommendedTransferQty, donor.qty || d.recommendedTransferQty);
@@ -4290,7 +4322,7 @@ function renderInventory() {
       <td class="name-cell">
         <div class="prod-name" title="${agg.name}"><span class="grp-toggle${expanded ? ' open' : ''}">▶</span>${agg.name}${agg.isNew ? '<span class="tag tag-new">New</span>' : ''}${agg.isHot ? '<span class="tag tag-hot">Hot</span>' : ''}${agg.isDead ? '<span class="tag tag-dead">Dead</span>' : ''}${agg.isBackstock ? '<span class="tag tag-back">Back Stock</span>' : ''}${suggestions.length ? '<span style="margin-left:6px;color:var(--green);font-size:12px;font-weight:700;opacity:.85" title="Transfer opportunity available">↔</span>' : ''}${mkLLBadge(agg)}</div>
         <div class="prod-brand" onclick="event.stopPropagation()" style="user-select:text;cursor:text">${agg.sku ? agg.sku + ' · ' : ''}${agg.vendor || agg.brand}</div>
-        ${items.map(mkBuyerRecLine).filter(Boolean).slice(0, 3).join('')}
+        ${mkGroupBuyerRecLine(items)}
       </td>
       <td><div class="grp-store-dots">${storeDots}</div></td>
       <td title="${agg.category}">${fmtCat(agg.category)}</td>
