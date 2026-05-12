@@ -1010,6 +1010,8 @@ function readBetaDecisionFeed(params) {
   const headers = values.shift().map(h => String(h || ''));
   const idx = {};
   headers.forEach((h, i) => { idx[h] = i; });
+  const missingCols = DECISION_FEED_COLS.filter(col => idx[col] == null);
+  const schemaStale = missingCols.length > 0 || headers.join('|') !== DECISION_FEED_COLS.join('|');
   const store = String(params.store || '').trim();
   const status = String(params.status || '').trim().toLowerCase();
   const reason = String(params.reason || '').trim().toUpperCase();
@@ -1074,6 +1076,9 @@ function readBetaDecisionFeed(params) {
     rows,
     total,
     summary,
+    schemaStale,
+    missingCols,
+    expectedCols: DECISION_FEED_COLS,
     limited: total > rows.length,
     spreadsheetId: BETA_SPREADSHEET_ID,
     generatedAt: rows[0] ? rows[0].generatedAt : '',
