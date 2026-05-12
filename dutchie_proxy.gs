@@ -14,18 +14,11 @@ const SKU_OVERRIDES_SHEET_NAME     = 'Config - SKU Overrides';
 const REORDER_RULES_SHEET_NAME     = 'Config - Reorder Rules';
 const VENDOR_LEAD_TIMES_SHEET_NAME = 'Config - Vendor Lead Times';
 const DECISION_FEED_SHEET_NAME     = 'Decision Feed';
+const SHARED_STATE_SHEET_NAME      = 'Shared State';
 const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 
-const STORE_KEYS = {
-  'Bend':        '77e157f3fcdf43d9864daf0420df8c97',
-  'Center':      '6a7e9c3187a6471d8a0a2d05cfa92023',
-  'Commercial':  'd97da3cef3f74dd087cee7d4239a851d',
-  'Hillsboro':   'a2de33457b8f4d35972d3c47832207eb',
-  'Portland Rd': '5671f32c2c2a4756811e9513945815f4',
-  'River Rd':    '5212417431014845a6db39bcb4ccef6b',
-};
-
-const STORES = Object.keys(STORE_KEYS);
+const STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
+const DUTCHIE_STORE_KEYS_PROP = 'DUTCHIE_STORE_KEYS_JSON';
 
 const SHEET_GIDS = {
   income: 1548231883,
@@ -38,6 +31,9 @@ const SHEET_GIDS = {
 const LEAD_TIME_DAYS    = 5;
 const SAFETY_STOCK_DAYS = 7;
 const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 12 days
+const GC_USERS_KEY      = 'gc_users';
+const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
+const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function getDataMode() {
   return (PropertiesService.getScriptProperties().getProperty('GC_DATA_MODE') || 'live').toLowerCase();
@@ -52,9 +48,11 @@ function testEmail() {
   MailApp.sendEmail('sky@greencrosscanna.com', '🐞 Bug Reporter Test', 'Mail scope is working — bug reports will now send emails.');
 }
 
-// Run once from the editor to store the LeafLink API key securely
-function setLeafLinkKey() {
-  PropertiesService.getScriptProperties().setProperty('LL_API_KEY', 'db595e95a1b64d0c3265e73f98a35e4d925a34aeb24f7459ff3e1a5debc15fb5');
+// Run once from the editor to store the LeafLink API key securely.
+// Do not expose this as an HTTP route.
+function setLeafLinkKeyFromValue_(apiKey) {
+  if (!apiKey) throw new Error('Pass the LeafLink API key as the apiKey argument.');
+  PropertiesService.getScriptProperties().setProperty('LL_API_KEY', String(apiKey).trim());
   Logger.log('LeafLink API key saved.');
 }
 
@@ -67,6 +65,9 @@ function doGet(e) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
   try {
+    if (params.action === 'login') return jsonOut(loginUser(params), params.callback);
+    const auth = requireAuth_(params);
+    if (!auth.ok) return jsonOut(auth);
     // Inventory
     if (params.action === 'inventory')      return jsonOut(getInventory(params));
     if (params.action === 'inventorylive')  return jsonOut(getLiveInventory(params));
@@ -78,11 +79,10 @@ function doGet(e) {
     if (params.action === 'velclear')       return jsonOut(clearVelCache());
     if (params.action === 'velbackfill')       return jsonOut(velBackfillChunk(params));
     if (params.action === 'velbackfillstatus') return jsonOut(velBackfillStatus());
-    if (params.action === 'login')             return jsonOut(loginUser(params));
-    if (params.action === 'getstate')          return jsonOut(getSharedState());
-    if (params.action === 'sharedkill')        return jsonOut(sharedKill(params.key, params.ts));
-    if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params.key));
-    if (params.action === 'sharedflag')        return jsonOut(sharedFlag(params.key));
+    if (params.action === 'getstate')          return jsonOut(getSharedState(params));
+    if (params.action === 'sharedkill')        return jsonOut(sharedKill(params));
+    if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params));
+    if (params.action === 'sharedflag')        return jsonOut(sharedFlag(params));
     if (params.action === 'salesdiag')      return jsonOut(getSalesHistoryDiagnostics());
     if (params.action === 'apiexplore')     return jsonOut(exploreApi(params));
     if (params.action === 'skuprobe')       return jsonOut(skuRoomProbe(params));
@@ -117,15 +117,21 @@ function doGet(e) {
     if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
     if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
     if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
-    return jsonOut({ error: 'Unknown action' });
+    return jsonOut({ error: 'Unknown action' }, params.callback);
   } catch (err) {
-    return jsonOut({ error: err.message, stack: err.stack });
+    return jsonOut({ error: err.message, stack: err.stack }, params.callback);
   }
 }
 
-function jsonOut(obj) {
+function jsonOut(obj, callback) {
+  const body = JSON.stringify(obj);
+  if (callback && /^[A-Za-z_$][0-9A-Za-z_$]*$/.test(String(callback))) {
+    return ContentService
+      .createTextOutput(String(callback) + '(' + body + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
   return ContentService
-    .createTextOutput(JSON.stringify(obj))
+    .createTextOutput(body)
     .setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -200,9 +206,23 @@ function normalizeStoreName(raw) {
 }
 
 function dutchieAuth(store) {
-  const key = STORE_KEYS[store];
+  const key = getDutchieStoreKeys_()[store];
   if (!key) throw new Error('Unknown store: ' + store);
   return 'Basic ' + Utilities.base64Encode(key + ':');
+}
+
+function getDutchieStoreKeys_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(DUTCHIE_STORE_KEYS_PROP);
+  if (!raw) throw new Error('Dutchie store keys are not configured.');
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error('Dutchie store keys are invalid JSON.');
+  }
+}
+
+function isKnownStore(store) {
+  return !!getDutchieStoreKeys_()[store];
 }
 
 function parseSaleDate(raw) {
@@ -340,7 +360,7 @@ const INV_CACHE_TTL = 300; // seconds — 5 min server-side cache per store
 
 function getInventory(params) {
   const store = params.store;
-  if (!store || !STORE_KEYS[store]) return { error: 'Unknown store: ' + store };
+  if (!store || !isKnownStore(store)) return { error: 'Unknown store: ' + store };
 
   // Serve from GAS cache if fresh — prevents redundant Dutchie calls across users
   const scriptCache = CacheService.getScriptCache();
@@ -389,11 +409,14 @@ function getInventory(params) {
         qtySample:    0,
         value:        0,
         unitCost:     0,
+        unitPrice:    Number(item.unitPrice || item.price || item.retailPrice || item.defaultUnitPrice || item.medPrice || item.recPrice || 0),
         lastMod:      '',
         img:          item.imageUrl || item.productImageUrl || item.photo || '',
       };
     }
     const p = productMap[name];
+    const itemPrice = Number(item.unitPrice || item.price || item.retailPrice || item.defaultUnitPrice || item.medPrice || item.recPrice || 0);
+    if (itemPrice > 0) p.unitPrice = itemPrice;
 
     // Classification priority:
     // 1. roomQuantities array — direct per-package room split from Dutchie (most accurate)
@@ -494,6 +517,7 @@ function getInventory(params) {
       qtySample:     Math.round(p.qtySample     * 10) / 10,
       value:         Math.round(p.value        * 100) / 100,
       unitCost:      Math.round(p.unitCost     * 100) / 100,
+      unitPrice:     Math.round(p.unitPrice    * 100) / 100,
     };
   });
 
@@ -506,7 +530,8 @@ function getInventory(params) {
 const DECISION_FEED_COLS = [
   'generatedAt','store','productName','sku','brand','category','qty','sold7','sold14','sold28',
   'vel14','doh','status','recommendedOrderQty','recommendedTransferQty','donorStore',
-  'reasonCodes','confidence','openOrderQty','imageUrl','lastSeen','notes'
+  'reasonCodes','whyChips','confidence','openOrderQty','oosDays','lostUnits','missedRevenue',
+  'imageUrl','lastSeen','notes'
 ];
 
 function sheetToObjects_(sheetName, spreadsheetId) {
@@ -619,6 +644,76 @@ function roundToMultiple_(qty, multiple) {
   return Math.ceil(qty / m) * m;
 }
 
+function fmtChipNum_(n) {
+  const v = Number(n || 0);
+  if (Math.abs(v) >= 10 || v % 1 === 0) return String(Math.round(v));
+  return v.toFixed(1);
+}
+
+function buildWhyChips_(p, ctx) {
+  const chips = [];
+  if (ctx.missedRevenue > 0) chips.push('$' + fmtChipNum_(ctx.missedRevenue) + ' missed');
+  if (ctx.lostUnits > 0) chips.push('lost ' + fmtChipNum_(ctx.lostUnits) + 'u');
+  if (p.sold28 > 0) chips.push('sold28 ' + fmtChipNum_(p.sold28));
+  else if (p.sold14 > 0) chips.push('sold14 ' + fmtChipNum_(p.sold14));
+  else if (p.sold7 > 0) chips.push('sold7 ' + fmtChipNum_(p.sold7));
+  if (p.doh != null && p.doh !== '') chips.push((p.doh < 1 ? '<1' : fmtChipNum_(p.doh)) + ' DOH');
+  if (ctx.leadTimeDays) chips.push('lead ' + ctx.leadTimeDays + 'd');
+  if (ctx.safetyStockDays) chips.push('safety ' + ctx.safetyStockDays + 'd');
+  if (ctx.minOrderQty && ctx.minOrderQty > 1) chips.push('MOQ ' + ctx.minOrderQty);
+  if (ctx.orderMultiple && ctx.orderMultiple > 1) chips.push('mult ' + ctx.orderMultiple);
+  if (ctx.recommendedTransferQty > 0) chips.push('transfer ' + fmtChipNum_(ctx.recommendedTransferQty));
+  if (ctx.donorStore) chips.push('donor ' + ctx.donorStore);
+  if (ctx.recommendedOrderQty > 0) chips.push('buy ' + fmtChipNum_(ctx.recommendedOrderQty));
+  if (ctx.openOrderQty > 0) chips.push('open ' + fmtChipNum_(ctx.openOrderQty));
+  return chips.slice(0, 8).join('|');
+}
+
+function buildOosLastSeenMap_() {
+  try {
+    const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+    const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return {};
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
+    const lastSeen = {};
+    for (const row of data) {
+      const dateRaw = row[0], store = String(row[1] || '').trim();
+      const name = String(row[2] || '').trim(), sku = String(row[5] || '').trim();
+      if (!store || (!name && !sku)) continue;
+      const dateStr = dateRaw instanceof Date
+        ? dateRaw.toISOString().slice(0, 10)
+        : String(dateRaw).slice(0, 10);
+      const key = store + '::' + (sku || name);
+      if (!lastSeen[key] || dateStr > lastSeen[key]) lastSeen[key] = dateStr;
+      if (sku) {
+        const skuKey = store + '::' + sku;
+        if (!lastSeen[skuKey] || dateStr > lastSeen[skuKey]) lastSeen[skuKey] = dateStr;
+      }
+      if (name) {
+        const nameKey = store + '::' + name;
+        if (!lastSeen[nameKey] || dateStr > lastSeen[nameKey]) lastSeen[nameKey] = dateStr;
+      }
+    }
+    return lastSeen;
+  } catch (err) {
+    Logger.log('buildOosLastSeenMap_ failed: ' + err.message);
+    return {};
+  }
+}
+
+function estimateLostSales_(p, lastSeenMap, velocity) {
+  if (!p || p.status !== 'oos') return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
+  const lastSeen = lastSeenMap[p.store + '::' + (p.sku || '')] || lastSeenMap[p.store + '::' + (p.name || '')];
+  if (!lastSeen) return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
+  const oosStart = new Date(lastSeen + 'T12:00:00Z');
+  oosStart.setUTCDate(oosStart.getUTCDate() + 1);
+  const oosDays = Math.max(0, Math.floor((Date.now() - oosStart.getTime()) / 86400000));
+  const lostUnits = Math.round(Math.max(0, oosDays * (velocity || 0)) * 10) / 10;
+  const unitPrice = Number(p.unitPrice || 0);
+  const missedRevenue = unitPrice > 0 ? Math.round(lostUnits * unitPrice * 100) / 100 : 0;
+  return { oosDays, lostUnits, missedRevenue };
+}
+
 function productKey_(p) {
   return String(p.sku || p.name || '').trim();
 }
@@ -669,9 +764,10 @@ function buildDecisionFeedRows(targetStores) {
   const generatedAt = new Date().toISOString();
   const velMap = buildVelocityMap();
   const config = loadBetaDecisionConfig();
-  const shared = getSharedState();
+  const shared = getSharedState({ beta: '1' });
   const killed = shared.killed || {};
   const flagged = new Set(shared.flagged || []);
+  const oosLastSeen = buildOosLastSeenMap_();
   const byKey = {};
   const rows = [];
   const targetSet = new Set((targetStores && targetStores.length ? targetStores : STORES));
@@ -706,6 +802,7 @@ function buildDecisionFeedRows(targetStores) {
         sold7: vel.qty7 || Math.round(v7 * 7) || 0,
         sold14: vel.qty14 || Math.round(v14 * 14) || 0,
         sold28: vel.qty28 || Math.round((vel.vel28 || 0) * 28) || 0,
+        unitPrice: p.unitPrice || 0,
         doh,
         status,
       };
@@ -716,7 +813,30 @@ function buildDecisionFeedRows(targetStores) {
     }
   }
 
-  return rows.map(p => {
+  const priceByProductKey = {};
+  for (const p of rows) {
+    const key = productKey_(p);
+    if (key && p.unitPrice > 0 && !priceByProductKey[key]) priceByProductKey[key] = p.unitPrice;
+  }
+  for (const p of rows) {
+    if (!(p.unitPrice > 0)) p.unitPrice = priceByProductKey[productKey_(p)] || 0;
+  }
+
+  const statusRank = { oos: 0, critical: 1, low: 2, watch: 3, slow: 4, ok: 5 };
+  const donorRemainingByKey = {};
+  function donorRemainingFor_(productKey, donor) {
+    const k = productKey + '|' + donor.store;
+    if (donorRemainingByKey[k] == null) donorRemainingByKey[k] = donor.qty || 0;
+    return donorRemainingByKey[k];
+  }
+
+  const decisionInputs = rows.slice().sort((a, b) =>
+    (statusRank[a.status] == null ? 9 : statusRank[a.status]) - (statusRank[b.status] == null ? 9 : statusRank[b.status]) ||
+    (a.doh == null ? 999 : a.doh) - (b.doh == null ? 999 : b.doh) ||
+    (b.vel14 || b.vel30 || b.vel7 || 0) - (a.vel14 || a.vel30 || a.vel7 || 0)
+  );
+
+  return decisionInputs.map(p => {
     const sku = String(p.sku || '').trim();
     const override = config.skuOverrides[sku] || null;
     const rule = pickReorderRule_(p, config);
@@ -744,21 +864,29 @@ function buildDecisionFeedRows(targetStores) {
     let recommendedOrderQty = needed > 0 ? Math.max(minOrderQty, roundToMultiple_(needed, orderMultiple)) : 0;
     let recommendedTransferQty = 0;
     let donorStore = '';
+    const primaryVel = p.vel14 || p.vel30 || p.vel7 || 0;
+  const lostSales = estimateLostSales_(p, oosLastSeen, primaryVel);
+    if (lostSales.lostUnits > 0) reasonCodes.push('LOST_SALES_RISK');
 
     const needsReplenishment = recommendedOrderQty > 0 || p.status === 'oos' || p.status === 'critical' || p.status === 'low';
     if (needsReplenishment) {
       const minTransferQty = rule.transferMinQty || 1;
       const recipientVel = p.vel14 || p.vel30 || p.vel7 || 0;
-      const recipientNeed = Math.max(recommendedOrderQty || 0, Math.ceil(recipientVel * targetDays) || 0, minTransferQty);
-      const donors = (byKey[productKey_(p)] || [])
+      const productKey = productKey_(p);
+      const bridgeDays = Math.min(targetDays, 7);
+      const bridgeNeed = Math.max(0, Math.ceil(recipientVel * bridgeDays) - (p.qty || 0));
+      const cycleNeed = Math.max(recommendedOrderQty || 0, Math.ceil(recipientVel * targetDays) || 0);
+      const recipientNeed = Math.max(minTransferQty, bridgeNeed > 0 ? Math.min(cycleNeed || bridgeNeed, bridgeNeed) : cycleNeed);
+      const donors = (byKey[productKey] || [])
         .filter(d => d.store !== p.store && (d.qty || 0) >= minTransferQty)
         .map(d => {
           const days = transferDays_(d.store, p.store);
           const donorVel = d.vel14 || d.vel30 || d.vel7 || 0;
           const reserveDays = days + safetyStockDays + targetDays;
           const reserveQty = donorVel > 0 ? Math.ceil(donorVel * reserveDays) : minTransferQty;
-          const safeQty = Math.floor((d.qty || 0) - reserveQty);
-          const postDoh = donorVel > 0 ? ((d.qty || 0) - Math.min(safeQty, recipientNeed)) / donorVel : 999;
+          const remainingQty = donorRemainingFor_(productKey, d);
+          const safeQty = Math.floor(remainingQty - reserveQty);
+          const postDoh = donorVel > 0 ? (remainingQty - Math.min(safeQty, recipientNeed)) / donorVel : 999;
           return { ...d, days, donorVel, safeQty, postDoh };
         })
         .filter(d => d.safeQty >= minTransferQty)
@@ -774,9 +902,8 @@ function buildDecisionFeedRows(targetStores) {
         recommendedTransferQty = Math.min(donor.safeQty, recipientNeed);
         if (recommendedTransferQty > 0) {
           reasonCodes.push('TRANSFER_AVAILABLE');
-          recommendedOrderQty = transferFirst
-            ? 0
-            : Math.max(0, recommendedOrderQty - recommendedTransferQty);
+          donorRemainingByKey[productKey + '|' + donor.store] = Math.max(0, donorRemainingFor_(productKey, donor) - recommendedTransferQty);
+          recommendedOrderQty = Math.max(0, recommendedOrderQty - recommendedTransferQty);
         }
       }
     }
@@ -786,6 +913,19 @@ function buildDecisionFeedRows(targetStores) {
       : recommendedOrderQty > 0 ? 70
       : reasonCodes.length ? 60
       : 40;
+    const openOrderQty = 0;
+    const whyChips = buildWhyChips_(p, {
+      leadTimeDays,
+      safetyStockDays,
+      minOrderQty,
+      orderMultiple,
+      recommendedOrderQty,
+      recommendedTransferQty,
+      donorStore,
+      openOrderQty,
+      lostUnits: lostSales.lostUnits,
+      missedRevenue: lostSales.missedRevenue,
+    });
 
     return [
       generatedAt,
@@ -805,13 +945,17 @@ function buildDecisionFeedRows(targetStores) {
       recommendedTransferQty,
       donorStore,
       reasonCodes.join(','),
+      whyChips,
       confidence,
-      0,
+      openOrderQty,
+      lostSales.oosDays,
+      lostSales.lostUnits,
+      lostSales.missedRevenue,
       p.img || '',
       p.lastMod || '',
       (override && override.notes) || (vendorLead && vendorLead.buyerNotes) || rule.notes || '',
     ];
-  }).sort((a, b) => (b[17] - a[17]) || String(a[1]).localeCompare(String(b[1])) || String(a[2]).localeCompare(String(b[2])));
+  }).sort((a, b) => (b[18] - a[18]) || String(a[1]).localeCompare(String(b[1])) || String(a[2]).localeCompare(String(b[2])));
 }
 
 function generateBetaDecisionFeed(params) {
@@ -828,6 +972,11 @@ function generateBetaDecisionFeed(params) {
     sheet.clearContents();
     sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
   } else if (requestedStore) {
+    const existingCols = sheet.getLastColumn();
+    const headers = existingCols > 0 ? sheet.getRange(1, 1, 1, existingCols).getValues()[0].map(h => String(h || '')) : [];
+    if (headers.join('|') !== DECISION_FEED_COLS.join('|')) {
+      sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
+    }
     removeDecisionFeedStoreRows_(sheet, requestedStore);
   }
   if (rows.length) sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DECISION_FEED_COLS.length).setValues(rows);
@@ -869,6 +1018,8 @@ function readBetaDecisionFeed(params) {
 
   const rows = [];
   const summary = { orderLines: 0, transferLines: 0, killList: 0, orderUnits: 0, transferUnits: 0 };
+  summary.lostUnits = 0;
+  summary.missedRevenue = 0;
   let total = 0;
   for (const raw of values) {
     const rowStore = String(raw[idx.store] || '');
@@ -887,6 +1038,8 @@ function readBetaDecisionFeed(params) {
     if (orderQty > 0) { summary.orderLines++; summary.orderUnits += orderQty; }
     if (transferQty > 0) { summary.transferLines++; summary.transferUnits += transferQty; }
     if (rowReason.indexOf('KILL_LIST') !== -1) summary.killList++;
+    summary.lostUnits += Number(idx.lostUnits == null ? 0 : raw[idx.lostUnits] || 0);
+    summary.missedRevenue += Number(idx.missedRevenue == null ? 0 : raw[idx.missedRevenue] || 0);
     if (rows.length >= limit) continue;
     rows.push({
       generatedAt: raw[idx.generatedAt] || '',
@@ -906,7 +1059,11 @@ function readBetaDecisionFeed(params) {
       recommendedTransferQty: transferQty,
       donorStore: raw[idx.donorStore] || '',
       reasonCodes: raw[idx.reasonCodes] || '',
+      whyChips: idx.whyChips == null ? '' : (raw[idx.whyChips] || ''),
       confidence: Number(raw[idx.confidence] || 0),
+      oosDays: idx.oosDays == null ? 0 : Number(raw[idx.oosDays] || 0),
+      lostUnits: idx.lostUnits == null ? 0 : Number(raw[idx.lostUnits] || 0),
+      missedRevenue: idx.missedRevenue == null ? 0 : Number(raw[idx.missedRevenue] || 0),
       imageUrl: raw[idx.imageUrl] || '',
       notes: raw[idx.notes] || '',
     });
@@ -1342,7 +1499,7 @@ function getQuarantine(params) {
   const results = [];
 
   for (const store of targetStores) {
-    if (!STORE_KEYS[store]) continue;
+    if (!isKnownStore(store)) continue;
     const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
     const invRoomMap = buildInventoryRoomMap(store);
 
@@ -1992,7 +2149,7 @@ function getLiveInventory(params) {
   const allProducts = [];
 
   for (const store of targetStores) {
-    if (!STORE_KEYS[store]) continue;
+    if (!isKnownStore(store)) continue;
 
     let invResult;
     try {
@@ -2389,7 +2546,74 @@ function backfillSkuDict() {
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
 
-function getSharedState() {
+function isBetaRequest_(params) {
+  return params && (params.beta === '1' || params.mode === 'beta' || getDataMode() === 'beta');
+}
+
+function getOrCreateSharedStateSheet_() {
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(SHARED_STATE_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(SHARED_STATE_SHEET_NAME);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, 6).setValues([[
+      'stateType', 'stateKey', 'valueJson', 'updatedAt', 'updatedBy', 'notes'
+    ]]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function readBetaSharedState_() {
+  const sheet = getOrCreateSharedStateSheet_();
+  if (sheet.getLastRow() < 2) return { killed: {}, flagged: [] };
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
+  const killed = {};
+  const flagged = [];
+  for (const row of values) {
+    const type = String(row[0] || '').trim();
+    const key = String(row[1] || '').trim();
+    const valueJson = String(row[2] || '').trim();
+    if (!type || !key) continue;
+    if (type === 'killed') {
+      let ts = 0;
+      try { ts = Number(JSON.parse(valueJson).ts || 0); } catch(e) { ts = Number(valueJson || 0); }
+      killed[key] = ts || 0;
+    } else if (type === 'flagged') {
+      flagged.push(key);
+    }
+  }
+  return { killed, flagged };
+}
+
+function upsertBetaSharedState_(type, key, valueObj, notes) {
+  const sheet = getOrCreateSharedStateSheet_();
+  const now = new Date().toISOString();
+  const valueJson = JSON.stringify(valueObj || {});
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i][0]) === type && String(rows[i][1]) === key) {
+        sheet.getRange(i + 2, 3, 1, 4).setValues([[valueJson, now, 'app', notes || '']]);
+        return;
+      }
+    }
+  }
+  sheet.appendRow([type, key, valueJson, now, 'app', notes || '']);
+}
+
+function deleteBetaSharedState_(type, key) {
+  const sheet = getOrCreateSharedStateSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (String(rows[i][0]) === type && String(rows[i][1]) === key) sheet.deleteRow(i + 2);
+  }
+}
+
+function getSharedState(params) {
+  if (isBetaRequest_(params)) return readBetaSharedState_();
   const props = PropertiesService.getScriptProperties();
   return {
     killed:  JSON.parse(props.getProperty(SHARED_KILLED_KEY)  || '{}'),
@@ -2397,8 +2621,14 @@ function getSharedState() {
   };
 }
 
-function sharedKill(key, ts) {
+function sharedKill(params) {
+  const key = params.key;
+  const ts = params.ts;
   if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    upsertBetaSharedState_('killed', key, { ts: parseInt(ts) || Date.now() }, 'hidden from beta inventory');
+    return { ok: true, mode: 'beta' };
+  }
   const props = PropertiesService.getScriptProperties();
   const obj = JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}');
   obj[key] = parseInt(ts) || Date.now();
@@ -2406,8 +2636,13 @@ function sharedKill(key, ts) {
   return { ok: true, killed: Object.keys(obj).length };
 }
 
-function sharedUnkill(key) {
+function sharedUnkill(params) {
+  const key = params.key;
   if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    deleteBetaSharedState_('killed', key);
+    return { ok: true, mode: 'beta' };
+  }
   const props = PropertiesService.getScriptProperties();
   const obj = JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}');
   delete obj[key];
@@ -2415,8 +2650,15 @@ function sharedUnkill(key) {
   return { ok: true, killed: Object.keys(obj).length };
 }
 
-function sharedFlag(key) {
+function sharedFlag(params) {
+  const key = params.key;
   if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    const state = readBetaSharedState_();
+    if (state.flagged.includes(key)) deleteBetaSharedState_('flagged', key);
+    else upsertBetaSharedState_('flagged', key, { active: true }, 'flagged for beta buyer review');
+    return { ok: true, mode: 'beta' };
+  }
   const props = PropertiesService.getScriptProperties();
   const arr = JSON.parse(props.getProperty(SHARED_FLAGGED_KEY) || '[]');
   const s = new Set(arr);
@@ -2489,11 +2731,46 @@ function setUpcEntry(params) {
 }
 
 // ── User Authentication ────────────────────────────────────────────────────────
-const GC_USERS_KEY = 'gc_users';
-
 function hashPass(pass) {
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(pass));
   return bytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+}
+
+function sessionSecret_() {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty(GC_SESSION_SECRET_KEY);
+  if (!secret) {
+    secret = Utilities.getUuid() + ':' + Utilities.getUuid();
+    props.setProperty(GC_SESSION_SECRET_KEY, secret);
+  }
+  return secret;
+}
+
+function signSession_(payload) {
+  const sig = Utilities.computeHmacSha256Signature(payload, sessionSecret_());
+  return Utilities.base64EncodeWebSafe(sig);
+}
+
+function issueSessionToken_(user) {
+  const exp = Date.now() + GC_SESSION_TTL_MS;
+  const payload = [String(user).toLowerCase().trim(), exp].join(':');
+  return payload + ':' + signSession_(payload);
+}
+
+function validateSessionToken_(token) {
+  if (!token) return { ok: false, error: 'Auth required' };
+  const parts = String(token).split(':');
+  if (parts.length !== 3) return { ok: false, error: 'Invalid session' };
+  const user = parts[0];
+  const exp = Number(parts[1] || 0);
+  const payload = user + ':' + exp;
+  if (!user || !exp || Date.now() > exp) return { ok: false, error: 'Session expired' };
+  if (parts[2] !== signSession_(payload)) return { ok: false, error: 'Invalid session' };
+  return { ok: true, user: user };
+}
+
+function requireAuth_(params) {
+  return validateSessionToken_(params.token || params.session || params.auth || '');
 }
 
 function loginUser(params) {
@@ -2503,7 +2780,7 @@ function loginUser(params) {
   const key   = String(params.user).toLowerCase().trim();
   const hash  = hashPass(String(params.pass));
   if (users[key] && users[key] === hash) {
-    return { ok: true, user: key };
+    return { ok: true, user: key, token: issueSessionToken_(key), expiresAt: new Date(Date.now() + GC_SESSION_TTL_MS).toISOString() };
   }
   return { ok: false, error: 'Invalid username or password' };
 }
@@ -2517,7 +2794,7 @@ function getStoreTxHistory(params) {
   const name  = (params.name || params.sku || '').trim();
   const days  = Math.min(parseInt(params.days || '30'), 60);
   if (!store || !name) return { error: 'store and name params required' };
-  if (!STORE_KEYS[store]) return { error: 'Unknown store: ' + store };
+  if (!isKnownStore(store)) return { error: 'Unknown store: ' + store };
 
   // Step 1: find productId from the cached product catalog
   const prodDict  = buildProductIdDict();
@@ -2578,8 +2855,19 @@ function setupUsers_() {
   const props = PropertiesService.getScriptProperties();
   const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
   // Add users here — run from the GAS script editor, not via HTTP
-  // users['sky']   = hashPass('kahuna');
-  // users['tawny'] = hashPass('...');
+  // users['username'] = hashPass('temporary-password');
   props.setProperty(GC_USERS_KEY, JSON.stringify(users));
   Logger.log('Users: ' + JSON.stringify(Object.keys(users)));
+}
+
+// Run from clasp/GAS editor only. This is intentionally not routed through doGet.
+function setUserPassword_(user, pass) {
+  if (!user || !pass) throw new Error('Usage: setUserPassword_(user, pass)');
+  const props = PropertiesService.getScriptProperties();
+  const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
+  const key = String(user).toLowerCase().trim();
+  users[key] = hashPass(String(pass));
+  props.setProperty(GC_USERS_KEY, JSON.stringify(users));
+  Logger.log('Saved user: ' + key);
+  return { ok: true, user: key };
 }
