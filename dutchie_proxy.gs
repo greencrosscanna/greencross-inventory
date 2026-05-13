@@ -27,10 +27,10 @@ const SHEET_GIDS = {
   sublet: 1274502465,
 };
 
-// Reorder defaults — override per-category in a future Config Sheet
-const LEAD_TIME_DAYS    = 5;
+// Reorder defaults — current team-confirmed vendor replenishment window is 7 days.
+const LEAD_TIME_DAYS    = 7;
 const SAFETY_STOCK_DAYS = 7;
-const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 12 days
+const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 14 days
 const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
 const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -739,8 +739,7 @@ function transferDays_(a, b) {
   const salem = { 'Center': true, 'Commercial': true, 'Portland Rd': true, 'River Rd': true };
   const aS = !!salem[a], bS = !!salem[b];
   if (aS && bS) return 3;
-  if (aS || bS) return 7;
-  return 10;
+  return 7;
 }
 
 function loadExistingDecisionDonors_(targetSet) {

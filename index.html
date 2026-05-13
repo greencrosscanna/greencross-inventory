@@ -1537,6 +1537,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.6</span><span class="ver-date">May 13, 2026</span><span class="ver-desc">Transfer timing updated to team-confirmed routes: Salem to Salem is 3 days, and any route involving Century or Baseline is 7 days; vendor replenishment now uses a standard 7-day lead time for all vendors</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.5</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Login timeout window extended for Apps Script cold starts and post-deploy warmups, reducing false timeout errors in preview and production</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.4</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta vendor lead-time rules now use the most specific matching config row, and Beta can filter recommendations affected by vendor lead timing</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.3</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta Decision Feed detects stale sheet schemas, adds a Regenerate control, and can rebuild the feed in the background so missed-revenue columns are available after schema updates</span></div>
@@ -3841,8 +3842,7 @@ const SALEM_STORES = new Set(['Center', 'Commercial', 'Portland Rd', 'River Rd']
 function transferDays(a, b) {
   const aS = SALEM_STORES.has(a), bS = SALEM_STORES.has(b);
   if (aS && bS) return 3;
-  if (aS || bS) return 7;
-  return 10;
+  return 7;
 }
 function computeTransferSuggestions(items) {
   const BUFFER = 7;
@@ -6050,6 +6050,14 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.6', date: 'May 13, 2026',
+    items: [
+      'Transfer timing now uses the team-confirmed model: Salem to Salem is 3 days; any route involving Century or Baseline is 7 days',
+      'Vendor replenishment is now treated as a standard 7-day lead time for all vendors',
+      'Beta workbook lead-time config was updated to remove old Verdant long-lead assumptions',
+    ]
+  },
   {
     v: 'v2.5', date: 'May 12, 2026',
     items: [
