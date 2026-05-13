@@ -1537,6 +1537,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.5</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Login timeout window extended for Apps Script cold starts and post-deploy warmups, reducing false timeout errors in preview and production</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.4</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta vendor lead-time rules now use the most specific matching config row, and Beta can filter recommendations affected by vendor lead timing</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.3</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta Decision Feed detects stale sheet schemas, adds a Regenerate control, and can rebuild the feed in the background so missed-revenue columns are available after schema updates</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.2</span><span class="ver-date">May 11, 2026</span><span class="ver-desc">Decision-feed missed revenue now feeds Inventory recommendations: OOS rows backfill price from matching store inventory, lost-sales chips are prioritized and highlighted, and status sorting uses buyer impact as a tie-breaker</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.1</span><span class="ver-date">May 10, 2026</span><span class="ver-desc">Beta buyer intelligence: decision feed powers Inventory recommendations; smarter transfer allocation and order offsets; beta Google Sheet now tracks Action Tracker and beta Shared State for flags/hidden items; product value backfill for missing unit costs; Inventory recommendation chips simplified; collapsed transfer totals now match expanded allocation; expanded transfer actions now live on donor rows only; selected transfers prevent duplicate recipient suggestions; server-issued login sessions protect data actions</span></div>
@@ -2024,7 +2026,7 @@ function loginViaJsonp(user, pass) {
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error('Login request timed out'));
-    }, 12000);
+    }, 30000);
     window[callback] = data => {
       cleanup();
       resolve(data);
@@ -6049,6 +6051,13 @@ function scanNameSelect(name, scannedCode) {
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
   {
+    v: 'v2.5', date: 'May 12, 2026',
+    items: [
+      'Login timeout window extended so Apps Script cold starts and post-deploy warmups do not fail as quickly',
+      'JSONP login fallback now waits longer before reporting a timeout in local preview',
+    ]
+  },
+  {
     v: 'v2.4', date: 'May 12, 2026',
     items: [
       'Beta vendor lead-time rules now choose the most specific matching config row instead of relying on sheet order',
@@ -7609,7 +7618,7 @@ async function attemptLogin(e) {
   try {
     let auth;
     try {
-      auth = await withTimeout(proxyFetch({ action: 'login', user, pass }), 10000, 'Login request');
+      auth = await withTimeout(proxyFetch({ action: 'login', user, pass }), 25000, 'Login request');
     } catch (fetchErr) {
       console.warn('Login fetch failed, retrying with script fallback.', fetchErr);
       auth = await loginViaJsonp(user, pass);
