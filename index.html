@@ -1537,6 +1537,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.7</span><span class="ver-date">May 13, 2026</span><span class="ver-desc">Beta Decision Feed now reads active store keys from the Config - Stores tab, grounding Century/Baseline naming in the beta workbook</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.6</span><span class="ver-date">May 13, 2026</span><span class="ver-desc">Transfer timing updated to team-confirmed routes: Salem to Salem is 3 days, and any route involving Century or Baseline is 7 days; vendor replenishment now uses a standard 7-day lead time for all vendors</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.5</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Login timeout window extended for Apps Script cold starts and post-deploy warmups, reducing false timeout errors in preview and production</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.4</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta vendor lead-time rules now use the most specific matching config row, and Beta can filter recommendations affected by vendor lead timing</span></div>
@@ -6050,6 +6051,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.7', date: 'May 13, 2026',
+    items: [
+      'Beta Decision Feed now reads active store keys from the Config - Stores tab',
+      'Century/Baseline store mapping is now grounded in the beta workbook instead of only hardcoded assumptions',
+    ]
+  },
   {
     v: 'v2.6', date: 'May 13, 2026',
     items: [

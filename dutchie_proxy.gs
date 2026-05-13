@@ -10,6 +10,7 @@ const SALES_HISTORY_SPREADSHEET_ID = '18f8iwnnMucXog5fMsLN2VwEoC6kFu3h-b8MDpZlc7
 const SALES_HISTORY_GID            = 1938453538;
 const SNAPSHOT_SHEET_NAME          = 'Inv Snapshot';
 const SKU_DICT_SHEET_NAME          = 'Product SKU Dict';
+const STORE_CONFIG_SHEET_NAME      = 'Config - Stores';
 const SKU_OVERRIDES_SHEET_NAME     = 'Config - SKU Overrides';
 const REORDER_RULES_SHEET_NAME     = 'Config - Reorder Rules';
 const VENDOR_LEAD_TIMES_SHEET_NAME = 'Config - Vendor Lead Times';
@@ -547,6 +548,25 @@ function sheetToObjects_(sheetName, spreadsheetId) {
   }).filter(obj => Object.values(obj).some(v => v !== '' && v !== null));
 }
 
+function loadStoreConfig_(spreadsheetId) {
+  const rows = sheetToObjects_(STORE_CONFIG_SHEET_NAME, spreadsheetId || BETA_SPREADSHEET_ID)
+    .filter(r => String(r.active).toLowerCase() !== 'false')
+    .map(r => ({
+      storeKey: String(r.storeKey || '').trim(),
+      displayName: String(r.displayName || '').trim(),
+      sortOrder: Number(r.sortOrder) || 999,
+      color: String(r.color || '').trim(),
+      dutchieLocationKeyProperty: String(r.dutchieLocationKeyProperty || '').trim(),
+    }))
+    .filter(r => r.storeKey)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.storeKey.localeCompare(b.storeKey));
+  return rows.length ? rows : STORES.map((storeKey, i) => ({ storeKey, displayName: storeKey, sortOrder: i + 1 }));
+}
+
+function betaStoreKeys_() {
+  return loadStoreConfig_(BETA_SPREADSHEET_ID).map(r => r.storeKey);
+}
+
 function loadBetaDecisionConfig() {
   const skuOverrides = {};
   for (const row of sheetToObjects_(SKU_OVERRIDES_SHEET_NAME, BETA_SPREADSHEET_ID)) {
@@ -780,15 +800,16 @@ function buildDecisionFeedRows(targetStores) {
   const generatedAt = new Date().toISOString();
   const velMap = buildVelocityMap();
   const config = loadBetaDecisionConfig();
+  const betaStores = betaStoreKeys_();
   const shared = getSharedState({ beta: '1' });
   const killed = shared.killed || {};
   const flagged = new Set(shared.flagged || []);
   const oosLastSeen = buildOosLastSeenMap_();
   const byKey = {};
   const rows = [];
-  const targetSet = new Set((targetStores && targetStores.length ? targetStores : STORES));
+  const targetSet = new Set((targetStores && targetStores.length ? targetStores : betaStores));
 
-  if (targetSet.size < STORES.length) {
+  if (targetSet.size < betaStores.length) {
     for (const donor of loadExistingDecisionDonors_(targetSet)) {
       const key = productKey_(donor);
       if (!byKey[key]) byKey[key] = [];
@@ -980,7 +1001,7 @@ function generateBetaDecisionFeed(params) {
     return { ok: false, error: 'Set GC_DATA_MODE=beta or pass force=1 to generate beta decision feed.' };
   }
   const requestedStore = params.store || '';
-  const targetStores = requestedStore && requestedStore !== 'all' ? [requestedStore] : STORES;
+  const targetStores = requestedStore && requestedStore !== 'all' ? [requestedStore] : betaStoreKeys_();
   const rows = buildDecisionFeedRows(targetStores);
   const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
   let sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
