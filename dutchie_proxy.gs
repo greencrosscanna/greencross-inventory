@@ -584,12 +584,13 @@ function loadBetaDecisionConfig() {
 
   const vendorLeadTimes = sheetToObjects_(VENDOR_LEAD_TIMES_SHEET_NAME, BETA_SPREADSHEET_ID)
     .filter(r => String(r.active).toLowerCase() !== 'false')
-    .map(r => ({
+    .map((r, i) => ({
       vendor: String(r.vendor || ''),
       brand: String(r.brand || ''),
       category: String(r.category || ''),
       leadTimeDays: Number(r.leadTimeDays) || null,
       buyerNotes: String(r.buyerNotes || ''),
+      order: i,
     }));
 
   return { skuOverrides, reorderRules, vendorLeadTimes };
@@ -600,6 +601,12 @@ function patternMatches_(pattern, value) {
   if (!p || p === '*') return true;
   const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
   return new RegExp('^' + escaped + '$', 'i').test(String(value || ''));
+}
+
+function patternSpecificity_(pattern) {
+  const p = String(pattern || '').trim();
+  if (!p || p === '*') return 0;
+  return p.replace(/\*/g, '').length;
 }
 
 function pickReorderRule_(p, config) {
@@ -631,11 +638,21 @@ function ruleAppliesToProduct_(rule, p) {
 }
 
 function pickVendorLead_(p, config) {
-  return config.vendorLeadTimes.find(r =>
-    patternMatches_(r.vendor || '*', p.vendor || '') &&
-    patternMatches_(r.brand || '*', p.brand || '') &&
-    patternMatches_(r.category || '*', p.category || '')
-  ) || null;
+  return config.vendorLeadTimes
+    .filter(r =>
+      patternMatches_(r.vendor || '*', p.vendor || '') &&
+      patternMatches_(r.brand || '*', p.brand || '') &&
+      patternMatches_(r.category || '*', p.category || '')
+    )
+    .map(r => ({
+      ...r,
+      specificity: patternSpecificity_(r.vendor) + patternSpecificity_(r.brand) + patternSpecificity_(r.category),
+    }))
+    .sort((a, b) =>
+      b.specificity - a.specificity ||
+      (b.leadTimeDays || 0) - (a.leadTimeDays || 0) ||
+      a.order - b.order
+    )[0] || null;
 }
 
 function roundToMultiple_(qty, multiple) {
@@ -857,6 +874,7 @@ function buildDecisionFeedRows(targetStores) {
     if (transferFirst) reasonCodes.push('TRANSFER_FIRST');
     if (overstock || rule.ruleName.toLowerCase().indexOf('green cross') >= 0) reasonCodes.push('GREEN_CROSS_OVERSTOCK');
     if (override && override.leadTimeDays) reasonCodes.push('LONG_LEAD_SKU');
+    if (!override && vendorLead && vendorLead.leadTimeDays && vendorLead.leadTimeDays !== rule.leadTimeDays) reasonCodes.push('VENDOR_LEAD_TIME');
     if (flagged.has(flagKey)) reasonCodes.push('FLAGGED_REVIEW');
     if (killed[flagKey]) reasonCodes.push('KILL_LIST');
 
@@ -865,7 +883,7 @@ function buildDecisionFeedRows(targetStores) {
     let recommendedTransferQty = 0;
     let donorStore = '';
     const primaryVel = p.vel14 || p.vel30 || p.vel7 || 0;
-  const lostSales = estimateLostSales_(p, oosLastSeen, primaryVel);
+    const lostSales = estimateLostSales_(p, oosLastSeen, primaryVel);
     if (lostSales.lostUnits > 0) reasonCodes.push('LOST_SALES_RISK');
 
     const needsReplenishment = recommendedOrderQty > 0 || p.status === 'oos' || p.status === 'critical' || p.status === 'low';

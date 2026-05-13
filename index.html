@@ -2943,6 +2943,7 @@ function renderBetaFeed() {
         <option value="TRANSFER_AVAILABLE"${reasonValue === 'TRANSFER_AVAILABLE' ? ' selected' : ''}>Transfers</option>
         <option value="GREEN_CROSS_OVERSTOCK"${reasonValue === 'GREEN_CROSS_OVERSTOCK' ? ' selected' : ''}>Green Cross</option>
         <option value="LONG_LEAD_SKU"${reasonValue === 'LONG_LEAD_SKU' ? ' selected' : ''}>Long lead</option>
+        <option value="VENDOR_LEAD_TIME"${reasonValue === 'VENDOR_LEAD_TIME' ? ' selected' : ''}>Vendor lead</option>
         <option value="KILL_LIST"${reasonValue === 'KILL_LIST' ? ' selected' : ''}>Kill list</option>
       </select>
       <select id="betaStatus" onchange="setBetaStatus(this.value)">
@@ -6047,6 +6048,14 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.4', date: 'May 12, 2026',
+    items: [
+      'Beta vendor lead-time rules now choose the most specific matching config row instead of relying on sheet order',
+      'Decision Feed rows can now be filtered by vendor lead-time recommendations',
+      'Weekly vendor timing from the beta workbook can now affect recommendation quantities without SKU-specific overrides',
+    ]
+  },
   {
     v: 'v2.3', date: 'May 12, 2026',
     items: [
