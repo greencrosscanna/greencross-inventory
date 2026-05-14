@@ -201,6 +201,7 @@ if (location.protocol === 'file:') {
     text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--border);
   }
   .beta-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.05); vertical-align: middle; }
+  .beta-table tr.feed-stale td { background: rgba(239,159,39,.035); }
   .beta-table .num { text-align: right; font-variant-numeric: tabular-nums; }
   .beta-product { font-weight: 700; max-width: 310px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .beta-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
@@ -212,6 +213,7 @@ if (location.protocol === 'file:') {
   .beta-reason.transfer { background: rgba(239,159,39,.15); color: var(--amber); }
   .beta-reason.kill { background: rgba(240,149,149,.14); color: var(--red); }
   .beta-reason.risk { background: rgba(240,149,149,.12); color: var(--red); }
+  .beta-reason.stale { background: rgba(239,159,39,.14); color: var(--amber); }
   .beta-reason.why { background: rgba(255,255,255,.055); color: var(--text); font-weight: 600; }
   @media (max-width: 640px) {
     .beta-summary { grid-template-columns: repeat(2, 1fr); }
@@ -1537,6 +1539,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.10</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now marks stale rows by feed age, old assumptions, and live-stock mismatch so buyer guidance is visibly freshness-aware</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.9</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Inventory now ignores stale OOS beta decision rows when live inventory shows stock, preventing false missed-revenue chips on stocked products</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.8</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now warns when rows were generated with old 5-day lead or 12-day buffer assumptions so stale buyer guidance is not trusted quietly</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.7</span><span class="ver-date">May 13, 2026</span><span class="ver-desc">Beta Decision Feed now reads active store keys from the Config - Stores tab, grounding Century/Baseline naming in the beta workbook</span></div>
@@ -1902,6 +1905,11 @@ function fmtPct(n) { return (n * 100).toFixed(1) + '%'; }
 function fmtDate(s) {
   const d = new Date(s + 'T12:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+function fmtHours(n) {
+  if (!Number.isFinite(n)) return '';
+  if (n < 1) return Math.round(n * 60) + 'm';
+  return n.toFixed(n < 10 ? 1 : 0) + 'h';
 }
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -2903,6 +2911,45 @@ function betaFeedAssumptionIssues(feed) {
   return Array.from(issues);
 }
 
+const BETA_FEED_WARN_AGE_HOURS = 4;
+
+function betaFeedAgeInfo(feed) {
+  const ts = feed?.generatedAt ? new Date(feed.generatedAt).getTime() : 0;
+  if (!ts || Number.isNaN(ts)) return { hours: null, isStale: false };
+  const hours = (Date.now() - ts) / 3600000;
+  return { hours, isStale: hours > BETA_FEED_WARN_AGE_HOURS };
+}
+
+function liveProductForDecisionRow(r) {
+  const inv = state.inventoryData || [];
+  if (!inv.length || !r) return null;
+  const store = String(r.store || '');
+  const sku = String(r.sku || '').trim();
+  if (sku) {
+    const bySku = inv.find(p => p.store === store && String(p.sku || '').trim() === sku);
+    if (bySku) return bySku;
+  }
+  const name = betaNormName(r.productName || '');
+  return name ? inv.find(p => p.store === store && betaNormName(p.name || '') === name) || null : null;
+}
+
+function betaRowFreshnessIssues(r, ageInfo) {
+  const issues = [];
+  const rowText = [r.whyChips, r.notes, r.reasonCodes].filter(Boolean).join('|').toLowerCase();
+  if (ageInfo?.isStale) issues.push(`feed ${fmtHours(ageInfo.hours)} old`);
+  if (/\blead\s*5d\b/.test(rowText) || /\b12-day reorder buffer\b/.test(rowText)) issues.push('old assumptions');
+
+  const live = liveProductForDecisionRow(r);
+  if (live) {
+    const rowStatus = String(r.status || '').toLowerCase();
+    const liveQty = Number(live.qty || 0);
+    if (rowStatus === 'oos' && live.status !== 'oos' && liveQty > 0) {
+      issues.push(`live stock ${liveQty}`);
+    }
+  }
+  return issues;
+}
+
 function renderBetaFeed() {
   const el = document.getElementById('betaContent');
   const feed = state.betaFeed || { rows: [], total: 0, summary: {} };
@@ -2913,6 +2960,7 @@ function renderBetaFeed() {
   const statusValue = state.betaFilter.status || '';
   const qValue = state.betaFilter.q || '';
   const limited = feed.limited ? `<span style="color:var(--muted);font-size:11px">Showing first ${rows.length} of ${feed.total}</span>` : `<span style="color:var(--muted);font-size:11px">${feed.total || rows.length} rows</span>`;
+  const ageInfo = betaFeedAgeInfo(feed);
   const staleBanner = feed.schemaStale
     ? `<div class="state-msg" style="margin-bottom:12px;text-align:left">
         <strong>Decision feed needs regeneration.</strong>
@@ -2929,8 +2977,18 @@ function renderBetaFeed() {
         </div>
       </div>`
     : '';
+  const ageBanner = ageInfo.isStale
+    ? `<div class="state-msg" style="margin-bottom:12px;text-align:left;border-color:rgba(239,159,39,.45);background:rgba(239,159,39,.08)">
+        <strong style="color:var(--amber)">Decision feed is ${escapeHtml(fmtHours(ageInfo.hours))} old.</strong>
+        <div style="margin-top:4px;color:var(--muted);font-size:12px">
+          Recommendations may be behind live Dutchie inventory. Stale rows are marked below; regenerate after the beta backend is deployed.
+        </div>
+      </div>`
+    : '';
 
   const body = rows.map(r => {
+    const freshnessIssues = betaRowFreshnessIssues(r, ageInfo);
+    const freshnessHtml = freshnessIssues.map(issue => `<span class="beta-reason stale">${escapeHtml(issue)}</span>`).join('');
     const doh = r.doh == null || Number.isNaN(r.doh) ? '—' : (r.doh < 1 ? '<1d' : r.doh.toFixed(1) + 'd');
     const reasonHtml = String(r.reasonCodes || '').split(',').filter(Boolean).map(code => {
       const clean = escapeHtml(code.trim());
@@ -2943,10 +3001,11 @@ function renderBetaFeed() {
     const missed = r.missedRevenue > 0
       ? r.missedRevenue.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
       : r.lostUnits > 0 ? `${r.lostUnits.toFixed(r.lostUnits % 1 ? 1 : 0)}u` : '—';
-    return `<tr>
+    return `<tr${freshnessIssues.length ? ' class="feed-stale"' : ''}>
       <td>
         <div class="beta-product" title="${escapeHtml(r.productName)}">${escapeHtml(r.productName)}</div>
         <div class="beta-sub">${escapeHtml([r.sku, r.brand, fmtCat(r.category)].filter(Boolean).join(' · '))}</div>
+        ${freshnessHtml ? `<div style="margin-top:3px">${freshnessHtml}</div>` : ''}
       </td>
       <td style="color:${storeColor(r.store)}">${escapeHtml(storeDisplay(r.store))}</td>
       <td class="num">${r.qty}</td>
@@ -2965,6 +3024,7 @@ function renderBetaFeed() {
   el.innerHTML = `
     ${staleBanner}
     ${assumptionBanner}
+    ${ageBanner}
     <div class="beta-toolbar">
       <input type="search" id="betaSearch" placeholder="Search product, SKU, brand…" value="${escapeHtml(qValue)}" oninput="queueBetaFilter()">
       <select id="betaReason" onchange="setBetaReason(this.value)">
@@ -6084,6 +6144,13 @@ function scanNameSelect(name, scannedCode) {
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
   {
+    v: 'v2.10', date: 'May 14, 2026',
+    items: [
+      'Beta Decision Feed now marks stale rows when the feed is more than 4 hours old',
+      'Rows also call out old assumptions and live-stock mismatches when live inventory is loaded',
+    ]
+  },
+  {
     v: 'v2.9', date: 'May 14, 2026',
     items: [
       'Inventory now ignores stale OOS beta decision rows when live inventory shows stock',
@@ -6230,10 +6297,25 @@ const CHANGELOG = [
 
 const WN_SEEN_KEY = 'gc_wn_seen';
 
+function versionParts(v) {
+  return String(v || '').replace(/^v/i, '').split('.').map(n => Number(n) || 0);
+}
+
+function compareVersions(a, b) {
+  const aa = versionParts(a);
+  const bb = versionParts(b);
+  const len = Math.max(aa.length, bb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (aa[i] || 0) - (bb[i] || 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
 function checkWhatsNew() {
   const seen = localStorage.getItem(WN_SEEN_KEY) || '';
   // Find entries newer than what was last seen
-  const unseen = CHANGELOG.filter(c => c.v > seen);
+  const unseen = CHANGELOG.filter(c => compareVersions(c.v, seen) > 0);
   if (!unseen.length) return;
   showWhatsNew(unseen);
 }
