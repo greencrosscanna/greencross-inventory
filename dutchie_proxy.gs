@@ -882,8 +882,12 @@ function buildDecisionFeedRows(targetStores) {
     const leadTimeDays = (override && override.leadTimeDays) || (vendorLead && vendorLead.leadTimeDays) || rule.leadTimeDays;
     const safetyStockDays = rule.safetyStockDays || SAFETY_STOCK_DAYS;
     const targetDays = leadTimeDays + safetyStockDays;
-    const minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
-    const orderMultiple = (override && override.orderMultiple) || rule.orderMultiple || 1;
+    let minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
+    let orderMultiple = (override && override.orderMultiple) || rule.orderMultiple || 1;
+    if (/bulk cannabis flower/i.test(String(p.category || ''))) {
+      minOrderQty = Math.max(minOrderQty, 227);
+      orderMultiple = Math.max(orderMultiple, 227);
+    }
     const transferFirst = (override && override.transferFirst) || rule.ruleName.toLowerCase().indexOf('transfer first') >= 0;
     const overstock = override && override.overstock;
     const reasonCodes = [];

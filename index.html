@@ -1539,6 +1539,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.11</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower order quantities now round to half-pound increments and display consistently as N.NNlb across Inventory, Orders, and exports</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.10</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now marks stale rows by feed age, old assumptions, and live-stock mismatch so buyer guidance is visibly freshness-aware</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.9</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Inventory now ignores stale OOS beta decision rows when live inventory shows stock, preventing false missed-revenue chips on stocked products</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.8</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now warns when rows were generated with old 5-day lead or 12-day buffer assumptions so stale buyer guidance is not trusted quietly</span></div>
@@ -1910,6 +1911,19 @@ function fmtHours(n) {
   if (!Number.isFinite(n)) return '';
   if (n < 1) return Math.round(n * 60) + 'm';
   return n.toFixed(n < 10 ? 1 : 0) + 'h';
+}
+const FLOWER_ORDER_INCREMENT_GRAMS = 227;
+function normalizeOrderQtyForProduct(p, qty) {
+  const v = Number(qty || 0);
+  if (!(v > 0)) return 0;
+  if (p && p.isFlower) return Math.ceil(v / FLOWER_ORDER_INCREMENT_GRAMS) * FLOWER_ORDER_INCREMENT_GRAMS;
+  return Number.isInteger(v) ? v : Math.ceil(v);
+}
+function formatOrderQty(p, qty, withPlus = false) {
+  const normalized = normalizeOrderQtyForProduct(p, qty);
+  if (!(normalized > 0)) return withPlus ? '+0' : '0';
+  if (p && p.isFlower) return `${withPlus ? '+' : ''}${(normalized / 454).toFixed(2)}lb`;
+  return `${withPlus ? '+' : ''}${normalized}`;
 }
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -3410,9 +3424,7 @@ function enrichProduct(p, storeName, velMap) {
   const rawReorder = (pVel > 0 && !isDistroOnly && (p.qty === 0 || doh < REORDER_BUFFER))
     ? Math.max(0, pVel * REORDER_BUFFER - p.qty) : 0;
   const isFlower = /flower/i.test(p.category || '');
-  const reorderQty = rawReorder > 0
-    ? (isFlower ? Math.ceil(rawReorder / 454) * 454 : Math.ceil(rawReorder))
-    : 0;
+  const reorderQty = normalizeOrderQtyForProduct({ isFlower }, rawReorder);
   const isHot = v7 >= 0.5 && v28 > 0 && v7 > v28 * 1.5;
   // Dead: two distinct cases:
   //  1. Had sales history (appeared in 180d cache) but zero sales in 90 days → truly gone cold
@@ -3628,7 +3640,7 @@ async function loadInventoryData() {
         const pVel = vel.vel14 > 0 ? vel.vel14 : (vel.vel28 > 0 ? vel.vel28 : vel.vel7);
         const rawReorder = Math.max(0, pVel * REORDER_BUFFER_VAL);
         const isFlower = /flower/i.test(vel.category || '');
-        const reorderQty = isFlower ? Math.ceil(rawReorder / 454) * 454 : Math.ceil(rawReorder);
+        const reorderQty = normalizeOrderQtyForProduct({ isFlower }, rawReorder);
         allProducts.push({
           name,
           // Best-effort SKU: exact name → normalized name → velocity record → none
@@ -4629,9 +4641,9 @@ function renderInventory() {
   }
 
   function betaGrossOrderNeed(p, d, betaTransfer = null) {
-    if (!d) return p.reorderQty || 0;
+    if (!d) return normalizeOrderQtyForProduct(p, p.reorderQty || 0);
     const transferQty = Math.max(Number(d.recommendedTransferQty || 0), Number((betaTransfer && betaTransfer.qty) || 0));
-    return Math.max(0, Number(d.recommendedOrderQty || 0) + transferQty);
+    return normalizeOrderQtyForProduct(p, Math.max(0, Number(d.recommendedOrderQty || 0) + transferQty));
   }
 
   function visibleOrderNeedFor(p, d, betaTransfer = null) {
@@ -4872,7 +4884,7 @@ function renderInventory() {
     // Subtract queued transfers, active cart, and saved orders from the displayed reorder need
     const inbK = (p.store || '') + '::' + (p.sku || p.name);
     const visibleTransferOffset = 0;
-    const effectiveQty = Math.max(0, rawReorderQty - visibleTransferOffset - (_renderInboundOrderOffsetQty[inbK] || 0) - (_pendingTransferOrderOffsetQty[inbK] || 0) - (_inCartQty[inbK] || 0) - (_pendingOrderQty[inbK] || 0));
+    const effectiveQty = normalizeOrderQtyForProduct(p, Math.max(0, rawReorderQty - visibleTransferOffset - (_renderInboundOrderOffsetQty[inbK] || 0) - (_pendingTransferOrderOffsetQty[inbK] || 0) - (_inCartQty[inbK] || 0) - (_pendingOrderQty[inbK] || 0)));
     // Parent row of a group — clicking adds all children with reorderQty > 0
     // When expanded, hide the parent +N so the user adds children individually
     if (groupKey !== null) {
@@ -4884,10 +4896,10 @@ function renderInventory() {
         const cd = betaDecisionForProduct(c);
         const ct = betaTransferSuggestionFor(c, cd) || groupTransferSuggestionFor(c);
         const cQty = cd ? betaGrossOrderNeed(c, cd, ct) : (c.reorderQty || 0);
-        return s + Math.max(0, cQty - (_renderInboundOrderOffsetQty[ck] || 0) - (_pendingTransferOrderOffsetQty[ck] || 0) - (_inCartQty[ck] || 0) - (_pendingOrderQty[ck] || 0));
+        return s + normalizeOrderQtyForProduct(c, Math.max(0, cQty - (_renderInboundOrderOffsetQty[ck] || 0) - (_pendingTransferOrderOffsetQty[ck] || 0) - (_inCartQty[ck] || 0) - (_pendingOrderQty[ck] || 0)));
       }, 0);
       if (!effectiveGroupQty) return '';
-      const groupLabel = p.isFlower ? (effectiveGroupQty/454)+'lb' : effectiveGroupQty;
+      const groupLabel = formatOrderQty(p, effectiveGroupQty);
       const allInCart = _groupMap[groupKey].filter(c => c.reorderQty > 0).every(c => state.orderCart.some(i => i.key === cartKey(c)));
       const gkEsc = groupKey.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       return `<button class="reorder-qty reorder-btn${allInCart ? ' in-cart' : ''}" onclick="event.stopPropagation();addGroupToCart('${gkEsc}')" title="${allInCart ? 'All in order' : 'Add all stores to order'}">+${groupLabel}</button>`;
@@ -4896,7 +4908,7 @@ function renderInventory() {
     if (p.store) {
       const actions = [];
       if (effectiveQty > 0) {
-        const label = p.isFlower ? (effectiveQty/454)+'lb' : effectiveQty;
+        const label = formatOrderQty(p, effectiveQty);
         const adjP = { ...p, reorderQty: effectiveQty }; // cart uses adjusted qty
         const key = cartKey(p);
         _cartProdMap[key] = adjP;
@@ -4914,7 +4926,7 @@ function renderInventory() {
       return actions.join('');
     }
     if (!effectiveQty) return '';
-    const label = p.isFlower ? (effectiveQty/454)+'lb' : effectiveQty;
+    const label = formatOrderQty(p, effectiveQty);
     return `<span class="reorder-qty">+${label}</span>`;
   }
   function mkFlatRow(p) {
@@ -6144,6 +6156,13 @@ function scanNameSelect(name, scannedCode) {
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
   {
+    v: 'v2.11', date: 'May 14, 2026',
+    items: [
+      'Bulk flower order suggestions now round up to half-pound increments',
+      'Flower order quantities display as N.NNlb in Inventory, Orders, and exports',
+    ]
+  },
+  {
     v: 'v2.10', date: 'May 14, 2026',
     items: [
       'Beta Decision Feed now marks stale rows when the feed is more than 4 hours old',
@@ -6788,8 +6807,9 @@ function cartKey(p) {
 function addToCart(p) {
   const key = cartKey(p);
   const existing = state.orderCart.find(i => i.key === key);
+  const orderQty = normalizeOrderQtyForProduct(p, p.reorderQty > 0 ? p.reorderQty : 1);
   if (existing) {
-    existing.qty = Math.max(existing.qty, p.reorderQty || 1);
+    existing.qty = Math.max(existing.qty, orderQty);
   } else {
     state.orderCart.push({
       key,
@@ -6799,8 +6819,8 @@ function addToCart(p) {
       brand:      p.brand || '',
       store:      p.store || '',
       category:   p.category || '',
-      qty:        p.reorderQty > 0 ? p.reorderQty : 1,
-      suggestedQty: p.reorderQty > 0 ? p.reorderQty : 1,
+      qty:        orderQty,
+      suggestedQty: orderQty,
       unitCost:   (() => {
         if (p.unitCost > 0) return p.unitCost;
         if (p.qty > 0 && p.value > 0) return parseFloat((p.value / p.qty).toFixed(2));
@@ -6954,7 +6974,7 @@ function renderOrders() {
     const renderPoRow = (item, isChild = false) => {
       const keyEsc = item.key.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       const lineTotal = (item.qty * (item.unitCost || 0)).toFixed(2);
-      const sugLabel = item.isFlower ? (item.suggestedQty / 454) + 'lb' : '+' + item.suggestedQty;
+      const sugLabel = formatOrderQty(item, item.suggestedQty, true);
       const storeLabel = item.store
         ? `<span style="color:${storeColor(item.store)};font-weight:500">${storeDisplay(item.store)}</span>`
         : '—';
@@ -7002,7 +7022,7 @@ function renderOrders() {
           </td>
           <td style="color:var(--muted);font-size:12px">${first.sku || '—'}</td>
           <td style="font-size:12px;color:var(--muted)">${skuItems.length} stores</td>
-          <td class="num" style="color:var(--muted);font-size:12px">+${totalSug}</td>
+          <td class="num" style="color:var(--muted);font-size:12px">${formatOrderQty(first, totalSug, true)}</td>
           <td class="num" style="color:var(--muted)">${totalQty}</td>
           <td class="num" style="color:var(--muted)">${unitCost.toFixed(2)}</td>
           <td class="num" style="font-weight:600">$${totalLine}</td>
@@ -7090,7 +7110,7 @@ function exportOrdersToExcel() {
       ['Product', 'SKU', 'Store', 'Category', 'Suggested Qty', 'Order Qty', 'Unit Cost', 'Line Total'],
     ];
     for (const item of items) {
-      const sugQty = item.isFlower ? (item.suggestedQty / 454) + 'lb' : item.suggestedQty;
+      const sugQty = formatOrderQty(item, item.suggestedQty);
       rows.push([
         item.name,
         item.sku || '',
@@ -7520,7 +7540,7 @@ function exportCSV() {
       p.qty ?? '',
       p.doh != null ? p.doh.toFixed(1) : '',
       p.status || '',
-      p.reorderQty > 0 ? (p.isFlower ? (p.reorderQty/454)+'lb' : p.reorderQty) : 0,
+      p.reorderQty > 0 ? formatOrderQty(p, p.reorderQty) : 0,
       p.price != null ? p.price.toFixed(2) : '',
       p.invValue != null ? p.invValue.toFixed(2) : '',
     ].join(','));
