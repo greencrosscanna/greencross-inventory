@@ -740,6 +740,7 @@ function buildOosLastSeenMap_() {
 
 function estimateLostSales_(p, lastSeenMap, velocity) {
   if (!p || p.status !== 'oos') return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
+  if (Number(p.qty || 0) > 0) return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
   const lastSeen = lastSeenMap[p.store + '::' + (p.sku || '')] || lastSeenMap[p.store + '::' + (p.name || '')];
   if (!lastSeen) return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
   const oosStart = new Date(lastSeen + 'T12:00:00Z');
