@@ -1539,6 +1539,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.12</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower recommendation chips now use pound labels with one decimal place, and redundant MOQ/multiple chips are hidden from Inventory</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.11</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower order quantities now round to half-pound increments and display consistently as N.NNlb across Inventory, Orders, and exports</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.10</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now marks stale rows by feed age, old assumptions, and live-stock mismatch so buyer guidance is visibly freshness-aware</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.9</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Inventory now ignores stale OOS beta decision rows when live inventory shows stock, preventing false missed-revenue chips on stocked products</span></div>
@@ -1922,7 +1923,7 @@ function normalizeOrderQtyForProduct(p, qty) {
 function formatOrderQty(p, qty, withPlus = false) {
   const normalized = normalizeOrderQtyForProduct(p, qty);
   if (!(normalized > 0)) return withPlus ? '+0' : '0';
-  if (p && p.isFlower) return `${withPlus ? '+' : ''}${(normalized / 454).toFixed(2)}lb`;
+  if (p && p.isFlower) return `${withPlus ? '+' : ''}${(normalized / 454).toFixed(1)}lb`;
   return `${withPlus ? '+' : ''}${normalized}`;
 }
 function escapeHtml(s) {
@@ -2896,6 +2897,8 @@ function isInventoryWhyChip(chip) {
   if (/^transfer\s/.test(clean)) return false;
   if (/^donor\s/.test(clean)) return false;
   if (/^buy\s/.test(clean)) return false;
+  if (/^moq\s/.test(clean)) return false;
+  if (/^mult\s/.test(clean)) return false;
   return true;
 }
 
@@ -4660,10 +4663,10 @@ function renderInventory() {
     const grossOrderNeed = betaGrossOrderNeed(p, d, betaTransfer);
     const visibleOrderNeed = visibleOrderNeedFor(p, d, betaTransfer);
     if (grossOrderNeed > 0 && (betaTransfer || d.recommendedTransferQty > 0)) {
-      parts.push(`<span class="buyer-rec-pill cover">Need ${grossOrderNeed}</span>`);
+      parts.push(`<span class="buyer-rec-pill cover">Need ${formatOrderQty(p, grossOrderNeed)}</span>`);
     }
-    if (visibleOrderNeed > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${visibleOrderNeed}</span>`);
-    if (betaTransfer) parts.push(`<span class="buyer-rec-pill transfer">Move ${betaTransfer.qty}${d.donorStore ? ` from ${escapeHtml(storeDisplay(d.donorStore))}` : ''}</span>`);
+    if (visibleOrderNeed > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${formatOrderQty(p, visibleOrderNeed)}</span>`);
+    if (betaTransfer) parts.push(`<span class="buyer-rec-pill transfer">Move ${formatOrderQty(p, betaTransfer.qty)}${d.donorStore ? ` from ${escapeHtml(storeDisplay(d.donorStore))}` : ''}</span>`);
     const reasons = String(d.reasonCodes || '').split(',').filter(Boolean);
     if (!parts.length && reasons.length) parts.push('<span class="buyer-rec-pill review">Review</span>');
     if (reasons.includes('GREEN_CROSS_OVERSTOCK')) parts.push('<span class="buyer-rec-pill context">GC</span>');
@@ -4706,9 +4709,10 @@ function renderInventory() {
       }
     }
     const parts = [];
-    if (orderQty > 0 && transferQty > 0) parts.push(`<span class="buyer-rec-pill cover">Need ${orderQty + transferQty}</span>`);
-    if (orderQty > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${orderQty}</span>`);
-    if (transferQty > 0) parts.push(`<span class="buyer-rec-pill transfer">Move ${transferQty}</span>`);
+    const qtyProduct = items.find(p => p && p.isFlower) || items[0];
+    if (orderQty > 0 && transferQty > 0) parts.push(`<span class="buyer-rec-pill cover">Need ${formatOrderQty(qtyProduct, orderQty + transferQty)}</span>`);
+    if (orderQty > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${formatOrderQty(qtyProduct, orderQty)}</span>`);
+    if (transferQty > 0) parts.push(`<span class="buyer-rec-pill transfer">Move ${formatOrderQty(qtyProduct, transferQty)}</span>`);
     if (!parts.length && reviewCount > 0) parts.push(`<span class="buyer-rec-pill review">Review ${reviewCount}</span>`);
     for (const ctx of contexts) parts.push(`<span class="buyer-rec-pill context">${escapeHtml(ctx)}</span>`);
     for (const chip of why) {
@@ -6155,6 +6159,14 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.12', date: 'May 14, 2026',
+    items: [
+      'Bulk flower Need, Buy, and Move chips now display as pounds instead of raw grams',
+      'Flower quantities now show one decimal place because ordering uses half-pound increments',
+      'Inventory buyer chips no longer show redundant MOQ or multiple values',
+    ]
+  },
   {
     v: 'v2.11', date: 'May 14, 2026',
     items: [
