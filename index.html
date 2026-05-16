@@ -186,6 +186,16 @@ if (location.protocol === 'file:') {
     border-radius: 6px; min-height: 34px; padding: 7px 11px; font-size: 12px; font-weight: 700;
     cursor: pointer;
   }
+  .beta-action-btn.secondary {
+    background: rgba(255,255,255,.05); color: var(--muted); border-color: var(--border);
+  }
+  .beta-action-btn.active {
+    background: rgba(29,158,117,.24); color: var(--text); border-color: var(--green);
+  }
+  .beta-exception-row td { background: rgba(240,149,149,.025); }
+  .beta-exception-summary {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px;
+  }
   .beta-summary {
     display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px;
   }
@@ -217,6 +227,7 @@ if (location.protocol === 'file:') {
   .beta-reason.why { background: rgba(255,255,255,.055); color: var(--text); font-weight: 600; }
   @media (max-width: 640px) {
     .beta-summary { grid-template-columns: repeat(2, 1fr); }
+    .beta-exception-summary { grid-template-columns: repeat(2, 1fr); }
     .beta-toolbar select { flex: 1 1 calc(50% - 4px); min-width: 0; }
   }
 
@@ -1539,6 +1550,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.15</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Beta now includes an Exceptions view for stale rows, live-stock mismatches, missing pricing, generic categories, and recommendation logic checks</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.14</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Apparel velocity now requires exact product or SKU matches so shirt sizes and colors do not inherit sales from neighboring variants</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.13</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower action buttons now use the same half-pound labels and beta flower rules as the recommendation chips</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.12</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower recommendation chips now use pound labels with one decimal place, and redundant MOQ/multiple chips are hidden from Inventory</span></div>
@@ -2096,7 +2108,7 @@ let state = {
   inv28Cogs:  null, // 28-day cogs for inventory summary bar
   betaEnabled: false,
   betaFeed: null,
-  betaFilter: { reason: '', status: '', q: '' },
+  betaFilter: { reason: '', status: '', q: '', view: 'feed' },
   betaDecisionRows: [],
   betaDecisionMap: {},
   betaDecisionStore: null,
@@ -2981,6 +2993,58 @@ function betaRowFreshnessIssues(r, ageInfo) {
   return issues;
 }
 
+function betaExceptionIssuesForRow(r, ageInfo) {
+  const issues = betaRowFreshnessIssues(r, ageInfo).map(text => ({ type: 'Freshness', text }));
+  const live = liveProductForDecisionRow(r);
+  const reasonText = String(r.reasonCodes || '');
+  const whyText = String(r.whyChips || '');
+  const cat = String(r.category || '').trim();
+  const sku = String(r.sku || '').trim();
+  const orderQty = Number(r.recommendedOrderQty || 0);
+  const transferQty = Number(r.recommendedTransferQty || 0);
+  const lostUnits = Number(r.lostUnits || 0);
+  const missedRevenue = Number(r.missedRevenue || 0);
+
+  if (!sku) issues.push({ type: 'Data', text: 'missing SKU' });
+  if (!cat || /^other$/i.test(cat)) {
+    issues.push({ type: 'Data', text: 'generic category' });
+  }
+  if (/\b(?:moq|mult)\s*227\b/i.test(whyText) && !/bulk cannabis flower/i.test(cat)) {
+    issues.push({ type: 'Data', text: 'flower rule but category is not flower' });
+  }
+  if (lostUnits > 0 && !(missedRevenue > 0)) {
+    issues.push({ type: 'Revenue', text: 'lost units missing price' });
+  }
+  if (/TRANSFER_FIRST/.test(reasonText) && !(transferQty > 0)) {
+    issues.push({ type: 'Logic', text: 'transfer-first without transfer' });
+  }
+  if ((/OOS|LOW_DOH/.test(reasonText) || String(r.status || '').toLowerCase() === 'oos') && !(orderQty > 0) && !(transferQty > 0) && !/KILL_LIST/.test(reasonText)) {
+    issues.push({ type: 'Logic', text: 'needs action but no order/transfer' });
+  }
+  if (live) {
+    const liveCat = String(live.category || '').trim();
+    if (cat && liveCat && cat !== liveCat) {
+      issues.push({ type: 'Data', text: `feed category ${cat}, live ${liveCat}` });
+    }
+    if (Number(r.qty || 0) !== Number(live.qty || 0)) {
+      issues.push({ type: 'Freshness', text: `feed qty ${r.qty}, live ${live.qty}` });
+    }
+  }
+  return issues;
+}
+
+function betaExceptionRows(rows, ageInfo) {
+  return (rows || [])
+    .map(r => ({ row: r, issues: betaExceptionIssuesForRow(r, ageInfo) }))
+    .filter(x => x.issues.length)
+    .sort((a, b) => {
+      const priority = x => x.issues.some(i => i.type === 'Freshness') ? 0
+        : x.issues.some(i => i.type === 'Revenue') ? 1
+        : x.issues.some(i => i.type === 'Logic') ? 2 : 3;
+      return priority(a) - priority(b) || (b.issues.length - a.issues.length);
+    });
+}
+
 function renderBetaFeed() {
   const el = document.getElementById('betaContent');
   const feed = state.betaFeed || { rows: [], total: 0, summary: {} };
@@ -2990,6 +3054,7 @@ function renderBetaFeed() {
   const reasonValue = state.betaFilter.reason || '';
   const statusValue = state.betaFilter.status || '';
   const qValue = state.betaFilter.q || '';
+  const viewValue = state.betaFilter.view || 'feed';
   const limited = feed.limited ? `<span style="color:var(--muted);font-size:11px">Showing first ${rows.length} of ${feed.total}</span>` : `<span style="color:var(--muted);font-size:11px">${feed.total || rows.length} rows</span>`;
   const ageInfo = betaFeedAgeInfo(feed);
   const staleBanner = feed.schemaStale
@@ -3017,9 +3082,22 @@ function renderBetaFeed() {
       </div>`
     : '';
 
-  const body = rows.map(r => {
+  const exceptions = betaExceptionRows(rows, ageInfo);
+  const visibleRows = viewValue === 'exceptions' ? exceptions.map(x => x.row) : rows;
+  const exceptionByKey = new Map(exceptions.map(x => [betaDecisionKey(x.row.store, x.row.sku, x.row.productName), x.issues]));
+  const exceptionSummary = exceptions.reduce((acc, x) => {
+    for (const issue of x.issues) acc[issue.type] = (acc[issue.type] || 0) + 1;
+    return acc;
+  }, {});
+
+  const body = visibleRows.map(r => {
     const freshnessIssues = betaRowFreshnessIssues(r, ageInfo);
     const freshnessHtml = freshnessIssues.map(issue => `<span class="beta-reason stale">${escapeHtml(issue)}</span>`).join('');
+    const exceptionIssues = exceptionByKey.get(betaDecisionKey(r.store, r.sku, r.productName)) || [];
+    const exceptionHtml = exceptionIssues.map(issue => {
+      const cls = issue.type === 'Revenue' || issue.type === 'Logic' ? 'risk' : issue.type === 'Freshness' ? 'stale' : 'why';
+      return `<span class="beta-reason ${cls}">${escapeHtml(issue.type)}: ${escapeHtml(issue.text)}</span>`;
+    }).join('');
     const doh = r.doh == null || Number.isNaN(r.doh) ? '—' : (r.doh < 1 ? '<1d' : r.doh.toFixed(1) + 'd');
     const reasonHtml = String(r.reasonCodes || '').split(',').filter(Boolean).map(code => {
       const clean = escapeHtml(code.trim());
@@ -3032,11 +3110,12 @@ function renderBetaFeed() {
     const missed = r.missedRevenue > 0
       ? r.missedRevenue.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
       : r.lostUnits > 0 ? `${r.lostUnits.toFixed(r.lostUnits % 1 ? 1 : 0)}u` : '—';
-    return `<tr${freshnessIssues.length ? ' class="feed-stale"' : ''}>
+    return `<tr${freshnessIssues.length ? ' class="feed-stale"' : viewValue === 'exceptions' ? ' class="beta-exception-row"' : ''}>
       <td>
         <div class="beta-product" title="${escapeHtml(r.productName)}">${escapeHtml(r.productName)}</div>
         <div class="beta-sub">${escapeHtml([r.sku, r.brand, fmtCat(r.category)].filter(Boolean).join(' · '))}</div>
         ${freshnessHtml ? `<div style="margin-top:3px">${freshnessHtml}</div>` : ''}
+        ${viewValue === 'exceptions' && exceptionHtml ? `<div style="margin-top:3px">${exceptionHtml}</div>` : ''}
       </td>
       <td style="color:${storeColor(r.store)}">${escapeHtml(storeDisplay(r.store))}</td>
       <td class="num">${r.qty}</td>
@@ -3079,6 +3158,10 @@ function renderBetaFeed() {
       <button class="beta-action-btn" onclick="loadBetaFeed()">Refresh</button>
       <button class="beta-action-btn" onclick="regenerateBetaFeed()">Regenerate</button>
     </div>
+    <div class="beta-toolbar" style="margin-top:-4px">
+      <button class="beta-action-btn secondary${viewValue === 'feed' ? ' active' : ''}" onclick="setBetaView('feed')">Decision Feed</button>
+      <button class="beta-action-btn secondary${viewValue === 'exceptions' ? ' active' : ''}" onclick="setBetaView('exceptions')">Exceptions ${exceptions.length ? `(${exceptions.length})` : ''}</button>
+    </div>
     <div class="beta-summary">
       <div class="beta-metric"><div class="beta-metric-val">${feed.total || 0}</div><div class="beta-metric-lbl">Matching Rows</div></div>
       <div class="beta-metric"><div class="beta-metric-val">${summary.orderLines || 0}</div><div class="beta-metric-lbl">Order Lines</div></div>
@@ -3086,9 +3169,16 @@ function renderBetaFeed() {
       <div class="beta-metric"><div class="beta-metric-val">${summary.transferLines || 0}</div><div class="beta-metric-lbl">Transfer Lines</div></div>
       <div class="beta-metric"><div class="beta-metric-val">${summary.missedRevenue > 0 ? summary.missedRevenue.toLocaleString('en-US', { style:'currency', currency:'USD', maximumFractionDigits:0 }) : Math.round(summary.lostUnits || 0)}</div><div class="beta-metric-lbl">${summary.missedRevenue > 0 ? 'Missed Revenue' : 'Lost Units'}</div></div>
     </div>
+    ${viewValue === 'exceptions' ? `
+      <div class="beta-exception-summary">
+        <div class="beta-metric"><div class="beta-metric-val">${exceptions.length}</div><div class="beta-metric-lbl">Exception Rows</div></div>
+        <div class="beta-metric"><div class="beta-metric-val">${exceptionSummary.Freshness || 0}</div><div class="beta-metric-lbl">Freshness</div></div>
+        <div class="beta-metric"><div class="beta-metric-val">${exceptionSummary.Revenue || 0}</div><div class="beta-metric-lbl">Revenue</div></div>
+        <div class="beta-metric"><div class="beta-metric-val">${(exceptionSummary.Data || 0) + (exceptionSummary.Logic || 0)}</div><div class="beta-metric-lbl">Data / Logic</div></div>
+      </div>` : ''}
     <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">
-      <span>Beta decision feed · ${escapeHtml(generated)}</span>
-      ${limited}
+      <span>${viewValue === 'exceptions' ? 'Exceptions / Needs Review' : 'Beta decision feed'} · ${escapeHtml(generated)}</span>
+      ${viewValue === 'exceptions' ? `<span style="color:var(--muted);font-size:11px">${exceptions.length} exception rows from ${rows.length} loaded rows</span>` : limited}
     </div>
     <div class="card inv-table-wrap">
       <table class="beta-table">
@@ -3096,9 +3186,14 @@ function renderBetaFeed() {
           <th>Product</th><th>Store</th><th class="num">Qty</th><th class="num">7</th><th class="num">14</th><th class="num">28</th>
           <th class="num">DOH</th><th>Action</th><th>Reasons</th><th>Why</th><th class="num">Missed</th><th class="num">Conf</th>
         </tr></thead>
-        <tbody>${body || '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:28px">No matching beta decisions.</td></tr>'}</tbody>
+        <tbody>${body || `<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:28px">${viewValue === 'exceptions' ? 'No exceptions in the loaded beta rows.' : 'No matching beta decisions.'}</td></tr>`}</tbody>
       </table>
     </div>`;
+}
+
+function setBetaView(v) {
+  state.betaFilter.view = v || 'feed';
+  renderBetaFeed();
 }
 
 function setBetaReason(v) {
@@ -6195,6 +6290,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.15', date: 'May 16, 2026',
+    items: [
+      'Beta now has an Exceptions view for stale rows, live-stock mismatches, generic categories, missing pricing, and recommendation logic checks',
+      'Exception counts summarize freshness, revenue, and data/logic issues before reviewing individual rows',
+    ]
+  },
   {
     v: 'v2.14', date: 'May 16, 2026',
     items: [
