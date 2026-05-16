@@ -979,6 +979,15 @@ if (location.protocol === 'file:') {
   .po-toolbar-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .po-toolbar-title { font-size: 17px; font-weight: 700; }
   .po-toolbar-sub { font-size: 12px; color: var(--muted); }
+  .po-workbench-grid {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px;
+  }
+  .po-workbench-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 7px;
+    padding: 10px 12px; min-width: 0;
+  }
+  .po-workbench-val { font-size: 19px; font-weight: 800; line-height: 1; }
+  .po-workbench-lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-top: 5px; }
   .po-btn {
     padding: 7px 16px; border-radius: 8px; border: 1px solid var(--border);
     background: none; color: var(--muted); font-size: 13px; cursor: pointer;
@@ -997,7 +1006,15 @@ if (location.protocol === 'file:') {
     border-bottom: 1px solid var(--border);
   }
   .po-vendor-name { font-size: 13px; font-weight: 700; }
+  .po-vendor-meta {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 500;
+  }
   .po-vendor-subtotal { font-size: 13px; font-weight: 600; color: var(--green); }
+  .po-alert-chip {
+    display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 999px;
+    background: rgba(239,159,39,.14); color: var(--amber); font-size: 10px; font-weight: 700;
+  }
   .po-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .po-table th {
     font-size: 10px; font-weight: 600; color: var(--muted);
@@ -1039,6 +1056,9 @@ if (location.protocol === 'file:') {
   }
   .po-grand-label { color: var(--muted); font-size: 13px; }
   .po-grand-value { font-size: 20px; font-weight: 700; color: var(--green); }
+  @media (max-width: 900px) {
+    .po-workbench-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
 
   /* ── Pending saved plan indicators (qty cell) ── */
   .pending-indicators { display: flex; gap: 4px; margin-top: 2px; justify-content: flex-end; flex-wrap: wrap; }
@@ -1550,6 +1570,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.16</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Orders now has buyer workbench summary cards and vendor diagnostics for value, stores, category mix, and missing costs</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.15</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Beta now includes an Exceptions view for stale rows, live-stock mismatches, missing pricing, generic categories, and recommendation logic checks</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.14</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Apparel velocity now requires exact product or SKU matches so shirt sizes and colors do not inherit sales from neighboring variants</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.13</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower action buttons now use the same half-pound labels and beta flower rules as the recommendation chips</span></div>
@@ -6291,6 +6312,13 @@ function scanNameSelect(name, scannedCode) {
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
   {
+    v: 'v2.16', date: 'May 16, 2026',
+    items: [
+      'Orders now has buyer workbench cards for order value, vendor count, store count, line count, and missing costs',
+      'Vendor sections now show line count, store spread, category mix, and cost-gap warnings before reviewing line items',
+    ]
+  },
+  {
     v: 'v2.15', date: 'May 16, 2026',
     items: [
       'Beta now has an Exceptions view for stale rows, live-stock mismatches, generic categories, missing pricing, and recommendation logic checks',
@@ -7056,6 +7084,31 @@ function setDensity(mode) {
 }
 
 // ── Orders / PO ──────────────────────────────────────────
+function money0(n) {
+  return Number(n || 0).toLocaleString('en-US', { style:'currency', currency:'USD', maximumFractionDigits:0 });
+}
+function orderLineValue(item) {
+  return Number(item?.qty || 0) * Number(item?.unitCost || 0);
+}
+function orderStoreCount(items) {
+  return new Set((items || []).map(i => i.store).filter(Boolean)).size;
+}
+function orderCategorySummary(items, limit = 3) {
+  const counts = new Map();
+  for (const item of items || []) {
+    const cat = fmtCat(item.category || 'Other');
+    counts.set(cat, (counts.get(cat) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([cat, count]) => `${escapeHtml(cat)} ${count}`)
+    .join(' · ');
+}
+function missingCostCount(items) {
+  return (items || []).filter(i => !(Number(i.unitCost || 0) > 0)).length;
+}
+
 function renderOrders() {
   const el = document.getElementById('ordersContent');
   if (!el) return;
@@ -7083,6 +7136,9 @@ function renderOrders() {
   const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const totalItems = cart.length;
   const totalVendors = byVendor.size;
+  const totalValue = cart.reduce((sum, i) => sum + orderLineValue(i), 0);
+  const totalStores = orderStoreCount(cart);
+  const missingCosts = missingCostCount(cart);
 
   let html = `<div class="po-toolbar">
     <div class="po-toolbar-left">
@@ -7096,6 +7152,29 @@ function renderOrders() {
       <button class="po-btn primary" onclick="exportOrdersToExcel()">⬇ Export to Excel</button>
       <button class="po-btn primary" onclick="saveOrderPlan()" title="Save this order and clear the cart">💾 Save Plan</button>
       <button class="po-btn danger" onclick="clearOrderCart()">Clear Order</button>
+    </div>
+  </div>`;
+
+  html += `<div class="po-workbench-grid">
+    <div class="po-workbench-card">
+      <div class="po-workbench-val" id="poWorkbenchValue">${money0(totalValue)}</div>
+      <div class="po-workbench-lbl">Order Value</div>
+    </div>
+    <div class="po-workbench-card">
+      <div class="po-workbench-val">${totalVendors}</div>
+      <div class="po-workbench-lbl">Vendors</div>
+    </div>
+    <div class="po-workbench-card">
+      <div class="po-workbench-val">${totalStores}</div>
+      <div class="po-workbench-lbl">Stores</div>
+    </div>
+    <div class="po-workbench-card">
+      <div class="po-workbench-val">${totalItems}</div>
+      <div class="po-workbench-lbl">Lines</div>
+    </div>
+    <div class="po-workbench-card">
+      <div class="po-workbench-val" id="poWorkbenchCostGaps">${missingCosts}</div>
+      <div class="po-workbench-lbl">Cost Gaps</div>
     </div>
   </div>`;
 
@@ -7121,10 +7200,21 @@ function renderOrders() {
   </tr></thead>`;
 
   for (const [vendor, items] of [...byVendor.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const vendorTotal = items.reduce((sum, i) => sum + (i.qty * (i.unitCost || 0)), 0);
+    const vendorTotal = items.reduce((sum, i) => sum + orderLineValue(i), 0);
+    const vendorStores = orderStoreCount(items);
+    const vendorCats = orderCategorySummary(items);
+    const vendorMissingCosts = missingCostCount(items);
     html += `<div class="po-vendor-card">
       <div class="po-vendor-hdr">
-        <div class="po-vendor-name">${vendor}</div>
+        <div>
+          <div class="po-vendor-name">${escapeHtml(vendor)}</div>
+          <div class="po-vendor-meta">
+            <span>${items.length} line${items.length !== 1 ? 's' : ''}</span>
+            <span>${vendorStores} store${vendorStores !== 1 ? 's' : ''}</span>
+            ${vendorCats ? `<span>${vendorCats}</span>` : ''}
+            ${vendorMissingCosts ? `<span class="po-alert-chip">${vendorMissingCosts} cost gap${vendorMissingCosts !== 1 ? 's' : ''}</span>` : ''}
+          </div>
+        </div>
         <div class="po-vendor-subtotal" id="vt_${CSS.escape(vendor)}">$${vendorTotal.toFixed(2)}</div>
       </div>
       <table class="po-table">${poColGroup}${poThead}<tbody>`;
@@ -7225,14 +7315,18 @@ function toggleTxGroup(gKey) {
 function renderOrderTotals() {
   // Lightweight re-render of just totals after qty/cost edits
   const cart = state.orderCart;
-  const grandTotal = cart.reduce((sum, i) => sum + (i.qty * (i.unitCost || 0)), 0);
+  const grandTotal = cart.reduce((sum, i) => sum + orderLineValue(i), 0);
   const grandEl = document.getElementById('poGrandTotal');
   if (grandEl) grandEl.textContent = '$' + grandTotal.toFixed(2);
+  const valueEl = document.getElementById('poWorkbenchValue');
+  if (valueEl) valueEl.textContent = money0(grandTotal);
+  const costGapsEl = document.getElementById('poWorkbenchCostGaps');
+  if (costGapsEl) costGapsEl.textContent = missingCostCount(cart);
   // Per-vendor subtotals
   const byVendor = {};
   for (const i of cart) {
     const v = i.vendor || i.brand || 'Unknown';
-    byVendor[v] = (byVendor[v] || 0) + i.qty * (i.unitCost || 0);
+    byVendor[v] = (byVendor[v] || 0) + orderLineValue(i);
   }
   for (const [v, total] of Object.entries(byVendor)) {
     const el = document.getElementById('vt_' + CSS.escape(v));
