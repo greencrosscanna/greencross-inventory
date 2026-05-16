@@ -1539,6 +1539,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.14</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Apparel velocity now requires exact product or SKU matches so shirt sizes and colors do not inherit sales from neighboring variants</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.13</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower action buttons now use the same half-pound labels and beta flower rules as the recommendation chips</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.12</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower recommendation chips now use pound labels with one decimal place, and redundant MOQ/multiple chips are hidden from Inventory</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.11</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower order quantities now round to half-pound increments and display consistently as N.NNlb across Inventory, Orders, and exports</span></div>
@@ -3366,6 +3367,11 @@ function inventoryNormName(name) {
     .trim();
 }
 
+function requiresStrictVelocityMatch(p) {
+  const cat = String((p && p.category) || '').toLowerCase();
+  return cat === 'apparel';
+}
+
 function velocityEntryForProduct(p, storeName, velMap) {
   const storeVel = (velMap && velMap[storeName]) || {};
   if (storeVel[p.name]) return storeVel[p.name];
@@ -3379,6 +3385,7 @@ function velocityEntryForProduct(p, storeName, velMap) {
     });
     if (bySku) return bySku;
   }
+  if (requiresStrictVelocityMatch(p)) return {};
   const needle = inventoryNormName(p.name);
   if (needle) {
     const byName = Object.entries(storeVel).find(([name]) => inventoryNormName(name) === needle);
@@ -6188,6 +6195,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.14', date: 'May 16, 2026',
+    items: [
+      'Apparel velocity matching now skips fuzzy name fallback',
+      'Shirt sizes and colors must match by exact product name or SKU before sales velocity is shown',
+    ]
+  },
   {
     v: 'v2.13', date: 'May 14, 2026',
     items: [
