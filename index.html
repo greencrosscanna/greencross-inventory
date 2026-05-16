@@ -1570,6 +1570,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.17</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Bulk flower transfer guidance now hides redundant Need chips and caps very high donor coverage as &gt;90d instead of noisy precision</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.16</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Orders now has buyer workbench summary cards and vendor diagnostics for value, stores, category mix, and missing costs</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.15</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Beta now includes an Exceptions view for stale rows, live-stock mismatches, missing pricing, generic categories, and recommendation logic checks</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.14</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Apparel velocity now requires exact product or SKU matches so shirt sizes and colors do not inherit sales from neighboring variants</span></div>
@@ -4803,11 +4804,16 @@ function renderInventory() {
     const qtyProduct = orderQtyProduct(p, d);
     const grossOrderNeed = betaGrossOrderNeed(p, d, betaTransfer);
     const visibleOrderNeed = visibleOrderNeedFor(p, d, betaTransfer);
+    const transferQty = Number((betaTransfer && betaTransfer.qty) || 0);
+    const grossLabel = formatOrderQty(qtyProduct, grossOrderNeed);
+    const buyLabel = formatOrderQty(qtyProduct, visibleOrderNeed);
+    const transferLabel = formatOrderQty(qtyProduct, transferQty);
+    const redundantNeedLabel = betaTransfer && visibleOrderNeed > 0 && grossLabel === buyLabel && grossLabel === transferLabel;
     if (grossOrderNeed > 0 && (betaTransfer || d.recommendedTransferQty > 0)) {
-      parts.push(`<span class="buyer-rec-pill cover">Need ${formatOrderQty(qtyProduct, grossOrderNeed)}</span>`);
+      if (!redundantNeedLabel) parts.push(`<span class="buyer-rec-pill cover">Need ${grossLabel}</span>`);
     }
-    if (visibleOrderNeed > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${formatOrderQty(qtyProduct, visibleOrderNeed)}</span>`);
-    if (betaTransfer) parts.push(`<span class="buyer-rec-pill transfer">Move ${formatOrderQty(qtyProduct, betaTransfer.qty)}${d.donorStore ? ` from ${escapeHtml(storeDisplay(d.donorStore))}` : ''}</span>`);
+    if (visibleOrderNeed > 0) parts.push(`<span class="buyer-rec-pill order">Buy ${buyLabel}</span>`);
+    if (betaTransfer) parts.push(`<span class="buyer-rec-pill transfer">Move ${transferLabel}${d.donorStore ? ` from ${escapeHtml(storeDisplay(d.donorStore))}` : ''}</span>`);
     const reasons = String(d.reasonCodes || '').split(',').filter(Boolean);
     if (!parts.length && reasons.length) parts.push('<span class="buyer-rec-pill review">Review</span>');
     if (reasons.includes('GREEN_CROSS_OVERSTOCK')) parts.push('<span class="buyer-rec-pill context">GC</span>');
@@ -5148,9 +5154,10 @@ function renderInventory() {
       const fkEsc = flagKey(p).replace(/'/g, "\\'");
       const txList = donorsByStore.get(p.store) || [];
       // Inline transfer text — one line per suggestion
-      const txLine = txList.length ? `<div class="transfer-lines">${txList.map(tx =>
-        `<span class="transfer-line">→ <span style="color:${storeColor(tx.recipient.store)}">${storeDisplay(tx.recipient.store)}</span> <span class="transfer-line-detail">· ${formatOrderQty(orderQtyProduct(tx.recipient, betaDecisionForProduct(tx.recipient)), tx.qty)} · ${tx.days}-day transfer${tx.postDoh < 999 ? ` · leaves ${Math.round(tx.postDoh)}d` : ''}</span></span>`
-      ).join('')}</div>` : '';
+      const txLine = txList.length ? `<div class="transfer-lines">${txList.map(tx => {
+        const leavesLabel = tx.postDoh >= 90 ? ' · leaves >90d' : (tx.postDoh < 999 ? ` · leaves ${Math.round(tx.postDoh)}d` : '');
+        return `<span class="transfer-line">→ <span style="color:${storeColor(tx.recipient.store)}">${storeDisplay(tx.recipient.store)}</span> <span class="transfer-line-detail">· ${formatOrderQty(orderQtyProduct(tx.recipient, betaDecisionForProduct(tx.recipient)), tx.qty)} · ${tx.days}-day transfer${leavesLabel}</span></span>`;
+      }).join('')}</div>` : '';
       // Transfer pills — one per suggestion
       const txPill = txList.map(tx => {
         const txKey = transferKey(tx);
@@ -6311,6 +6318,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.17', date: 'May 16, 2026',
+    items: [
+      'Bulk flower transfer guidance now hides redundant Need chips when Buy and Move round to the same half-pound',
+      'Very high donor coverage now displays as >90d instead of noisy hundred-day precision',
+    ]
+  },
   {
     v: 'v2.16', date: 'May 16, 2026',
     items: [
