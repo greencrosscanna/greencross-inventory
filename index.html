@@ -1570,6 +1570,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.18</span><span class="ver-date">May 17, 2026</span><span class="ver-desc">Inventory loading now treats inventory and velocity as same-day operational data, reducing routine reloads and leaving heavy refresh work to backend jobs</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.17</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Bulk flower transfer guidance now hides redundant Need chips and caps very high donor coverage as &gt;90d instead of noisy precision</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.16</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Orders now has buyer workbench summary cards and vendor diagnostics for value, stores, category mix, and missing costs</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.15</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Beta now includes an Exceptions view for stale rows, live-stock mismatches, missing pricing, generic categories, and recommendation logic checks</span></div>
@@ -1986,6 +1987,7 @@ function escapeHtml(s) {
 
 // ── Cache ────────────────────────────────────────────────
 const CACHE_PREFIX = 'gc_inv5_';
+const OPERATIONAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // same-day data is fine for buyer decisions
 function cacheGet(key) {
   const raw = localStorage.getItem(CACHE_PREFIX + key);
   if (!raw) return null;
@@ -3405,6 +3407,7 @@ function init() {
     state.inv28Cogs  = null;
     state.inventoryData = null;
     state.velocityData  = null;
+    state.forceServerRefresh = true;
     state.betaFeed = null;
     state.betaDecisionStore = null;
     state.betaDecisionMap = {};
@@ -3453,6 +3456,7 @@ state.oosMap        = {};   // "store::sku" → last-in-stock date (YYYY-MM-DD)
 state.llOrders      = [];   // open LeafLink orders
 state.llProductMap  = {};   // normName → [{status,seller,orderId,qty}]
 state.velocityData  = null; // raw velocity map from proxy
+state.forceServerRefresh = false;
 state.invSort       = { col: 'status', dir: 1 };
 state.invPage       = 0;
 state.invFilters    = { status: 'all', category: '', brand: '', vendor: '', search: '', tags: { dead: false, hot: false, new: false, distro: false, transfer: false } };
@@ -3684,9 +3688,12 @@ async function loadInventoryData() {
   _quoteTimer = setInterval(_nextQuote, 4500);
 
   try {
-    // Step 1: velocity (cached 2h — one sheet read covers all stores)
+    const forceServerRefresh = !!state.forceServerRefresh;
+
+    // Step 1: velocity (same-day operational cache — one sheet read covers all stores)
     if (!state.velocityData) {
-      state.velocityData = await proxyFetch({ action: 'velocity' }, 'vel_all', 20 * 60 * 1000);
+      const velParams = forceServerRefresh ? { action: 'velocity', force: '1' } : { action: 'velocity' };
+      state.velocityData = await proxyFetch(velParams, forceServerRefresh ? null : 'vel_all', OPERATIONAL_CACHE_TTL_MS);
     }
     // Show last-synced timestamp with staleness warning
     const lastSynced = state.velocityData.lastSynced;
@@ -3713,23 +3720,14 @@ async function loadInventoryData() {
           ? 'Velocity data is a few hours old. Hourly sync should update this soon.'
           : 'Velocity data (sales rates) were last synced ' + ageText;
 
-        // Auto-trigger a resync if data is >4h stale (trigger may have lapsed)
-        if (stale4h) {
-          fetch(proxyUrl({ action: 'velsync' })).then(() => {
-            cacheDelete('vel_all');
-            state.velocityData = null;
-          }).catch(() => {});
-        }
+        // Stale velocity is shown as a warning, but normal app load stays read-only.
+        // Nightly/hourly GAS jobs own sync work so buyers are not blocked by background refresh.
       } else {
-        // No sync yet — trigger backfill in background (first-ever run)
-        syncLabel.textContent = '⏱ Vel: syncing…';
+        // No sync yet — keep load read-only; use Refresh/Hard Reset after backend sync is installed.
+        syncLabel.textContent = 'Vel: not synced';
         syncLabel.style.display = '';
-        syncLabel.style.color = 'var(--muted)';
-        syncLabel.title = 'Velocity data is being synced for the first time.';
-        fetch(proxyUrl({ action: 'velsync' })).then(() => {
-          cacheDelete('vel_all');
-          state.velocityData = null;
-        }).catch(() => {});
+        syncLabel.style.color = '#d4a843';
+        syncLabel.title = 'Velocity data has not been synced yet. Backend sync should run outside normal app load.';
       }
     }
     const velMap = state.velocityData.stores || {};
@@ -3739,7 +3737,8 @@ async function loadInventoryData() {
 
     let done = 0;
     const invResults = await Promise.all(targetStores.map(async store => {
-      const res = await proxyFetch({ action: 'inventory', store }, 'inv_' + store, 30 * 60 * 1000);
+      const invParams = forceServerRefresh ? { action: 'inventory', store, force: '1' } : { action: 'inventory', store };
+      const res = await proxyFetch(invParams, forceServerRefresh ? null : 'inv_' + store, OPERATIONAL_CACHE_TTL_MS);
       done++;
       const pct = 15 + (done / targetStores.length) * 85;
       const bar = document.getElementById('loadBar');
@@ -3918,6 +3917,8 @@ async function loadInventoryData() {
   } catch (err) {
     clearInterval(_quoteTimer);
     el.innerHTML = `<div class="state-msg error-msg">Error: ${err.message}</div>`;
+  } finally {
+    state.forceServerRefresh = false;
   }
 }
 
@@ -6318,6 +6319,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.18', date: 'May 17, 2026',
+    items: [
+      'Inventory and velocity caches now use same-day operational freshness instead of forcing short reload cycles',
+      'Normal page load no longer kicks off background velocity sync work; backend jobs own heavy refreshes',
+    ]
+  },
   {
     v: 'v2.17', date: 'May 16, 2026',
     items: [

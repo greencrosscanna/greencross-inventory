@@ -74,6 +74,8 @@ function doGet(e) {
     if (params.action === 'inventorylive')  return jsonOut(getLiveInventory(params));
     if (params.action === 'velocity')       return jsonOut(getVelocityEndpoint(params));
     if (params.action === 'velsync')        return jsonOut(syncVelocityCache());
+    if (params.action === 'warmcaches')     return jsonOut(warmOperationalCaches());
+    if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
     if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
     if (params.action === 'triggerstatus')  return jsonOut(getTriggerStatus());
     if (params.action === 'velreset')       return jsonOut(resetVelSyncDate());
@@ -343,7 +345,7 @@ function buildRoomData(store) {
   }
 
   const result = { roomNameType, roomIdType, invRoomMap, returnedPackageIds: [...returnedPackageIds] };
-  try { cache.put(cacheKey, JSON.stringify(result), 300); } catch(e) {} // 5 min — match inventory cache
+  try { cache.put(cacheKey, JSON.stringify(result), INV_CACHE_TTL); } catch(e) {}
   return result;
 }
 
@@ -357,7 +359,8 @@ function buildInventoryRoomMap(store) {
 // Room is determined by the latest "Move" transaction per inventoryId.
 // River Rd is the distribution hub: packages received but never moved default to 'distro'
 // (staged for distribution to other stores). At all other stores they default to 'back'.
-const INV_CACHE_TTL = 300; // seconds — 5 min server-side cache per store
+const OPERATIONAL_CACHE_TTL = 21600; // seconds — CacheService max, keeps same-day loads fast
+const INV_CACHE_TTL = OPERATIONAL_CACHE_TTL;
 
 function getInventory(params) {
   const store = params.store;
@@ -367,7 +370,7 @@ function getInventory(params) {
   const scriptCache = CacheService.getScriptCache();
   const cacheKey    = 'inv5_' + store;
   const cached      = scriptCache.get(cacheKey);
-  if (cached) {
+  if (params.force !== '1' && cached) {
     try { return JSON.parse(cached); } catch(e) {}
   }
 
@@ -1250,6 +1253,49 @@ function _readProductCatalogCache(scriptCache, cacheKey) {
   try { return JSON.parse(v); } catch(e) { return null; }
 }
 
+function _putChunkedJsonCache(cache, key, obj, ttl) {
+  try {
+    const json = JSON.stringify(obj);
+    const chunkSize = 90000;
+    const chunks = [];
+    for (let i = 0; i < json.length; i += chunkSize) chunks.push(json.slice(i, i + chunkSize));
+    cache.remove(key);
+    cache.remove(key + '_meta');
+    for (let i = 0; i < 20; i++) cache.remove(key + '_' + i);
+    if (chunks.length === 1) {
+      cache.put(key, json, ttl);
+    } else {
+      const put = {};
+      chunks.forEach((chunk, i) => { put[key + '_' + i] = chunk; });
+      put[key + '_meta'] = JSON.stringify({ chunks: chunks.length });
+      cache.putAll(put, ttl);
+    }
+  } catch(e) {
+    Logger.log('Cache write failed for ' + key + ': ' + e.message);
+  }
+}
+
+function _readChunkedJsonCache(cache, key) {
+  const direct = cache.get(key);
+  if (direct) {
+    try { return JSON.parse(direct); } catch(e) { return null; }
+  }
+  const metaRaw = cache.get(key + '_meta');
+  if (!metaRaw) return null;
+  try {
+    const meta = JSON.parse(metaRaw);
+    const parts = [];
+    for (let i = 0; i < meta.chunks; i++) {
+      const part = cache.get(key + '_' + i);
+      if (!part) return null;
+      parts.push(part);
+    }
+    return JSON.parse(parts.join(''));
+  } catch(e) {
+    return null;
+  }
+}
+
 // Main sync — call from trigger or manually. Fetches delta, writes to sheet.
 // For large date ranges (initial backfill), chunks into 14-day windows to stay
 // within Apps Script URL fetch response size limits.
@@ -1636,21 +1682,31 @@ function updateSkuDict(ss, products) {
 
 // Velocity API endpoint — returns velocity map (or filtered to one store)
 function getVelocityEndpoint(params) {
-  const velMap    = buildVelocityMap();
-  const nameToSku = buildNameSkuFromSnapshot();
   const lastSynced = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
-  // Attach snapshot-sourced SKUs to velocity entries
-  for (const store of Object.keys(velMap)) {
-    for (const name of Object.keys(velMap[store])) {
-      if (!velMap[store][name].sku && nameToSku[name]) {
-        velMap[store][name].sku = nameToSku[name];
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'velmap_v2';
+  const cached = params.force === '1' ? null : _readChunkedJsonCache(cache, cacheKey);
+  let payload = cached && cached.lastSynced === lastSynced ? cached : null;
+
+  if (!payload) {
+    const velMap    = buildVelocityMap();
+    const nameToSku = buildNameSkuFromSnapshot();
+    // Attach snapshot-sourced SKUs to velocity entries
+    for (const store of Object.keys(velMap)) {
+      for (const name of Object.keys(velMap[store])) {
+        if (!velMap[store][name].sku && nameToSku[name]) {
+          velMap[store][name].sku = nameToSku[name];
+        }
       }
     }
+    payload = { stores: velMap, lastSynced };
+    _putChunkedJsonCache(cache, cacheKey, payload, OPERATIONAL_CACHE_TTL);
   }
+
   if (params.store && params.store !== 'all') {
-    return { store: params.store, products: velMap[params.store] || {}, lastSynced };
+    return { store: params.store, products: payload.stores[params.store] || {}, lastSynced };
   }
-  return { stores: velMap, lastSynced };
+  return payload;
 }
 
 // Diagnostic: scan the sales history sheet for date coverage and gaps
@@ -2466,6 +2522,60 @@ function setupSnapshotTrigger() {
     .create();
 
   Logger.log('Snapshot trigger created — will run nightly at 2 AM.');
+}
+
+function warmOperationalCaches() {
+  const started = new Date();
+  const result = {
+    ok: true,
+    startedAt: started.toISOString(),
+    velocity: null,
+    inventory: [],
+    decisionFeed: null,
+    errors: [],
+  };
+
+  try {
+    result.velocity = syncVelocityCache();
+    getVelocityEndpoint({});
+  } catch (err) {
+    result.errors.push('velocity: ' + err.message);
+  }
+
+  for (const store of STORES) {
+    try {
+      const inv = getInventory({ store, force: '1' });
+      result.inventory.push({ store, products: (inv.products || []).length, error: inv.error || '' });
+    } catch (err) {
+      result.inventory.push({ store, products: 0, error: err.message });
+      result.errors.push('inventory ' + store + ': ' + err.message);
+    }
+  }
+
+  try {
+    result.decisionFeed = generateBetaDecisionFeed({ beta: '1', force: '1' });
+  } catch (err) {
+    result.errors.push('decision feed: ' + err.message);
+  }
+
+  result.finishedAt = new Date().toISOString();
+  result.durationSeconds = Math.round((new Date().getTime() - started.getTime()) / 1000);
+  return result;
+}
+
+function setupOperationalCacheTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'warmOperationalCaches')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+
+  ScriptApp.newTrigger('warmOperationalCaches')
+    .timeBased()
+    .everyDays(1)
+    .atHour(0)
+    .create();
+
+  Logger.log('Operational cache trigger created — will run nightly at midnight.');
+  return { ok: true, message: 'Operational cache trigger created — will run nightly at midnight.' };
 }
 
 // ─── SHEET HELPERS ────────────────────────────────────────────────────────────
