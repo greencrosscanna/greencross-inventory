@@ -1471,6 +1471,9 @@ if (location.protocol === 'file:') {
       <div class="settings-row">
         <button class="settings-btn-sm" id="buildSnapshotBtn" onclick="buildOperationalSnapshotNow()" style="flex:1;text-align:center">Build Snapshot Now</button>
       </div>
+      <div class="settings-row">
+        <button class="settings-btn-sm" id="installWarmTriggerBtn" onclick="installWarmTriggerNow()" style="flex:1;text-align:center">Install Nightly Trigger</button>
+      </div>
     </div>
 
     <!-- Category Labels -->
@@ -6356,6 +6359,7 @@ const CHANGELOG = [
       'Settings now shows whether the operational inventory snapshot is ready',
       'Snapshot status also reports whether the backend warm-cache trigger is installed',
       'Settings includes a protected Build Snapshot Now action that schedules the heavy rebuild in the background',
+      'Settings includes a protected Install Nightly Trigger action for operational setup',
     ]
   },
   {
@@ -6878,6 +6882,41 @@ async function buildOperationalSnapshotNow() {
     if (btn) {
       btn.disabled = false;
       btn.textContent = oldText || 'Build Snapshot Now';
+    }
+  }
+}
+
+async function installWarmTriggerNow() {
+  const btn = document.getElementById('installWarmTriggerBtn');
+  const label = document.getElementById('operationalSnapshotLabel');
+  const oldText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Installing...';
+  }
+  if (label) {
+    label.textContent = 'Installing trigger...';
+    label.style.color = '#d4a843';
+    label.title = 'Installing the nightly operational snapshot trigger.';
+  }
+  try {
+    const result = await withTimeout(proxyFetch({ action: 'installwarmtrigger' }), 30000, 'Trigger install');
+    if (label) {
+      label.textContent = 'Trigger installed';
+      label.style.color = 'var(--green)';
+      label.title = result.message || 'Nightly operational snapshot trigger installed.';
+    }
+    await refreshOperationalSnapshotStatus();
+  } catch(e) {
+    if (label) {
+      label.textContent = 'Trigger install failed';
+      label.style.color = 'var(--red)';
+      label.title = e.message || 'Trigger install failed';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText || 'Install Nightly Trigger';
     }
   }
 }
