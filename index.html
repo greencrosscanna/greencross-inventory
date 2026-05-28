@@ -1580,6 +1580,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.21</span><span class="ver-date">May 27, 2026</span><span class="ver-desc">Beta now includes operational health cards for snapshot readiness, generated time, nightly trigger status, and system issues</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.20</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Settings now shows whether the operational inventory snapshot is ready and whether the warm-cache trigger is installed</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.19</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Beta can now load Inventory from a persisted operational snapshot bundle without rebuilding it during normal app loads</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.18</span><span class="ver-date">May 17, 2026</span><span class="ver-desc">Inventory loading now treats inventory and velocity as same-day operational data, reducing routine reloads and leaving heavy refresh work to backend jobs</span></div>
@@ -2148,6 +2149,7 @@ let state = {
   betaDecisionRows: [],
   betaDecisionMap: {},
   betaDecisionStore: null,
+  operationalHealth: null,
   excludedRows: JSON.parse(localStorage.getItem(CACHE_PREFIX + 'excluded') || '{}'),
   restockShowAll: false,
 };
@@ -2906,7 +2908,12 @@ async function loadBetaFeed() {
       q: state.betaFilter.q || '',
       limit: 500,
     };
-    state.betaFeed = await proxyFetch(params);
+    const [feed, operationalHealth] = await Promise.all([
+      proxyFetch(params),
+      withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
+    ]);
+    state.betaFeed = feed;
+    state.operationalHealth = operationalHealth;
     if (state.betaFeed && state.betaFeed.schemaStale && !state.betaFeed.regenerating) {
       renderBetaFeed();
       return;
@@ -3081,6 +3088,28 @@ function betaExceptionRows(rows, ageInfo) {
     });
 }
 
+function operationalHealthIssues(status) {
+  const issues = [];
+  if (!status) return issues;
+  if (status.ok === false) {
+    issues.push({ type: 'Freshness', text: status.error || 'snapshot status unavailable' });
+    return issues;
+  }
+  const generatedAt = status.generatedAt ? new Date(status.generatedAt).getTime() : 0;
+  const ageHours = generatedAt && !Number.isNaN(generatedAt) ? (Date.now() - generatedAt) / 3600000 : null;
+  if (!status.ready) issues.push({ type: 'Freshness', text: 'operational snapshot missing' });
+  if (!status.warmTriggerInstalled) issues.push({ type: 'Freshness', text: 'nightly snapshot trigger missing' });
+  if (ageHours != null && ageHours > 30) issues.push({ type: 'Freshness', text: `snapshot ${fmtHours(ageHours)} old` });
+  const warmState = status.warmStatus && status.warmStatus.state;
+  if (warmState === 'scheduled' || warmState === 'running') {
+    issues.push({ type: 'Freshness', text: `snapshot build ${warmState}` });
+  }
+  if (warmState === 'completed_with_warnings') {
+    issues.push({ type: 'Data', text: 'last snapshot build had warnings' });
+  }
+  return issues;
+}
+
 function renderBetaFeed() {
   const el = document.getElementById('betaContent');
   const feed = state.betaFeed || { rows: [], total: 0, summary: {} };
@@ -3117,6 +3146,22 @@ function renderBetaFeed() {
         </div>
       </div>`
     : '';
+  const operationalIssues = operationalHealthIssues(state.operationalHealth);
+  const operationalStatus = state.operationalHealth || {};
+  const snapshotGenerated = operationalStatus.generatedAt
+    ? new Date(operationalStatus.generatedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+    : 'Not ready';
+  const operationalHealthHtml = `
+    <div class="beta-exception-summary" style="margin-bottom:12px">
+      <div class="beta-metric"><div class="beta-metric-val" style="color:${operationalStatus.ready ? 'var(--green)' : 'var(--amber)'}">${operationalStatus.ready ? 'Ready' : 'Check'}</div><div class="beta-metric-lbl">Snapshot</div></div>
+      <div class="beta-metric"><div class="beta-metric-val">${escapeHtml(snapshotGenerated)}</div><div class="beta-metric-lbl">Generated</div></div>
+      <div class="beta-metric"><div class="beta-metric-val" style="color:${operationalStatus.warmTriggerInstalled ? 'var(--green)' : 'var(--amber)'}">${operationalStatus.warmTriggerInstalled ? 'On' : 'Off'}</div><div class="beta-metric-lbl">Nightly Trigger</div></div>
+      <div class="beta-metric"><div class="beta-metric-val" style="color:${operationalIssues.length ? 'var(--amber)' : 'var(--green)'}">${operationalIssues.length}</div><div class="beta-metric-lbl">System Issues</div></div>
+    </div>
+    ${operationalIssues.length ? `<div class="state-msg" style="margin-bottom:12px;text-align:left;border-color:rgba(239,159,39,.45);background:rgba(239,159,39,.08)">
+      <strong style="color:var(--amber)">Operational health needs attention.</strong>
+      <div style="margin-top:5px">${operationalIssues.map(issue => `<span class="beta-reason stale">${escapeHtml(issue.type)}: ${escapeHtml(issue.text)}</span>`).join('')}</div>
+    </div>` : ''}`;
 
   const exceptions = betaExceptionRows(rows, ageInfo);
   const visibleRows = viewValue === 'exceptions' ? exceptions.map(x => x.row) : rows;
@@ -3171,6 +3216,7 @@ function renderBetaFeed() {
     ${staleBanner}
     ${assumptionBanner}
     ${ageBanner}
+    ${operationalHealthHtml}
     <div class="beta-toolbar">
       <input type="search" id="betaSearch" placeholder="Search product, SKU, brand…" value="${escapeHtml(qValue)}" oninput="queueBetaFilter()">
       <select id="betaReason" onchange="setBetaReason(this.value)">
@@ -3210,7 +3256,7 @@ function renderBetaFeed() {
         <div class="beta-metric"><div class="beta-metric-val">${exceptions.length}</div><div class="beta-metric-lbl">Exception Rows</div></div>
         <div class="beta-metric"><div class="beta-metric-val">${exceptionSummary.Freshness || 0}</div><div class="beta-metric-lbl">Freshness</div></div>
         <div class="beta-metric"><div class="beta-metric-val">${exceptionSummary.Revenue || 0}</div><div class="beta-metric-lbl">Revenue</div></div>
-        <div class="beta-metric"><div class="beta-metric-val">${(exceptionSummary.Data || 0) + (exceptionSummary.Logic || 0)}</div><div class="beta-metric-lbl">Data / Logic</div></div>
+        <div class="beta-metric"><div class="beta-metric-val">${(exceptionSummary.Data || 0) + (exceptionSummary.Logic || 0) + operationalIssues.length}</div><div class="beta-metric-lbl">Data / Logic</div></div>
       </div>` : ''}
     <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">
       <span>${viewValue === 'exceptions' ? 'Exceptions / Needs Review' : 'Beta decision feed'} · ${escapeHtml(generated)}</span>
@@ -6353,6 +6399,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.21', date: 'May 27, 2026',
+    items: [
+      'Beta now shows operational health cards before the decision feed',
+      'Snapshot readiness, generated time, nightly trigger status, and system issues are visible in one place',
+    ]
+  },
   {
     v: 'v2.20', date: 'May 20, 2026',
     items: [
