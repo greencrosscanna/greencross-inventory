@@ -15,6 +15,7 @@ const SKU_OVERRIDES_SHEET_NAME     = 'Config - SKU Overrides';
 const REORDER_RULES_SHEET_NAME     = 'Config - Reorder Rules';
 const VENDOR_LEAD_TIMES_SHEET_NAME = 'Config - Vendor Lead Times';
 const DECISION_FEED_SHEET_NAME     = 'Decision Feed';
+const OPERATIONAL_SNAPSHOT_SHEET_NAME = 'Operational Snapshot';
 const SHARED_STATE_SHEET_NAME      = 'Shared State';
 const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 
@@ -73,6 +74,7 @@ function doGet(e) {
     if (params.action === 'inventory')      return jsonOut(getInventory(params));
     if (params.action === 'inventorylive')  return jsonOut(getLiveInventory(params));
     if (params.action === 'velocity')       return jsonOut(getVelocityEndpoint(params));
+    if (params.action === 'operationalbundle') return jsonOut(getOperationalBundle(params));
     if (params.action === 'velsync')        return jsonOut(syncVelocityCache());
     if (params.action === 'warmcaches')     return jsonOut(warmOperationalCaches());
     if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
@@ -2524,6 +2526,77 @@ function setupSnapshotTrigger() {
   Logger.log('Snapshot trigger created — will run nightly at 2 AM.');
 }
 
+function getOrCreateOperationalSnapshotSheet_() {
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  let sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(OPERATIONAL_SNAPSHOT_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 4).setValues([['key', 'generatedAt', 'chunkIndex', 'jsonChunk']]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function writeOperationalSnapshot_(key, payload) {
+  const sheet = getOrCreateOperationalSnapshotSheet_();
+  const json = JSON.stringify(payload);
+  const chunkSize = 45000; // keep safely under Google Sheets cell limits
+  const generatedAt = payload.generatedAt || new Date().toISOString();
+  const rows = [];
+  for (let i = 0; i < json.length; i += chunkSize) {
+    rows.push([key, generatedAt, rows.length, json.slice(i, i + chunkSize)]);
+  }
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, 4).setValues([['key', 'generatedAt', 'chunkIndex', 'jsonChunk']]);
+  if (rows.length) sheet.getRange(2, 1, rows.length, 4).setValues(rows);
+}
+
+function readOperationalSnapshot_(key) {
+  const sheet = getOrCreateOperationalSnapshotSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  const rows = sheet.getRange(2, 1, lastRow - 1, 4).getValues()
+    .filter(r => String(r[0] || '') === key)
+    .sort((a, b) => Number(a[2] || 0) - Number(b[2] || 0));
+  if (!rows.length) return null;
+  try {
+    const payload = JSON.parse(rows.map(r => String(r[3] || '')).join(''));
+    payload.source = 'snapshot';
+    return payload;
+  } catch(e) {
+    return null;
+  }
+}
+
+function buildOperationalBundle_(force) {
+  const generatedAt = new Date().toISOString();
+  const velocity = getVelocityEndpoint({ force: force ? '1' : '' });
+  const inventory = [];
+  const errors = [];
+  for (const store of STORES) {
+    try {
+      const inv = getInventory({ store, force: force ? '1' : '' });
+      inventory.push({ store, products: inv.products || [], error: inv.error || '' });
+      if (inv.error) errors.push(store + ': ' + inv.error);
+    } catch (err) {
+      inventory.push({ store, products: [], error: err.message });
+      errors.push(store + ': ' + err.message);
+    }
+  }
+  return { ok: true, generatedAt, source: 'generated', velocity, inventory, errors };
+}
+
+function getOperationalBundle(params) {
+  const key = 'inventory_bundle_v1';
+  if (params.force !== '1') {
+    const cached = readOperationalSnapshot_(key);
+    if (cached) return cached;
+  }
+  const bundle = buildOperationalBundle_(params.force === '1');
+  writeOperationalSnapshot_(key, bundle);
+  return bundle;
+}
+
 function warmOperationalCaches() {
   const started = new Date();
   const result = {
@@ -2537,19 +2610,26 @@ function warmOperationalCaches() {
 
   try {
     result.velocity = syncVelocityCache();
-    getVelocityEndpoint({});
+    getVelocityEndpoint({ force: '1' });
   } catch (err) {
     result.errors.push('velocity: ' + err.message);
   }
 
-  for (const store of STORES) {
-    try {
-      const inv = getInventory({ store, force: '1' });
-      result.inventory.push({ store, products: (inv.products || []).length, error: inv.error || '' });
-    } catch (err) {
-      result.inventory.push({ store, products: 0, error: err.message });
-      result.errors.push('inventory ' + store + ': ' + err.message);
-    }
+  try {
+    const bundle = buildOperationalBundle_(true);
+    writeOperationalSnapshot_('inventory_bundle_v1', bundle);
+    result.inventory = bundle.inventory.map(inv => ({
+      store: inv.store,
+      products: (inv.products || []).length,
+      error: inv.error || '',
+    }));
+    result.operationalBundle = {
+      generatedAt: bundle.generatedAt,
+      stores: bundle.inventory.length,
+      errors: bundle.errors || [],
+    };
+  } catch (err) {
+    result.errors.push('operational bundle: ' + err.message);
   }
 
   try {

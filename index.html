@@ -1570,6 +1570,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.19</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Beta can now load Inventory from a persisted operational snapshot bundle, falling back to live store calls only when the snapshot is unavailable</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.18</span><span class="ver-date">May 17, 2026</span><span class="ver-desc">Inventory loading now treats inventory and velocity as same-day operational data, reducing routine reloads and leaving heavy refresh work to backend jobs</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.17</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Bulk flower transfer guidance now hides redundant Need chips and caps very high donor coverage as &gt;90d instead of noisy precision</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.16</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Orders now has buyer workbench summary cards and vendor diagnostics for value, stores, category mix, and missing costs</span></div>
@@ -3689,6 +3690,26 @@ async function loadInventoryData() {
 
   try {
     const forceServerRefresh = !!state.forceServerRefresh;
+    let invResults = null;
+
+    if (state.store === 'All') {
+      try {
+        const bundleParams = forceServerRefresh ? { action: 'operationalbundle', force: '1' } : { action: 'operationalbundle' };
+        const bundle = await proxyFetch(bundleParams, forceServerRefresh ? null : 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
+        if (bundle && bundle.velocity && Array.isArray(bundle.inventory)) {
+          state.velocityData = bundle.velocity;
+          invResults = bundle.inventory.map(row => ({
+            store: row.store,
+            products: row.products || [],
+            error: row.error || '',
+          }));
+          const bar = document.getElementById('loadBar');
+          if (bar) bar.style.width = '100%';
+        }
+      } catch (e) {
+        console.warn('Operational bundle unavailable; falling back to standard load', e);
+      }
+    }
 
     // Step 1: velocity (same-day operational cache — one sheet read covers all stores)
     if (!state.velocityData) {
@@ -3735,16 +3756,18 @@ async function loadInventoryData() {
     // Step 2: inventory per store in parallel (cached 30min each)
     document.querySelector('[id=loadBar]') && (document.getElementById('loadBar').style.width = '15%');
 
-    let done = 0;
-    const invResults = await Promise.all(targetStores.map(async store => {
-      const invParams = forceServerRefresh ? { action: 'inventory', store, force: '1' } : { action: 'inventory', store };
-      const res = await proxyFetch(invParams, forceServerRefresh ? null : 'inv_' + store, OPERATIONAL_CACHE_TTL_MS);
-      done++;
-      const pct = 15 + (done / targetStores.length) * 85;
-      const bar = document.getElementById('loadBar');
-      if (bar) bar.style.width = pct + '%';
-      return { store, products: res.products || [], error: res.error };
-    }));
+    if (!invResults) {
+      let done = 0;
+      invResults = await Promise.all(targetStores.map(async store => {
+        const invParams = forceServerRefresh ? { action: 'inventory', store, force: '1' } : { action: 'inventory', store };
+        const res = await proxyFetch(invParams, forceServerRefresh ? null : 'inv_' + store, OPERATIONAL_CACHE_TTL_MS);
+        done++;
+        const pct = 15 + (done / targetStores.length) * 85;
+        const bar = document.getElementById('loadBar');
+        if (bar) bar.style.width = pct + '%';
+        return { store, products: res.products || [], error: res.error };
+      }));
+    }
 
     // Step 3: enrich with velocity → DOH → status → reorder
     const allProducts = [];
@@ -6319,6 +6342,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.19', date: 'May 20, 2026',
+    items: [
+      'Inventory can now load from a persisted operational snapshot bundle when the backend has one ready',
+      'The normal per-store inventory path remains as a fallback when the snapshot is missing or forced refresh is requested',
+    ]
+  },
   {
     v: 'v2.18', date: 'May 17, 2026',
     items: [
