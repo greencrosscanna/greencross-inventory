@@ -1464,6 +1464,10 @@ if (location.protocol === 'file:') {
         <span class="settings-label">Velocity sync</span>
         <span id="velSyncLabel" style="font-size:11px;color:var(--muted);white-space:nowrap">—</span>
       </div>
+      <div class="settings-row">
+        <span class="settings-label">Snapshot</span>
+        <span id="operationalSnapshotLabel" style="font-size:11px;color:var(--muted);white-space:nowrap">—</span>
+      </div>
     </div>
 
     <!-- Category Labels -->
@@ -1570,6 +1574,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.20</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Settings now shows whether the operational inventory snapshot is ready and whether the warm-cache trigger is installed</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.19</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Beta can now load Inventory from a persisted operational snapshot bundle without rebuilding it during normal app loads</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.18</span><span class="ver-date">May 17, 2026</span><span class="ver-desc">Inventory loading now treats inventory and velocity as same-day operational data, reducing routine reloads and leaving heavy refresh work to backend jobs</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.17</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Bulk flower transfer guidance now hides redundant Need chips and caps very high donor coverage as &gt;90d instead of noisy precision</span></div>
@@ -6343,6 +6348,13 @@ function scanNameSelect(name, scannedCode) {
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
   {
+    v: 'v2.20', date: 'May 20, 2026',
+    items: [
+      'Settings now shows whether the operational inventory snapshot is ready',
+      'Snapshot status also reports whether the backend warm-cache trigger is installed',
+    ]
+  },
+  {
     v: 'v2.19', date: 'May 20, 2026',
     items: [
       'Inventory can now load from a persisted operational snapshot bundle when the backend has one ready',
@@ -6785,10 +6797,44 @@ function openSettings() {
   document.getElementById('densityCompact').classList.toggle('active', compact);
   document.getElementById('settingsBackdrop').classList.add('open');
   document.getElementById('settingsDrawer').classList.add('open');
+  refreshOperationalSnapshotStatus();
 }
 function closeSettings() {
   document.getElementById('settingsBackdrop').classList.remove('open');
   document.getElementById('settingsDrawer').classList.remove('open');
+}
+
+async function refreshOperationalSnapshotStatus() {
+  const el = document.getElementById('operationalSnapshotLabel');
+  if (!el) return;
+  el.textContent = 'Checking...';
+  el.style.color = 'var(--muted)';
+  el.title = '';
+  try {
+    const status = await proxyFetch({ action: 'operationalstatus' });
+    const generatedAt = status.generatedAt ? new Date(status.generatedAt) : null;
+    const generatedText = generatedAt && !Number.isNaN(generatedAt.getTime())
+      ? generatedAt.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      : '';
+    const triggerText = status.warmTriggerInstalled ? 'trigger on' : 'trigger missing';
+
+    if (status.ready) {
+      el.textContent = generatedText ? `Ready ${generatedText}` : 'Ready';
+      el.style.color = status.warmTriggerInstalled ? 'var(--green)' : '#d4a843';
+      el.title = `${status.chunkCount || 0} snapshot chunks, ${triggerText}`;
+    } else {
+      el.textContent = 'Missing snapshot';
+      el.style.color = '#d4a843';
+      el.title = `Operational snapshot has not been generated yet; ${triggerText}`;
+    }
+  } catch(e) {
+    const message = e.message || 'Snapshot status endpoint unavailable';
+    el.textContent = message === 'Unknown action' ? 'Deploy pending' : 'Unavailable';
+    el.style.color = '#d4a843';
+    el.title = message === 'Unknown action'
+      ? 'Snapshot status will be available after the updated GAS backend is deployed.'
+      : message;
+  }
 }
 
 // ── Category aliases ─────────────────────────────────────

@@ -75,6 +75,7 @@ function doGet(e) {
     if (params.action === 'inventorylive')  return jsonOut(getLiveInventory(params));
     if (params.action === 'velocity')       return jsonOut(getVelocityEndpoint(params));
     if (params.action === 'operationalbundle') return jsonOut(getOperationalBundle(params));
+    if (params.action === 'operationalstatus') return jsonOut(getOperationalSnapshotStatus());
     if (params.action === 'velsync')        return jsonOut(syncVelocityCache());
     if (params.action === 'warmcaches')     return jsonOut(warmOperationalCaches());
     if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
@@ -2566,6 +2567,41 @@ function readOperationalSnapshot_(key) {
   } catch(e) {
     return null;
   }
+}
+
+function getOperationalSnapshotStatus() {
+  const key = 'inventory_bundle_v1';
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
+  const triggers = ScriptApp.getProjectTriggers();
+  const warmTriggerInstalled = triggers.some(t => t.getHandlerFunction() === 'warmOperationalCaches');
+
+  if (!sheet || sheet.getLastRow() < 2) {
+    return {
+      ok: true,
+      ready: false,
+      source: 'missing',
+      generatedAt: '',
+      chunkCount: 0,
+      bytes: 0,
+      warmTriggerInstalled,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues()
+    .filter(r => String(r[0] || '') === key);
+  const bytes = rows.reduce((sum, r) => sum + String(r[3] || '').length, 0);
+  return {
+    ok: true,
+    ready: rows.length > 0 && bytes > 0,
+    source: rows.length ? 'snapshot' : 'missing',
+    generatedAt: rows.length ? String(rows[0][1] || '') : '',
+    chunkCount: rows.length,
+    bytes,
+    warmTriggerInstalled,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 function buildOperationalBundle_(force) {
