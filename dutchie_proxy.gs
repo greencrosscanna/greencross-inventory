@@ -2591,6 +2591,15 @@ function getOperationalBundle(params) {
   if (params.force !== '1') {
     const cached = readOperationalSnapshot_(key);
     if (cached) return cached;
+    return {
+      ok: false,
+      error: 'operational_snapshot_missing',
+      source: 'missing',
+      generatedAt: '',
+      velocity: null,
+      inventory: [],
+      errors: ['Operational snapshot is not ready yet. Run warmOperationalCaches or wait for the nightly trigger.'],
+    };
   }
   const bundle = buildOperationalBundle_(params.force === '1');
   writeOperationalSnapshot_(key, bundle);
