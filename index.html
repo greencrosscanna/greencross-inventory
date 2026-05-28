@@ -6355,7 +6355,7 @@ const CHANGELOG = [
     items: [
       'Settings now shows whether the operational inventory snapshot is ready',
       'Snapshot status also reports whether the backend warm-cache trigger is installed',
-      'Settings includes a protected Build Snapshot Now action for deployment rehearsals and troubleshooting',
+      'Settings includes a protected Build Snapshot Now action that schedules the heavy rebuild in the background',
     ]
   },
   {
@@ -6816,6 +6816,13 @@ async function refreshOperationalSnapshotStatus() {
   el.title = '';
   try {
     const status = await proxyFetch({ action: 'operationalstatus' });
+    const warmState = status.warmStatus && status.warmStatus.state;
+    if (warmState === 'scheduled' || warmState === 'running') {
+      el.textContent = warmState === 'scheduled' ? 'Build scheduled' : 'Building...';
+      el.style.color = '#d4a843';
+      el.title = status.warmStatus.message || 'Operational snapshot build is in progress.';
+      return;
+    }
     const generatedAt = status.generatedAt ? new Date(status.generatedAt) : null;
     const generatedText = generatedAt && !Number.isNaN(generatedAt.getTime())
       ? generatedAt.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -6855,14 +6862,12 @@ async function buildOperationalSnapshotNow() {
     label.title = 'Building the operational snapshot now. This can take a minute.';
   }
   try {
-    const result = await withTimeout(proxyFetch({ action: 'warmcaches' }), 120000, 'Snapshot build');
+    const result = await proxyFetch({ action: 'schedulewarmcaches' });
     if (label) {
-      const errors = result.errors || [];
-      label.textContent = errors.length ? 'Built with warnings' : 'Built just now';
-      label.style.color = errors.length ? '#d4a843' : 'var(--green)';
-      label.title = errors.length ? errors.join('; ') : 'Operational snapshot build completed.';
+      label.textContent = result.scheduled ? 'Build scheduled' : 'Queued';
+      label.style.color = '#d4a843';
+      label.title = result.message || 'Operational snapshot build scheduled.';
     }
-    await refreshOperationalSnapshotStatus();
   } catch(e) {
     if (label) {
       label.textContent = 'Build failed';

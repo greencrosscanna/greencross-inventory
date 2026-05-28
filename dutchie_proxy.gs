@@ -36,6 +36,7 @@ const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 14 days
 const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
 const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const OPERATIONAL_WARM_STATUS_KEY = 'gc_operational_warm_status';
 
 function getDataMode() {
   return (PropertiesService.getScriptProperties().getProperty('GC_DATA_MODE') || 'live').toLowerCase();
@@ -78,6 +79,7 @@ function doGet(e) {
     if (params.action === 'operationalstatus') return jsonOut(getOperationalSnapshotStatus());
     if (params.action === 'velsync')        return jsonOut(syncVelocityCache());
     if (params.action === 'warmcaches')     return jsonOut(warmOperationalCaches());
+    if (params.action === 'schedulewarmcaches') return jsonOut(scheduleOperationalWarmRun());
     if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
     if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
     if (params.action === 'triggerstatus')  return jsonOut(getTriggerStatus());
@@ -2585,6 +2587,7 @@ function getOperationalSnapshotStatus() {
       chunkCount: 0,
       bytes: 0,
       warmTriggerInstalled,
+      warmStatus: getOperationalWarmStatus_(),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -2600,8 +2603,49 @@ function getOperationalSnapshotStatus() {
     chunkCount: rows.length,
     bytes,
     warmTriggerInstalled,
+    warmStatus: getOperationalWarmStatus_(),
     checkedAt: new Date().toISOString(),
   };
+}
+
+function getOperationalWarmStatus_() {
+  try {
+    return JSON.parse(PropertiesService.getScriptProperties().getProperty(OPERATIONAL_WARM_STATUS_KEY) || '{}');
+  } catch(e) {
+    return {};
+  }
+}
+
+function setOperationalWarmStatus_(status) {
+  PropertiesService.getScriptProperties().setProperty(
+    OPERATIONAL_WARM_STATUS_KEY,
+    JSON.stringify(Object.assign({ updatedAt: new Date().toISOString() }, status || {}))
+  );
+}
+
+function scheduleOperationalWarmRun() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === '_runOperationalWarmTrigger')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+
+  ScriptApp.newTrigger('_runOperationalWarmTrigger')
+    .timeBased()
+    .after(60 * 1000)
+    .create();
+
+  setOperationalWarmStatus_({
+    state: 'scheduled',
+    scheduledAt: new Date().toISOString(),
+    message: 'Operational snapshot build scheduled.',
+  });
+  return { ok: true, scheduled: true, message: 'Operational snapshot build scheduled.' };
+}
+
+function _runOperationalWarmTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === '_runOperationalWarmTrigger')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  warmOperationalCaches();
 }
 
 function buildOperationalBundle_(force) {
@@ -2644,6 +2688,11 @@ function getOperationalBundle(params) {
 
 function warmOperationalCaches() {
   const started = new Date();
+  setOperationalWarmStatus_({
+    state: 'running',
+    startedAt: started.toISOString(),
+    message: 'Operational snapshot build running.',
+  });
   const result = {
     ok: true,
     startedAt: started.toISOString(),
@@ -2685,6 +2734,14 @@ function warmOperationalCaches() {
 
   result.finishedAt = new Date().toISOString();
   result.durationSeconds = Math.round((new Date().getTime() - started.getTime()) / 1000);
+  setOperationalWarmStatus_({
+    state: result.errors.length ? 'completed_with_warnings' : 'completed',
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    durationSeconds: result.durationSeconds,
+    errors: result.errors,
+    operationalBundle: result.operationalBundle || null,
+  });
   return result;
 }
 
