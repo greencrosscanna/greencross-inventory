@@ -6815,7 +6815,7 @@ async function refreshOperationalSnapshotStatus() {
   el.style.color = 'var(--muted)';
   el.title = '';
   try {
-    const status = await proxyFetch({ action: 'operationalstatus' });
+    const status = await withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status');
     const warmState = status.warmStatus && status.warmStatus.state;
     if (warmState === 'scheduled' || warmState === 'running') {
       el.textContent = warmState === 'scheduled' ? 'Build scheduled' : 'Building...';
