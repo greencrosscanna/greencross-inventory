@@ -239,7 +239,9 @@ if (location.protocol === 'file:') {
   .beta-queue-title { font-size:12px; font-weight:800; }
   .beta-queue-count { color:var(--muted); font-size:11px; font-weight:800; }
   .beta-queue-list { padding: 4px 0; }
-  .beta-queue-item { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.045); }
+  .beta-queue-item { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.045); cursor:pointer; }
+  .beta-queue-item:hover,
+  .beta-queue-item:focus { background:rgba(20,184,166,.08); outline:none; }
   .beta-queue-item:last-child { border-bottom:0; }
   .beta-queue-product { font-size:12px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .beta-queue-meta { color:var(--muted); font-size:10px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -1650,6 +1652,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.32</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta Action Queue items now jump straight to the matching Inventory product group with filters cleared and All Stores selected</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.31</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta freshness panel now separates snapshot age, Decision Feed age, and midnight job status with clear Regenerate Feed, Build Snapshot, and Install Trigger actions</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.30</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta now shows a Decision Rules card for vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.29</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Settings now calls the local reorder control Target days, defaults it to the 14-day beta model, and removes obsolete long-lead/vendor-lead filters from the beta queue</span></div>
@@ -3184,6 +3187,16 @@ function betaDecisionScore(r, issues = []) {
 }
 
 function renderBetaActionQueue(rows, exceptions, ageInfo) {
+  const queueItemAttrs = r => [
+    'role="button"',
+    'tabindex="0"',
+    'onclick="openQueueDecisionInInventoryFromEl(this)"',
+    'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();openQueueDecisionInInventoryFromEl(this);}"',
+    `data-beta-store="${escapeHtml(r.store || '')}"`,
+    `data-beta-sku="${escapeHtml(r.sku || '')}"`,
+    `data-beta-name="${escapeHtml(r.productName || '')}"`,
+  ].join(' ');
+
   if (state.betaQueue && state.betaQueue.ok) {
     const buckets = state.betaQueue.buckets || {};
     const total = state.betaQueue.total || 0;
@@ -3199,7 +3212,7 @@ function renderBetaActionQueue(rows, exceptions, ageInfo) {
         const issueText = issues.length ? ` · ${issues[0].type}: ${issues[0].text}` : '';
         const missed = missedLabel(r);
         const meta = [storeDisplay(r.store), r.sku, r.brand, missed].filter(Boolean).join(' · ');
-        return `<div class="beta-queue-item">
+        return `<div class="beta-queue-item" ${queueItemAttrs(r)}>
           <div class="beta-queue-product" title="${escapeHtml(r.productName || '')}">${escapeHtml(r.productName || '')}</div>
           <div class="beta-queue-meta">${escapeHtml(meta)}${escapeHtml(issueText)}</div>
           <div class="beta-queue-action">${escapeHtml(r.action || '')}</div>
@@ -3252,7 +3265,7 @@ function renderBetaActionQueue(rows, exceptions, ageInfo) {
       const issueText = issues.length ? ` · ${issues[0].type}: ${issues[0].text}` : '';
       const missed = missedLabel(r);
       const meta = [storeDisplay(r.store), r.sku, r.brand, missed].filter(Boolean).join(' · ');
-      return `<div class="beta-queue-item">
+      return `<div class="beta-queue-item" ${queueItemAttrs(r)}>
         <div class="beta-queue-product" title="${escapeHtml(r.productName)}">${escapeHtml(r.productName)}</div>
         <div class="beta-queue-meta">${escapeHtml(meta)}${escapeHtml(issueText)}</div>
         <div class="beta-queue-action">${escapeHtml(actionFn(r))}</div>
@@ -5845,6 +5858,66 @@ function clearAllInvFilters() {
   renderInventory();
 }
 
+function openQueueDecisionInInventoryFromEl(el) {
+  if (!el) return;
+  openQueueDecisionInInventory(el.dataset.betaStore || '', el.dataset.betaSku || '', el.dataset.betaName || '');
+}
+
+function inventoryGroupKeyForJump(sku, productName) {
+  const skuText = String(sku || '').trim();
+  const nameText = String(productName || '').trim();
+  const nameNorm = betaNormName(nameText);
+  const match = (state.inventoryData || []).find(p =>
+    (skuText && String(p.sku || '').trim() === skuText) ||
+    (nameNorm && betaNormName(p.name) === nameNorm)
+  );
+  return (match && (match.sku || match.name)) || skuText || nameText;
+}
+
+function syncInventoryFilterControls() {
+  document.getElementById('invSearch').value = state.invFilters.search || '';
+  document.getElementById('invSearchClear').classList.toggle('visible', !!state.invFilters.search);
+  document.getElementById('invStatus').value = state.invFilters.status || 'all';
+  document.getElementById('invCategory').value = state.invFilters.category || '';
+  document.getElementById('invBrand').value = state.invFilters.brand || '';
+  document.getElementById('invVendor').value = state.invFilters.vendor || '';
+  const clsMap = { dead: 'active-dead', hot: 'active-hot', new: 'active-new', distro: 'active-distro', transfer: 'active-transfer' };
+  const idMap  = { dead: 'tagDead', hot: 'tagHot', new: 'tagNew', distro: 'tagDistro', transfer: 'tagTransfer' };
+  Object.entries(idMap).forEach(([tag, id]) => document.getElementById(id)?.classList.toggle(clsMap[tag], !!state.invFilters.tags[tag]));
+  document.querySelectorAll('#storePills .pill').forEach(p => {
+    const isActive = p.dataset.store === state.store;
+    p.classList.toggle('active', isActive && p.dataset.store === 'All');
+    p.classList.toggle('store-active', isActive && p.dataset.store !== 'All');
+  });
+  updateClearFiltersBtn();
+}
+
+function openQueueDecisionInInventory(store, sku, productName) {
+  const search = String(sku || productName || '').trim();
+  const groupKey = inventoryGroupKeyForJump(sku, productName);
+
+  state.store = 'All';
+  state.invFilters = { status: 'all', category: '', brand: '', vendor: '', search, tags: { dead: false, hot: false, new: false, distro: false, transfer: false } };
+  state.excludedCats.clear();
+  state.hideBackstock = false;
+  localStorage.setItem('gc_inv_excl_cat', '[]');
+  localStorage.setItem('gc_inv_hide_backstock', 'false');
+  state.invPage = 0;
+  state.restockShowAll = false;
+  if (groupKey) state.expandedGroups.add(groupKey);
+
+  syncInventoryFilterControls();
+  buildInvFilterOptions(state.inventoryData || []);
+  const invTab = document.querySelector('.tab[data-tab="inventory"]');
+  if (invTab && state.tab !== 'inventory') invTab.click();
+  else if (state.inventoryData) renderInventory();
+  else loadInventoryData();
+
+  requestAnimationFrame(() => {
+    document.getElementById('inventoryContent')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
 // Wire up inventory filter inputs (called after DOM ready)
 function initInvFilters() {
   document.getElementById('invSearch').addEventListener('input', e => {
@@ -6812,6 +6885,14 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.32', date: 'May 30, 2026',
+    items: [
+      'Beta Action Queue items now open the matching product in Inventory',
+      'The jump clears filters, switches to All Stores, searches the SKU/product, and expands the product group',
+      'Queue cards are keyboard accessible so Enter or Space performs the same jump',
+    ]
+  },
   {
     v: 'v2.31', date: 'May 30, 2026',
     items: [
