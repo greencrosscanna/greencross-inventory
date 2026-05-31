@@ -225,9 +225,60 @@ if (location.protocol === 'file:') {
   .beta-reason.risk { background: rgba(240,149,149,.12); color: var(--red); }
   .beta-reason.stale { background: rgba(239,159,39,.14); color: var(--amber); }
   .beta-reason.why { background: rgba(255,255,255,.055); color: var(--text); font-weight: 600; }
+  .beta-queue-grid {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px;
+  }
+  .beta-queue-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 7px;
+    min-width: 0; overflow: hidden;
+  }
+  .beta-queue-head {
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:10px 12px; border-bottom:1px solid var(--border);
+  }
+  .beta-queue-title { font-size:12px; font-weight:800; }
+  .beta-queue-count { color:var(--muted); font-size:11px; font-weight:800; }
+  .beta-queue-list { padding: 4px 0; }
+  .beta-queue-item { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.045); }
+  .beta-queue-item:last-child { border-bottom:0; }
+  .beta-queue-product { font-size:12px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .beta-queue-meta { color:var(--muted); font-size:10px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .beta-queue-action { margin-top:4px; font-size:11px; font-weight:800; }
+  .beta-queue-card.order .beta-queue-action { color:var(--green); }
+  .beta-queue-card.transfer .beta-queue-action { color:var(--amber); }
+  .beta-queue-card.investigate .beta-queue-action { color:var(--red); }
+  .beta-queue-card.dead .beta-queue-action { color:var(--muted); }
+  .beta-queue-empty { padding:14px 12px; color:var(--muted); font-size:12px; }
+  .beta-rules-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 7px;
+    padding: 10px 12px; margin-bottom: 12px;
+  }
+  .beta-rules-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
+  .beta-rules-title { font-size:12px; font-weight:800; }
+  .beta-rules-sub { color:var(--muted); font-size:10px; }
+  .beta-rules-grid { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:8px; }
+  .beta-rule { border:1px solid rgba(255,255,255,.07); border-radius:6px; padding:8px; min-width:0; }
+  .beta-rule-value { font-size:14px; font-weight:900; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .beta-rule-label { color:var(--muted); font-size:9px; text-transform:uppercase; margin-top:3px; }
+  .beta-freshness {
+    display:grid; grid-template-columns: 1.1fr 1.1fr 1.4fr auto; gap:8px; align-items:stretch;
+    background: var(--card); border:1px solid var(--border); border-radius:7px;
+    padding:10px 12px; margin-bottom:12px;
+  }
+  .beta-freshness.warn { border-color:rgba(239,159,39,.42); background:rgba(239,159,39,.06); }
+  .beta-freshness-cell { min-width:0; }
+  .beta-freshness-label { color:var(--muted); font-size:9px; text-transform:uppercase; font-weight:800; }
+  .beta-freshness-value { color:var(--text); font-size:13px; font-weight:900; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .beta-freshness-note { color:var(--muted); font-size:10px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .beta-freshness.warn .beta-freshness-value.attn { color:var(--amber); }
+  .beta-freshness-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }
   @media (max-width: 640px) {
     .beta-summary { grid-template-columns: repeat(2, 1fr); }
     .beta-exception-summary { grid-template-columns: repeat(2, 1fr); }
+    .beta-queue-grid { grid-template-columns: 1fr; }
+    .beta-rules-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .beta-freshness { grid-template-columns: 1fr; }
+    .beta-freshness-actions { justify-content:flex-start; }
     .beta-toolbar select { flex: 1 1 calc(50% - 4px); min-width: 0; }
   }
 
@@ -854,6 +905,25 @@ if (location.protocol === 'file:') {
   .buyer-rec-pill.cover { color: var(--text); background: rgba(255,255,255,.11); }
   .buyer-rec-pill.why { color: var(--muted); background: rgba(255,255,255,.055); font-weight: 700; }
   .buyer-rec-pill.why.risk { color: var(--red); background: rgba(240,149,149,.13); }
+  .inv-health {
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    margin:0 0 10px 0; padding:8px 10px;
+    border:1px solid var(--border); border-radius:8px;
+    background:rgba(255,255,255,.035); color:var(--muted); font-size:12px;
+  }
+  .inv-health-label { font-weight:800; color:var(--text); text-transform:uppercase; letter-spacing:.02em; font-size:10px; }
+  .inv-health-ok { border-color:rgba(29,158,117,.25); background:rgba(29,158,117,.06); }
+  .inv-health-warn { border-color:rgba(239,159,39,.38); background:rgba(239,159,39,.08); }
+  .inv-health-warn .inv-health-label { color:var(--amber); }
+  .inv-health-issues { color:var(--text); }
+  .inv-health-actions { display:inline-flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+  .inv-health-btn {
+    border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.07);
+    color:var(--text); border-radius:7px; padding:5px 8px;
+    font-size:11px; font-weight:800; cursor:pointer;
+  }
+  .inv-health-btn:hover { background:rgba(255,255,255,.11); }
+  .inv-health-btn:disabled { opacity:.55; cursor:wait; }
   .transfer-lines {
     display: inline-flex;
     flex-direction: column;
@@ -1491,15 +1561,15 @@ if (location.protocol === 'file:') {
       </div>
     </div>
 
-    <!-- Reorder Buffer -->
+    <!-- Reorder Target -->
     <div class="settings-sec">
       <div class="settings-sec-title">Reorder Settings</div>
       <div class="settings-row">
-        <span class="settings-label">Buffer (days)</span>
-        <input class="settings-input" type="number" id="reorderBufferInput" min="1" max="60" value="12" style="max-width:80px">
+        <span class="settings-label">Target days</span>
+        <input class="settings-input" type="number" id="reorderBufferInput" min="1" max="60" value="14" style="max-width:80px">
         <button class="settings-btn-sm" onclick="saveReorderBuffer()">Save</button>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">Days of supply to reorder at. Default: 12</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">Lead 7d + safety 7d = 14 days. This controls local Inventory reorder chips; Decision Feed uses the same beta target.</div>
     </div>
 
     <!-- Transfer Settings -->
@@ -1580,6 +1650,15 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.31</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta freshness panel now separates snapshot age, Decision Feed age, and midnight job status with clear Regenerate Feed, Build Snapshot, and Install Trigger actions</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.30</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta now shows a Decision Rules card for vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.29</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Settings now calls the local reorder control Target days, defaults it to the 14-day beta model, and removes obsolete long-lead/vendor-lead filters from the beta queue</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.28</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Decision Feed now standardizes beta vendor replenishment to the team-confirmed 7-day lead time, ignoring stale lead-time values from older config rows</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.27</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Decision Feed regeneration now uses the prepared operational inventory snapshot when available, avoiding live Dutchie inventory fetches during manual queue refreshes</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.26</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Action Queue can now use a backend decisionqueue endpoint so bucket counts and top items are ranked from the full Decision Feed dataset instead of only the loaded table rows</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.25</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Beta now opens to an Action Queue that ranks loaded decisions into Order Today, Transfer Today, Investigate, and Dead / Kill Review buckets</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.24</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Inventory decision health warnings now include manual actions to refresh the decision feed, schedule a snapshot build, or install the nightly trigger when needed</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.23</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Fixed critical URL fetch quota exhaustion — removed auto-regen of beta decision feed, Refresh button now reloads from snapshot, snapshot-missing shows clear error, GAS force-rebuild now schedules async job</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.21</span><span class="ver-date">May 27, 2026</span><span class="ver-desc">Beta now includes operational health cards for snapshot readiness, generated time, nightly trigger status, and system issues</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.20</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Settings now shows whether the operational inventory snapshot is ready and whether the warm-cache trigger is installed</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.19</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Beta can now load Inventory from a persisted operational snapshot bundle without rebuilding it during normal app loads</span></div>
@@ -2145,10 +2224,12 @@ let state = {
   inv28Cogs:  null, // 28-day cogs for inventory summary bar
   betaEnabled: false,
   betaFeed: null,
-  betaFilter: { reason: '', status: '', q: '', view: 'feed' },
+  betaQueue: null,
+  betaFilter: { reason: '', status: '', q: '', view: 'queue' },
   betaDecisionRows: [],
   betaDecisionMap: {},
   betaDecisionStore: null,
+  betaDecisionFeedMeta: null,
   operationalHealth: null,
   excludedRows: JSON.parse(localStorage.getItem(CACHE_PREFIX + 'excluded') || '{}'),
   restockShowAll: false,
@@ -2908,12 +2989,15 @@ async function loadBetaFeed() {
       q: state.betaFilter.q || '',
       limit: 500,
     };
-    const [feed, operationalHealth] = await Promise.all([
+    const queueParams = { ...params, action: 'decisionqueue', limit: 10 };
+    const [feed, operationalHealth, queue] = await Promise.all([
       proxyFetch(params),
       withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
+      proxyFetch(queueParams).catch(err => ({ ok: false, error: err.message })),
     ]);
     state.betaFeed = feed;
     state.operationalHealth = operationalHealth;
+    state.betaQueue = queue && queue.ok ? queue : null;
     if (state.betaFeed && state.betaFeed.schemaStale && !state.betaFeed.regenerating) {
       renderBetaFeed();
       return;
@@ -2933,6 +3017,7 @@ async function regenerateBetaFeed() {
     state.betaDecisionStore = null;
     state.betaDecisionMap = {};
     state.betaDecisionRows = [];
+    state.betaQueue = null;
     await loadBetaFeed();
     if (state.inventoryData && state.tab === 'inventory') loadBetaDecisionsForInventory();
   } catch (err) {
@@ -2992,7 +3077,6 @@ function betaFeedAssumptionIssues(feed) {
   ].filter(Boolean).join('|')).join('|').toLowerCase();
 
   if (/\blead\s*5d\b/.test(text)) issues.add('old 5-day vendor lead timing');
-  if (/\b12-day reorder buffer\b/.test(text) || /\b12\s*day\b/.test(text)) issues.add('old 12-day reorder buffer');
   if (/\bverdant\b/.test(text) && /\blong[-\s]?lead\b/.test(text)) issues.add('old Verdant long-lead rule');
   return Array.from(issues);
 }
@@ -3023,7 +3107,7 @@ function betaRowFreshnessIssues(r, ageInfo) {
   const issues = [];
   const rowText = [r.whyChips, r.notes, r.reasonCodes].filter(Boolean).join('|').toLowerCase();
   if (ageInfo?.isStale) issues.push(`feed ${fmtHours(ageInfo.hours)} old`);
-  if (/\blead\s*5d\b/.test(rowText) || /\b12-day reorder buffer\b/.test(rowText)) issues.push('old assumptions');
+  if (/\blead\s*5d\b/.test(rowText)) issues.push('old assumptions');
 
   const live = liveProductForDecisionRow(r);
   if (live) {
@@ -3088,6 +3172,111 @@ function betaExceptionRows(rows, ageInfo) {
     });
 }
 
+function betaDecisionScore(r, issues = []) {
+  const missed = Number(r.missedRevenue || 0);
+  const lost = Number(r.lostUnits || 0);
+  const orderQty = Number(r.recommendedOrderQty || 0);
+  const transferQty = Number(r.recommendedTransferQty || 0);
+  const confidence = Number(r.confidence || 0);
+  const statusRank = { oos: 500, critical: 350, low: 160, watch: 60, ok: 0, slow: -30 };
+  const statusScore = statusRank[String(r.status || '').toLowerCase()] || 0;
+  return statusScore + missed * 5 + lost * 35 + orderQty * 2 + transferQty * 2 + confidence + issues.length * 45;
+}
+
+function renderBetaActionQueue(rows, exceptions, ageInfo) {
+  if (state.betaQueue && state.betaQueue.ok) {
+    const buckets = state.betaQueue.buckets || {};
+    const total = state.betaQueue.total || 0;
+    const limit = state.betaQueue.limit || 10;
+    const fmtQty = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 1 });
+    const missedLabel = r => Number(r.missedRevenue || 0) > 0
+      ? Number(r.missedRevenue || 0).toLocaleString('en-US', { style:'currency', currency:'USD', maximumFractionDigits:0 })
+      : Number(r.lostUnits || 0) > 0 ? `${fmtQty(r.lostUnits)}u lost` : '';
+    const card = (key, fallbackTitle) => {
+      const bucket = buckets[key] || { label: fallbackTitle, count: 0, items: [] };
+      const items = (bucket.items || []).map(r => {
+        const issues = r.issues || [];
+        const issueText = issues.length ? ` · ${issues[0].type}: ${issues[0].text}` : '';
+        const missed = missedLabel(r);
+        const meta = [storeDisplay(r.store), r.sku, r.brand, missed].filter(Boolean).join(' · ');
+        return `<div class="beta-queue-item">
+          <div class="beta-queue-product" title="${escapeHtml(r.productName || '')}">${escapeHtml(r.productName || '')}</div>
+          <div class="beta-queue-meta">${escapeHtml(meta)}${escapeHtml(issueText)}</div>
+          <div class="beta-queue-action">${escapeHtml(r.action || '')}</div>
+        </div>`;
+      }).join('') || '<div class="beta-queue-empty">Nothing urgent in matching rows.</div>';
+      return `<div class="beta-queue-card ${key}">
+        <div class="beta-queue-head"><div class="beta-queue-title">${escapeHtml(bucket.label || fallbackTitle)}</div><div class="beta-queue-count">${bucket.count || 0}</div></div>
+        <div class="beta-queue-list">${items}</div>
+      </div>`;
+    };
+    return `
+      <div class="state-msg" style="margin-bottom:12px;text-align:left">Action Queue is ranked from the full matching Decision Feed dataset (${total.toLocaleString('en-US')} rows). Showing the top ${limit} per bucket.</div>
+      <div class="beta-queue-grid">
+        ${card('order', 'Order Today')}
+        ${card('transfer', 'Transfer Today')}
+        ${card('investigate', 'Investigate')}
+        ${card('dead', 'Dead / Kill Review')}
+      </div>`;
+  }
+
+  const exceptionByKey = new Map(exceptions.map(x => [betaDecisionKey(x.row.store, x.row.sku, x.row.productName), x.issues]));
+  const bucket = {
+    order: [],
+    transfer: [],
+    investigate: [],
+    dead: [],
+  };
+  for (const r of rows || []) {
+    const key = betaDecisionKey(r.store, r.sku, r.productName);
+    const issues = exceptionByKey.get(key) || [];
+    const reasons = String(r.reasonCodes || '').toUpperCase();
+    const status = String(r.status || '').toLowerCase();
+    const orderQty = Number(r.recommendedOrderQty || 0);
+    const transferQty = Number(r.recommendedTransferQty || 0);
+    const score = betaDecisionScore(r, issues);
+    if (issues.length) bucket.investigate.push({ r, issues, score });
+    if (/KILL_LIST|DEAD|SLOW/.test(reasons) || status === 'slow') bucket.dead.push({ r, issues, score });
+    if (transferQty > 0 && !/KILL_LIST/.test(reasons)) bucket.transfer.push({ r, issues, score });
+    if (orderQty > 0 && !/KILL_LIST/.test(reasons)) bucket.order.push({ r, issues, score });
+  }
+  Object.values(bucket).forEach(list => list.sort((a, b) => b.score - a.score));
+
+  const fmtQty = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 1 });
+  const missedLabel = r => Number(r.missedRevenue || 0) > 0
+    ? Number(r.missedRevenue || 0).toLocaleString('en-US', { style:'currency', currency:'USD', maximumFractionDigits:0 })
+    : Number(r.lostUnits || 0) > 0 ? `${fmtQty(r.lostUnits)}u lost` : '';
+  const card = (key, title, list, actionFn) => {
+    const visible = list.slice(0, 8);
+    const items = visible.map(({ r, issues }) => {
+      const issueText = issues.length ? ` · ${issues[0].type}: ${issues[0].text}` : '';
+      const missed = missedLabel(r);
+      const meta = [storeDisplay(r.store), r.sku, r.brand, missed].filter(Boolean).join(' · ');
+      return `<div class="beta-queue-item">
+        <div class="beta-queue-product" title="${escapeHtml(r.productName)}">${escapeHtml(r.productName)}</div>
+        <div class="beta-queue-meta">${escapeHtml(meta)}${escapeHtml(issueText)}</div>
+        <div class="beta-queue-action">${escapeHtml(actionFn(r))}</div>
+      </div>`;
+    }).join('') || '<div class="beta-queue-empty">Nothing urgent in loaded rows.</div>';
+    return `<div class="beta-queue-card ${key}">
+      <div class="beta-queue-head"><div class="beta-queue-title">${escapeHtml(title)}</div><div class="beta-queue-count">${list.length}</div></div>
+      <div class="beta-queue-list">${items}</div>
+    </div>`;
+  };
+
+  const loadedNote = rows.length < (state.betaFeed?.total || 0)
+    ? `<div class="state-msg" style="margin-bottom:12px;text-align:left">Action Queue is ranking the ${rows.length} loaded decision rows. Refine filters or load more rows later for a full-store queue.</div>`
+    : '';
+  return `
+    ${loadedNote}
+    <div class="beta-queue-grid">
+      ${card('order', 'Order Today', bucket.order, r => `Buy ${fmtQty(r.recommendedOrderQty)} · ${String(r.status || '').toUpperCase()}`)}
+      ${card('transfer', 'Transfer Today', bucket.transfer, r => `Move ${fmtQty(r.recommendedTransferQty)}${r.donorStore ? ` from ${storeDisplay(r.donorStore)}` : ''}`)}
+      ${card('investigate', 'Investigate', bucket.investigate, r => `${String((exceptionByKey.get(betaDecisionKey(r.store, r.sku, r.productName)) || [])[0]?.type || 'Review')} check`)}
+      ${card('dead', 'Dead / Kill Review', bucket.dead, r => String(r.reasonCodes || 'Slow mover').split(',')[0] || 'Review')}
+    </div>`;
+}
+
 function operationalHealthIssues(status) {
   const issues = [];
   if (!status) return issues;
@@ -3110,6 +3299,214 @@ function operationalHealthIssues(status) {
   return issues;
 }
 
+function inventoryDecisionHealthHtml() {
+  if (!state.betaEnabled) return '';
+  if (!state.betaDecisionFeedMeta && !state.operationalHealth) return '';
+  const feed = state.betaDecisionFeedMeta || {};
+  const ageInfo = betaFeedAgeInfo(feed);
+  const opIssues = operationalHealthIssues(state.operationalHealth);
+  const issues = [...opIssues];
+  if (feed.schemaStale) issues.push({ type: 'Data', text: 'decision feed schema stale' });
+  if (ageInfo.isStale) issues.push({ type: 'Freshness', text: `decision feed ${fmtHours(ageInfo.hours)} old` });
+  if (state.betaDecisionRegenerating) issues.push({ type: 'Freshness', text: 'decision feed regenerating' });
+  const needsSnapshotBuild = opIssues.some(i => /snapshot missing|snapshot \d|snapshot build completed|unavailable/i.test(i.text || '')) || !state.operationalHealth?.ready;
+  const needsTriggerInstall = state.operationalHealth && !state.operationalHealth.warmTriggerInstalled;
+  const needsFeedRefresh = feed.schemaStale || ageInfo.isStale;
+
+  const generated = feed.generatedAt
+    ? new Date(feed.generatedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+    : 'not loaded';
+  const snapshot = state.operationalHealth?.generatedAt
+    ? new Date(state.operationalHealth.generatedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+    : (state.operationalHealth?.ready ? 'ready' : 'checking');
+  const cls = issues.length ? 'warn' : 'ok';
+  const issueHtml = issues.length
+    ? `<span class="inv-health-issues">${issues.slice(0, 3).map(i => `${escapeHtml(i.type)}: ${escapeHtml(i.text)}`).join(' · ')}</span>`
+    : '<span class="inv-health-issues">Recommendations are using prepared operational data.</span>';
+  return `<div class="inv-health inv-health-${cls}">
+    <span class="inv-health-label">Decision health</span>
+    <span>Snapshot ${escapeHtml(snapshot)}</span>
+    <span>Feed ${escapeHtml(generated)}</span>
+    ${issueHtml}
+    ${issues.length ? `<span class="inv-health-actions">
+      ${needsFeedRefresh ? '<button class="inv-health-btn" onclick="refreshInventoryDecisionFeedNow(this)">Refresh Feed</button>' : ''}
+      ${needsSnapshotBuild ? '<button class="inv-health-btn" onclick="scheduleOperationalSnapshotFromHealth(this)">Build Snapshot</button>' : ''}
+      ${needsTriggerInstall ? '<button class="inv-health-btn" onclick="installWarmTriggerFromHealth(this)">Install Trigger</button>' : ''}
+    </span>` : ''}
+  </div>`;
+}
+
+function renderBetaDecisionRules() {
+  const targetDays = getReorderBuffer();
+  const snapshotText = state.operationalHealth?.warmTriggerInstalled ? 'Midnight' : 'Manual';
+  const rules = [
+    { label: 'Vendor lead', value: '7 days' },
+    { label: 'Safety stock', value: '7 days' },
+    { label: 'Target coverage', value: `${targetDays} days` },
+    { label: 'Salem transfers', value: '3 days' },
+    { label: 'Century/Baseline', value: '7 days' },
+  ];
+  return `<div class="beta-rules-card">
+    <div class="beta-rules-head">
+      <div class="beta-rules-title">Decision Rules</div>
+      <div class="beta-rules-sub">Snapshot refresh: ${escapeHtml(snapshotText)} · Bulk flower: 0.5lb increments</div>
+    </div>
+    <div class="beta-rules-grid">
+      ${rules.map(rule => `<div class="beta-rule">
+        <div class="beta-rule-value">${escapeHtml(rule.value)}</div>
+        <div class="beta-rule-label">${escapeHtml(rule.label)}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function fmtDateTimeShort(value) {
+  if (!value) return '';
+  const ts = new Date(value).getTime();
+  if (!ts || Number.isNaN(ts)) return '';
+  return new Date(ts).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+}
+
+function ageHoursFrom(value) {
+  if (!value) return null;
+  const ts = new Date(value).getTime();
+  return ts && !Number.isNaN(ts) ? (Date.now() - ts) / 3600000 : null;
+}
+
+function renderBetaFreshnessPanel(feed, ageInfo, operationalStatus, operationalIssues) {
+  const snapshotAge = ageHoursFrom(operationalStatus?.generatedAt);
+  const snapshotLabel = operationalStatus?.ready && operationalStatus?.generatedAt
+    ? fmtDateTimeShort(operationalStatus.generatedAt)
+    : 'Not ready';
+  const feedLabel = feed?.generatedAt ? fmtDateTimeShort(feed.generatedAt) : 'Not generated';
+  const warm = operationalStatus?.warmStatus || {};
+  const warmState = warm.state || 'unknown';
+  const warmFinished = fmtDateTimeShort(warm.finishedAt || warm.updatedAt || warm.scheduledAt || warm.startedAt);
+  const warmLabel = warmState === 'completed' ? 'Completed'
+    : warmState === 'completed_with_warnings' ? 'Completed with warnings'
+    : warmState === 'running' ? 'Running'
+    : warmState === 'scheduled' ? 'Scheduled'
+    : operationalStatus?.warmTriggerInstalled ? 'Waiting for midnight' : 'Manual only';
+  const needsSnapshotBuild = !operationalStatus?.ready || (snapshotAge != null && snapshotAge > 30) ||
+    warmState === 'completed_with_warnings';
+  const needsTriggerInstall = operationalStatus && !operationalStatus.warmTriggerInstalled;
+  const needsFeedRefresh = feed?.schemaStale || ageInfo?.isStale || needsSnapshotBuild;
+  const warn = needsFeedRefresh || needsSnapshotBuild || needsTriggerInstall || (operationalIssues || []).length > 0;
+  const snapshotNote = snapshotAge == null
+    ? 'Build snapshot before trusting new recommendations'
+    : `${fmtHours(snapshotAge)} old`;
+  const feedNote = ageInfo?.hours == null
+    ? 'Decision Feed sheet has not loaded'
+    : `${fmtHours(ageInfo.hours)} old`;
+  const triggerNote = operationalStatus?.warmTriggerInstalled
+    ? (warmFinished ? `Last status ${escapeHtml(warmFinished)}` : 'Runs nightly at midnight')
+    : 'Install once for overnight refreshes';
+
+  return `<div class="beta-freshness ${warn ? 'warn' : 'ok'}">
+    <div class="beta-freshness-cell">
+      <div class="beta-freshness-label">Snapshot</div>
+      <div class="beta-freshness-value ${needsSnapshotBuild ? 'attn' : ''}">${escapeHtml(snapshotLabel)}</div>
+      <div class="beta-freshness-note">${escapeHtml(snapshotNote)}</div>
+    </div>
+    <div class="beta-freshness-cell">
+      <div class="beta-freshness-label">Decision Feed</div>
+      <div class="beta-freshness-value ${needsFeedRefresh ? 'attn' : ''}">${escapeHtml(feedLabel)}</div>
+      <div class="beta-freshness-note">${escapeHtml(feedNote)}</div>
+    </div>
+    <div class="beta-freshness-cell">
+      <div class="beta-freshness-label">Midnight Job</div>
+      <div class="beta-freshness-value ${(needsTriggerInstall || warmState === 'completed_with_warnings') ? 'attn' : ''}">${escapeHtml(warmLabel)}</div>
+      <div class="beta-freshness-note">${triggerNote}</div>
+    </div>
+    <div class="beta-freshness-actions">
+      ${needsFeedRefresh ? '<button class="beta-action-btn" onclick="regenerateBetaFeed()">Regenerate Feed</button>' : ''}
+      ${needsSnapshotBuild ? '<button class="beta-action-btn secondary" onclick="scheduleOperationalSnapshotFromHealth(this)">Build Snapshot</button>' : ''}
+      ${needsTriggerInstall ? '<button class="beta-action-btn secondary" onclick="installWarmTriggerFromHealth(this)">Install Trigger</button>' : ''}
+    </div>
+  </div>`;
+}
+
+async function refreshInventoryDecisionFeedNow(btn) {
+  if (!state.betaEnabled) return;
+  const oldText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+  }
+  try {
+    state.betaDecisionRegenerating = true;
+    if (state.tab === 'beta') renderBetaFeed();
+    else renderInventory();
+    await proxyFetch({ action: 'betadecisionfeed', beta: '1', force: '1' });
+    state.betaDecisionStore = null;
+    state.betaDecisionMap = {};
+    state.betaDecisionRows = [];
+    state.betaDecisionFeedMeta = null;
+    state.betaDecisionRegenerating = false;
+    await loadBetaDecisionsForInventory();
+    if (state.tab === 'beta') await loadBetaFeed();
+  } catch (err) {
+    state.betaDecisionRegenerating = false;
+    alert('Decision feed refresh failed: ' + (err.message || err));
+    if (state.tab === 'beta') renderBetaFeed();
+    else renderInventory();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText || 'Refresh Feed';
+    }
+  }
+}
+
+async function scheduleOperationalSnapshotFromHealth(btn) {
+  const oldText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Scheduling...';
+  }
+  try {
+    const result = await proxyFetch({ action: 'schedulewarmcaches' });
+    state.operationalHealth = {
+      ...(state.operationalHealth || {}),
+      ready: state.operationalHealth?.ready || false,
+      warmStatus: {
+        state: result.scheduled ? 'scheduled' : 'running',
+        message: result.message || 'Operational snapshot build scheduled.',
+      },
+    };
+    if (state.tab === 'beta') renderBetaFeed();
+    else renderInventory();
+  } catch (err) {
+    alert('Snapshot build failed: ' + (err.message || err));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText || 'Build Snapshot';
+    }
+  }
+}
+
+async function installWarmTriggerFromHealth(btn) {
+  const oldText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Installing...';
+  }
+  try {
+    await withTimeout(proxyFetch({ action: 'installwarmtrigger' }), 30000, 'Trigger install');
+    state.operationalHealth = await withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status');
+    if (state.tab === 'beta') renderBetaFeed();
+    else renderInventory();
+  } catch (err) {
+    alert('Trigger install failed: ' + (err.message || err));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText || 'Install Trigger';
+    }
+  }
+}
+
 function renderBetaFeed() {
   const el = document.getElementById('betaContent');
   const feed = state.betaFeed || { rows: [], total: 0, summary: {} };
@@ -3119,7 +3516,7 @@ function renderBetaFeed() {
   const reasonValue = state.betaFilter.reason || '';
   const statusValue = state.betaFilter.status || '';
   const qValue = state.betaFilter.q || '';
-  const viewValue = state.betaFilter.view || 'feed';
+  const viewValue = state.betaFilter.view || 'queue';
   const limited = feed.limited ? `<span style="color:var(--muted);font-size:11px">Showing first ${rows.length} of ${feed.total}</span>` : `<span style="color:var(--muted);font-size:11px">${feed.total || rows.length} rows</span>`;
   const ageInfo = betaFeedAgeInfo(feed);
   const staleBanner = feed.schemaStale
@@ -3142,7 +3539,7 @@ function renderBetaFeed() {
     ? `<div class="state-msg" style="margin-bottom:12px;text-align:left;border-color:rgba(239,159,39,.45);background:rgba(239,159,39,.08)">
         <strong style="color:var(--amber)">Decision feed is ${escapeHtml(fmtHours(ageInfo.hours))} old.</strong>
         <div style="margin-top:4px;color:var(--muted);font-size:12px">
-          Recommendations may be behind live Dutchie inventory. Stale rows are marked below; regenerate after the beta backend is deployed.
+          Recommendations may be behind the prepared inventory snapshot. Use Regenerate Feed below after the snapshot is current.
         </div>
       </div>`
     : '';
@@ -3164,6 +3561,11 @@ function renderBetaFeed() {
     </div>` : ''}`;
 
   const exceptions = betaExceptionRows(rows, ageInfo);
+  const queueHtml = renderBetaActionQueue(rows, exceptions, ageInfo);
+  const queueLimit = state.betaQueue?.limit || 10;
+  const queueStatus = state.betaQueue?.ok
+    ? `<span style="color:var(--muted);font-size:11px">Full queue: ${(state.betaQueue.total || 0).toLocaleString('en-US')} rows · top ${queueLimit} per bucket</span>`
+    : limited;
   const visibleRows = viewValue === 'exceptions' ? exceptions.map(x => x.row) : rows;
   const exceptionByKey = new Map(exceptions.map(x => [betaDecisionKey(x.row.store, x.row.sku, x.row.productName), x.issues]));
   const exceptionSummary = exceptions.reduce((acc, x) => {
@@ -3216,7 +3618,9 @@ function renderBetaFeed() {
     ${staleBanner}
     ${assumptionBanner}
     ${ageBanner}
+    ${renderBetaFreshnessPanel(feed, ageInfo, operationalStatus, operationalIssues)}
     ${operationalHealthHtml}
+    ${renderBetaDecisionRules()}
     <div class="beta-toolbar">
       <input type="search" id="betaSearch" placeholder="Search product, SKU, brand…" value="${escapeHtml(qValue)}" oninput="queueBetaFilter()">
       <select id="betaReason" onchange="setBetaReason(this.value)">
@@ -3225,8 +3629,6 @@ function renderBetaFeed() {
         <option value="LOW_DOH"${reasonValue === 'LOW_DOH' ? ' selected' : ''}>Low DOH</option>
         <option value="TRANSFER_AVAILABLE"${reasonValue === 'TRANSFER_AVAILABLE' ? ' selected' : ''}>Transfers</option>
         <option value="GREEN_CROSS_OVERSTOCK"${reasonValue === 'GREEN_CROSS_OVERSTOCK' ? ' selected' : ''}>Green Cross</option>
-        <option value="LONG_LEAD_SKU"${reasonValue === 'LONG_LEAD_SKU' ? ' selected' : ''}>Long lead</option>
-        <option value="VENDOR_LEAD_TIME"${reasonValue === 'VENDOR_LEAD_TIME' ? ' selected' : ''}>Vendor lead</option>
         <option value="KILL_LIST"${reasonValue === 'KILL_LIST' ? ' selected' : ''}>Kill list</option>
       </select>
       <select id="betaStatus" onchange="setBetaStatus(this.value)">
@@ -3238,9 +3640,10 @@ function renderBetaFeed() {
         <option value="slow"${statusValue === 'slow' ? ' selected' : ''}>Slow</option>
       </select>
       <button class="beta-action-btn" onclick="loadBetaFeed()">Refresh</button>
-      <button class="beta-action-btn" onclick="regenerateBetaFeed()">Regenerate</button>
+      <button class="beta-action-btn" onclick="regenerateBetaFeed()">Regenerate Feed</button>
     </div>
     <div class="beta-toolbar" style="margin-top:-4px">
+      <button class="beta-action-btn secondary${viewValue === 'queue' ? ' active' : ''}" onclick="setBetaView('queue')">Action Queue</button>
       <button class="beta-action-btn secondary${viewValue === 'feed' ? ' active' : ''}" onclick="setBetaView('feed')">Decision Feed</button>
       <button class="beta-action-btn secondary${viewValue === 'exceptions' ? ' active' : ''}" onclick="setBetaView('exceptions')">Exceptions ${exceptions.length ? `(${exceptions.length})` : ''}</button>
     </div>
@@ -3259,10 +3662,10 @@ function renderBetaFeed() {
         <div class="beta-metric"><div class="beta-metric-val">${(exceptionSummary.Data || 0) + (exceptionSummary.Logic || 0) + operationalIssues.length}</div><div class="beta-metric-lbl">Data / Logic</div></div>
       </div>` : ''}
     <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">
-      <span>${viewValue === 'exceptions' ? 'Exceptions / Needs Review' : 'Beta decision feed'} · ${escapeHtml(generated)}</span>
-      ${viewValue === 'exceptions' ? `<span style="color:var(--muted);font-size:11px">${exceptions.length} exception rows from ${rows.length} loaded rows</span>` : limited}
+      <span>${viewValue === 'queue' ? 'Action Queue' : viewValue === 'exceptions' ? 'Exceptions / Needs Review' : 'Beta decision feed'} · ${escapeHtml(generated)}</span>
+      ${viewValue === 'queue' ? queueStatus : viewValue === 'exceptions' ? `<span style="color:var(--muted);font-size:11px">${exceptions.length} exception rows from ${rows.length} loaded rows</span>` : limited}
     </div>
-    <div class="card inv-table-wrap">
+    ${viewValue === 'queue' ? queueHtml : `<div class="card inv-table-wrap">
       <table class="beta-table">
         <thead><tr>
           <th>Product</th><th>Store</th><th class="num">Qty</th><th class="num">7</th><th class="num">14</th><th class="num">28</th>
@@ -3270,11 +3673,11 @@ function renderBetaFeed() {
         </tr></thead>
         <tbody>${body || `<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:28px">${viewValue === 'exceptions' ? 'No exceptions in the loaded beta rows.' : 'No matching beta decisions.'}</td></tr>`}</tbody>
       </table>
-    </div>`;
+    </div>`}`;
 }
 
 function setBetaView(v) {
-  state.betaFilter.view = v || 'feed';
+  state.betaFilter.view = v || 'queue';
   renderBetaFeed();
 }
 
@@ -3332,22 +3735,22 @@ async function loadBetaDecisionsForInventory() {
   const storeKey = state.store || 'All';
   if (state.betaDecisionStore === storeKey && Object.keys(state.betaDecisionMap || {}).length) return;
   try {
-    const feed = await proxyFetch({ action: 'decisionfeed', beta: '1', store: storeKey, limit: 10000 });
-    if (feed && feed.schemaStale && !state.betaDecisionRegenerating) {
-      state.betaDecisionRegenerating = true;
-      proxyFetch({ action: 'betadecisionfeed', beta: '1', force: '1' })
-        .then(() => {
-          state.betaDecisionStore = null;
-          state.betaDecisionMap = {};
-          state.betaDecisionRows = [];
-          state.betaDecisionRegenerating = false;
-          return loadBetaDecisionsForInventory();
-        })
-        .catch(err => {
-          state.betaDecisionRegenerating = false;
-          console.warn('Beta decision feed regeneration failed.', err);
-        });
-      return;
+    const [feed, operationalHealth] = await Promise.all([
+      proxyFetch({ action: 'decisionfeed', beta: '1', store: storeKey, limit: 10000 }),
+      withTimeout(proxyFetch({ action: 'operationalstatus' }), 8000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
+    ]);
+    state.operationalHealth = operationalHealth;
+    state.betaDecisionFeedMeta = {
+      generatedAt: feed.generatedAt,
+      total: feed.total,
+      schemaStale: feed.schemaStale,
+      regenerating: feed.regenerating,
+    };
+    // NOTE: Auto-regen removed — schemaStale auto-regen burned 36+ URL fetches per page load.
+    // If the decision feed schema is stale, it will be rebuilt by the nightly warmOperationalCaches
+    // trigger, or manually via the admin "Rebuild Decision Feed" action in Settings.
+    if (feed && feed.schemaStale) {
+      console.warn('Beta decision feed schema is stale — will be rebuilt by nightly trigger.');
     }
     state.betaDecisionRows = feed.rows || [];
     state.betaDecisionMap = buildBetaDecisionMap(state.betaDecisionRows);
@@ -3455,7 +3858,9 @@ function init() {
     loadData();
   });
 
-  // Clear cache & refresh
+  // Clear browser cache & reload from snapshot (does NOT force Dutchie API rebuild).
+  // Clearing forceServerRefresh prevents expensive 36-fetch Dutchie rebuild on every refresh click.
+  // The nightly warmOperationalCaches trigger owns snapshot rebuilds.
   document.getElementById('btnClear').addEventListener('click', () => {
     cacheClear();
     state.cogsData = null;
@@ -3465,7 +3870,7 @@ function init() {
     state.inv28Cogs  = null;
     state.inventoryData = null;
     state.velocityData  = null;
-    state.forceServerRefresh = true;
+    state.forceServerRefresh = false; // keep false — force-rebuild burns 36+ URL fetches per click
     state.betaFeed = null;
     state.betaDecisionStore = null;
     state.betaDecisionMap = {};
@@ -3530,7 +3935,8 @@ state.pinnedTransferSuggestions = JSON.parse(localStorage.getItem('gc_pinned_tra
 state.savedOrderPlans   = JSON.parse(localStorage.getItem('gc_saved_orders') || '[]');
 state.savedTransferPlans = JSON.parse(localStorage.getItem('gc_saved_transfers') || '[]');
 
-// REORDER_BUFFER is now dynamic — read via getReorderBuffer() defined in SETTINGS block
+// Reorder target is dynamic locally, but defaults to the beta model's 7d lead + 7d safety target.
+const DEFAULT_REORDER_TARGET_DAYS = 14;
 const STATUS_ORDER    = { oos: 0, critical: 1, low: 2, watch: 3, ok: 4, slow: 5 };
 const STATUS_LABELS   = { oos: 'OOS', critical: 'Critical', low: 'Low', watch: 'Watch', ok: 'OK', slow: 'Slow' };
 
@@ -3750,21 +4156,29 @@ async function loadInventoryData() {
     let invResults = null;
 
     if (state.store === 'All') {
-      try {
-        const bundleParams = forceServerRefresh ? { action: 'operationalbundle', force: '1' } : { action: 'operationalbundle' };
-        const bundle = await proxyFetch(bundleParams, forceServerRefresh ? null : 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
-        if (bundle && bundle.velocity && Array.isArray(bundle.inventory)) {
-          state.velocityData = bundle.velocity;
-          invResults = bundle.inventory.map(row => ({
-            store: row.store,
-            products: row.products || [],
-            error: row.error || '',
-          }));
-          const bar = document.getElementById('loadBar');
-          if (bar) bar.style.width = '100%';
-        }
-      } catch (e) {
-        console.warn('Operational bundle unavailable; falling back to standard load', e);
+      // Always load from snapshot — never force-rebuild on user load (costs 36+ Dutchie API calls).
+      const bundle = await proxyFetch({ action: 'operationalbundle' }, 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
+      if (bundle && bundle.source === 'missing') {
+        // Snapshot hasn't been built yet (or was cleared). Show a helpful message rather
+        // than burning 36 URL fetches trying to rebuild — the nightly trigger owns this.
+        throw new Error(
+          'Inventory snapshot is not ready yet. ' +
+          'Open Settings → Admin → "Build Snapshot Now" to build it (takes ~2 min), ' +
+          'then refresh. The nightly sync also runs at midnight.'
+        );
+      }
+      if (bundle && bundle.velocity && Array.isArray(bundle.inventory)) {
+        state.velocityData = bundle.velocity;
+        invResults = bundle.inventory.map(row => ({
+          store: row.store,
+          products: row.products || [],
+          error: row.error || '',
+        }));
+        const bar = document.getElementById('loadBar');
+        if (bar) bar.style.width = '100%';
+      } else if (bundle && !bundle.ok) {
+        throw new Error('Inventory bundle error: ' + (bundle.error || 'unknown') +
+          '. Open Settings → Admin → "Build Snapshot Now" to rebuild, then refresh.');
       }
     }
 
@@ -4898,7 +5312,6 @@ function renderInventory() {
     const reasons = String(d.reasonCodes || '').split(',').filter(Boolean);
     if (!parts.length && reasons.length) parts.push('<span class="buyer-rec-pill review">Review</span>');
     if (reasons.includes('GREEN_CROSS_OVERSTOCK')) parts.push('<span class="buyer-rec-pill context">GC</span>');
-    if (reasons.includes('LONG_LEAD_SKU')) parts.push('<span class="buyer-rec-pill context">Long lead</span>');
     if (reasons.includes('TRANSFER_FIRST') && betaTransfer) parts.push('<span class="buyer-rec-pill context">Transfer first</span>');
     const whyHtml = renderBuyerWhyChips(d.whyChips, 3);
     if (whyHtml) parts.push(whyHtml);
@@ -4930,7 +5343,6 @@ function renderInventory() {
       const reasons = String((d && d.reasonCodes) || '').split(',').filter(Boolean);
       if (!(d && d.recommendedOrderQty > 0) && !betaTransfer && !cheapTransferQty && reasons.length) reviewCount++;
       if (reasons.includes('GREEN_CROSS_OVERSTOCK')) contexts.add('GC');
-      if (reasons.includes('LONG_LEAD_SKU')) contexts.add('Long lead');
       if (reasons.includes('TRANSFER_FIRST') && (betaTransfer || cheapTransferQty)) contexts.add('Transfer first');
       for (const chip of buyerWhyChips((d && d.whyChips) || '', 8)) {
         if (!why.includes(chip) && why.length < 3) why.push(chip);
@@ -5274,6 +5686,7 @@ function renderInventory() {
     : `${visibleGroups.length} product${visibleGroups.length !== 1 ? 's' : ''}`;
 
   el.innerHTML = `
+    ${inventoryDecisionHealthHtml()}
     <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">
       <span>${countLabel}</span>
     </div>
@@ -6400,6 +6813,88 @@ function scanNameSelect(name, scannedCode) {
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
   {
+    v: 'v2.31', date: 'May 30, 2026',
+    items: [
+      'Beta now has a freshness panel that separates snapshot age, Decision Feed age, and midnight job status',
+      'Regenerate Feed, Build Snapshot, and Install Trigger actions appear beside the freshness state when they are needed',
+      'The stale-feed copy now points buyers to the safer snapshot-first workflow instead of implying live Dutchie data is required',
+    ]
+  },
+  {
+    v: 'v2.30', date: 'May 30, 2026',
+    items: [
+      'Beta now shows a Decision Rules card near the Action Queue',
+      'The card makes vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding visible',
+      'This keeps buyer assumptions inspectable without opening Settings or reading the sheet config',
+    ]
+  },
+  {
+    v: 'v2.29', date: 'May 29, 2026',
+    items: [
+      'Settings now labels the local reorder control as Target days instead of legacy Buffer days',
+      'Local Inventory reorder chips default to the same 14-day target used by the beta Decision Feed',
+      'Obsolete long-lead and vendor-lead beta filters were removed because all vendors now use the standard 7-day lead',
+    ]
+  },
+  {
+    v: 'v2.28', date: 'May 29, 2026',
+    items: [
+      'Decision Feed now uses the team-confirmed 7-day vendor replenishment window for beta recommendations',
+      'Older sheet lead-time values no longer reintroduce 5-day vendor timing or long-lead vendor flags',
+      'After deployment, regenerate the Decision Feed to clear stale timing warnings',
+    ]
+  },
+  {
+    v: 'v2.27', date: 'May 29, 2026',
+    items: [
+      'Decision Feed regeneration now uses the prepared operational inventory snapshot when available',
+      'Manual queue refreshes no longer need live Dutchie inventory fetches when the snapshot is ready',
+      'This reduces the risk of hitting premium URL fetch quota during weekend beta testing',
+    ]
+  },
+  {
+    v: 'v2.26', date: 'May 29, 2026',
+    items: [
+      'Action Queue can now read a full-dataset backend queue when the GAS backend is deployed',
+      'Bucket counts and top items are ranked from the full Decision Feed sheet instead of only the loaded table rows',
+      'Frontend keeps the local loaded-row queue as a fallback for older beta backends',
+    ]
+  },
+  {
+    v: 'v2.25', date: 'May 29, 2026',
+    items: [
+      'Beta now opens to an Action Queue instead of a raw table',
+      'Loaded decision rows are ranked into Order Today, Transfer Today, Investigate, and Dead / Kill Review',
+      'Decision Feed and Exceptions remain available as secondary beta views',
+    ]
+  },
+  {
+    v: 'v2.24', date: 'May 29, 2026',
+    items: [
+      'Inventory decision health warnings now include manual action buttons',
+      'Refresh Feed, Build Snapshot, and Install Trigger appear only when the related beta data condition needs attention',
+      'Decision-feed refresh stays explicit so page loads do not burn Dutchie/API quota',
+    ]
+  },
+  {
+    v: 'v2.23', date: 'May 29, 2026',
+    items: [
+      'Fixed critical URL fetch quota exhaustion ("Service invoked too many times for one day")',
+      'Removed auto-regen of beta decision feed on every inventory load (was burning 36+ API calls per load when schema was stale)',
+      'Refresh button no longer triggers expensive Dutchie API rebuild — reloads from snapshot instead',
+      'Snapshot-missing state now shows a clear error with instructions instead of silently falling back to 36 API calls',
+      'GAS: force-rebuild of operational bundle now schedules async background job instead of synchronous 36-fetch rebuild',
+      'GAS: snapshot auto-schedules a rebuild once per day if found missing (self-healing)',
+    ]
+  },
+  {
+    v: 'v2.22', date: 'May 29, 2026',
+    items: [
+      'Inventory now shows beta decision health in the main buyer workflow',
+      'The health strip reports operational snapshot freshness, decision-feed generation time, and stale/schema/regeneration warnings',
+    ]
+  },
+  {
     v: 'v2.21', date: 'May 27, 2026',
     items: [
       'Beta now shows operational health cards before the decision feed',
@@ -7298,16 +7793,24 @@ function clearOrderCart() {
   renderInventory();
 }
 
-// ── Reorder buffer ───────────────────────────────────────
+// ── Reorder target coverage ──────────────────────────────
 function getReorderBuffer() {
-  const v = parseInt(localStorage.getItem('gc_reorder_buffer') || '12', 10);
-  return isNaN(v) ? 12 : v;
+  const raw = localStorage.getItem('gc_reorder_buffer');
+  const migrated = localStorage.getItem('gc_reorder_target_v2') === '1';
+  if (!raw || (raw === '12' && !migrated)) {
+    localStorage.setItem('gc_reorder_buffer', String(DEFAULT_REORDER_TARGET_DAYS));
+    localStorage.setItem('gc_reorder_target_v2', '1');
+    return DEFAULT_REORDER_TARGET_DAYS;
+  }
+  const v = parseInt(raw, 10);
+  return isNaN(v) ? DEFAULT_REORDER_TARGET_DAYS : v;
 }
 function saveReorderBuffer() {
   const v = parseInt(document.getElementById('reorderBufferInput').value, 10);
   if (isNaN(v) || v < 1) return;
   localStorage.setItem('gc_reorder_buffer', String(v));
-  if (state.invData) renderInventory();
+  localStorage.setItem('gc_reorder_target_v2', '1');
+  if (state.inventoryData) renderInventory();
 }
 
 // ── Density ──────────────────────────────────────────────
