@@ -1686,7 +1686,7 @@ function velBackfillChunk(params) {
   const props   = PropertiesService.getScriptProperties();
   const now     = new Date();
   const cutoff  = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000);
-  const fromStr = params.from || cutoff.toISOString().slice(0, 10);
+  const fromStr = (params && params.from) || cutoff.toISOString().slice(0, 10);
   const fromDate = new Date(fromStr + 'T00:00:00Z');
   if (fromDate > now) return { ok: false, message: 'from date is in the future' };
   props.setProperty('backfillFrom', fromStr);
