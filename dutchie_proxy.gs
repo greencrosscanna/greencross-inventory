@@ -88,6 +88,8 @@ function doGet(e) {
     if (params.action === 'velclear')       return jsonOut(clearVelCache());
     if (params.action === 'velbackfill')       return jsonOut(velBackfillChunk(params));
     if (params.action === 'velbackfillstatus') return jsonOut(velBackfillStatus());
+    if (params.action === 'velproduct')        return jsonOut(velProductDiagnostic(params));
+    if (params.action === 'velgapcheck')       return jsonOut(velGapCheck(params));
     if (params.action === 'getstate')          return jsonOut(getSharedState(params));
     if (params.action === 'sharedkill')        return jsonOut(sharedKill(params));
     if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params));
@@ -1348,6 +1350,19 @@ const VEL_WINDOW_DAYS = 180;
 // Sheet columns: date(0) store(1) productId(2) productName(3) brand(4) category(5) sku(6) qty(7)
 const VEL_COLS = ['date','store','productId','productName','brand','category','sku','qty'];
 
+// Convert a Vel Cache date cell to a canonical "YYYY-MM-DD" string.
+// Google Sheets auto-converts "2026-05-20" strings to Date objects when stored,
+// so getValues() returns Date objects, not strings. Using String(dateObj) gives
+// "Wed May 20 2026..." which breaks string comparisons and key lookups.
+function _velDateToYMD(v) {
+  if (!v) return '';
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '' : Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
 function getVelSheet() {
   const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   let sheet = ss.getSheetByName(VEL_SHEET_NAME);
@@ -1597,8 +1612,10 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
     const existingData = sheet.getLastRow() > 1
       ? sheet.getRange(2, 1, sheet.getLastRow() - 1, VEL_COLS.length).getValues() : [];
     const newKeys = new Set(newRows.map(r => r.store + '|' + r.date + '|' + r.productId));
-    const kept = existingData.filter(row => !newKeys.has(row[1] + '|' + row[0] + '|' + row[2]));
-    const pruned = kept.filter(row => String(row[0]) >= cutoff90Str);
+    // row[0] may be a Date object (Google Sheets auto-converts date strings); use _velDateToYMD
+    // so the key matches the plain-string keys built from newRows above.
+    const kept = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
+    const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff90Str);
     const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
     sheet.clearContents();
     sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
@@ -1631,9 +1648,9 @@ function buildVelocityMap() {
 
   const velMap = {};
   for (const row of data) {
-    const dateStr = String(row[0] || '');
+    const dateStr = _velDateToYMD(row[0]);
     if (!dateStr) continue;
-    const ts = new Date(dateStr).getTime();
+    const ts = new Date(dateStr + 'T12:00:00').getTime(); // noon local avoids midnight DST edge cases
 
     const store   = String(row[1] || '');
     const name    = String(row[3] || '').trim();
@@ -1739,6 +1756,100 @@ function velBackfillStatus() {
   const status = props.getProperty('backfillStatus') || 'idle';
   const from   = props.getProperty('backfillFrom')   || null;
   return { status, from };
+}
+
+// Alias for diagnostics — delegates to the canonical helper above.
+function _toYMD(v) { return _velDateToYMD(v); }
+
+// Diagnostic: look up all Vel Cache rows for a given productId or name fragment.
+// Usage: ?action=velproduct&id=B665EB4F73  OR  ?action=velproduct&name=SomeProduct
+function velProductDiagnostic(params) {
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { error: 'Vel Cache is empty', rows: [] };
+
+  const data    = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  const searchId   = String(params.id   || '').toLowerCase().trim();
+  const searchName = String(params.name || '').toLowerCase().trim();
+
+  if (!searchId && !searchName) return { error: 'Provide id or name param', rows: [] };
+
+  const matches = data.filter(r => {
+    const pid  = String(r[2] || '').toLowerCase();
+    const pname = String(r[3] || '').toLowerCase();
+    if (searchId   && pid.includes(searchId))   return true;
+    if (searchName && pname.includes(searchName)) return true;
+    return false;
+  });
+
+  if (!matches.length) return { found: false, searchId, searchName, totalRows: data.length };
+
+  // Summarise by store: earliest date, latest date, total qty, row count
+  const byStore = {};
+  for (const r of matches) {
+    const store = String(r[1]);
+    const ymd = _toYMD(r[0]);
+    const qty = parseFloat(r[7]) || 0;
+    if (!byStore[store]) byStore[store] = { store, minDate: ymd, maxDate: ymd, totalQty: 0, rows: 0 };
+    const s = byStore[store];
+    if (ymd < s.minDate) s.minDate = ymd;
+    if (ymd > s.maxDate) s.maxDate = ymd;
+    s.totalQty += qty;
+    s.rows++;
+  }
+
+  const name     = String(matches[0][3]);
+  const brand    = String(matches[0][4]);
+  const category = String(matches[0][5]);
+  const sku      = String(matches[0][6]);
+  const velSyncDate = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
+
+  return {
+    found: true, name, brand, category, sku,
+    productId: String(matches[0][2]),
+    totalMatchRows: matches.length,
+    velSyncDate,
+    byStore: Object.values(byStore)
+  };
+}
+
+// Diagnostic: check which dates have ANY Vel Cache rows for a given store,
+// and identify gaps in a date range.
+// ?action=velgapcheck&store=Bend&from=2026-05-04&to=2026-05-18
+function velGapCheck(params) {
+  const store   = params.store || 'Bend';
+  const fromStr = params.from  || new Date(Date.now() - 28 * 86400000).toISOString().slice(0, 10);
+  const toStr   = params.to    || new Date().toISOString().slice(0, 10);
+
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { error: 'Vel Cache is empty' };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+
+  // Build set of YYYY-MM-DD dates that have at least one row for this store
+  const datesWithData = new Set();
+  let totalRowsForStore = 0;
+  for (const r of data) {
+    if (String(r[1]) !== store) continue;
+    const d = _toYMD(r[0]);
+    if (!d) continue;
+    if (d >= fromStr && d <= toStr) { datesWithData.add(d); totalRowsForStore++; }
+  }
+
+  // Generate expected dates and find gaps
+  const gaps = [];
+  const present = [];
+  const cur = new Date(fromStr + 'T12:00:00Z');
+  const end = new Date(toStr   + 'T12:00:00Z');
+  while (cur <= end) {
+    const d = cur.toISOString().slice(0, 10);
+    if (datesWithData.has(d)) present.push(d); else gaps.push(d);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+
+  const velSyncDate = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
+  return { store, from: fromStr, to: toStr, totalRowsForStore, datesPresent: present.length, gaps, velSyncDate };
 }
 
 function clearRoomCache() {
