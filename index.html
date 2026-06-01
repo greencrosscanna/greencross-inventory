@@ -1652,6 +1652,7 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.32</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta Action Queue items now jump straight to the matching Inventory product group with filters cleared and All Stores selected</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.31</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta freshness panel now separates snapshot age, Decision Feed age, and midnight job status with clear Regenerate Feed, Build Snapshot, and Install Trigger actions</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.30</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta now shows a Decision Rules card for vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding</span></div>
@@ -2214,6 +2215,7 @@ function loginViaJsonp(user, pass) {
 
 // ── State ────────────────────────────────────────────────
 let _quoteTimer = null; // module-level so any loadInventoryData call cancels the previous cycle
+let _betaDecisionLoadTimer = null;
 
 let state = {
   tab: 'inventory',
@@ -2233,6 +2235,7 @@ let state = {
   betaDecisionMap: {},
   betaDecisionStore: null,
   betaDecisionFeedMeta: null,
+  betaDecisionLoading: false,
   operationalHealth: null,
   excludedRows: JSON.parse(localStorage.getItem(CACHE_PREFIX + 'excluded') || '{}'),
   restockShowAll: false,
@@ -2981,7 +2984,8 @@ function initBetaTools() {
 async function loadBetaFeed() {
   if (!state.betaEnabled) return;
   const el = document.getElementById('betaContent');
-  el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading beta feed…</div>';
+  const wantsRows = (state.betaFilter.view || 'queue') !== 'queue';
+  el.innerHTML = `<div class="state-msg"><div class="spinner"></div><br>${wantsRows ? 'Loading decision rows…' : 'Loading action queue…'}</div>`;
   try {
     const params = {
       action: 'decisionfeed',
@@ -2994,13 +2998,27 @@ async function loadBetaFeed() {
     };
     const queueParams = { ...params, action: 'decisionqueue', limit: 10 };
     const [feed, operationalHealth, queue] = await Promise.all([
-      proxyFetch(params),
+      wantsRows
+        ? proxyFetch(params)
+        : Promise.resolve(null),
       withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
       proxyFetch(queueParams).catch(err => ({ ok: false, error: err.message })),
     ]);
-    state.betaFeed = feed;
     state.operationalHealth = operationalHealth;
     state.betaQueue = queue && queue.ok ? queue : null;
+    state.betaFeed = feed || (state.betaQueue ? {
+      ok: true,
+      rows: [],
+      total: state.betaQueue.total || 0,
+      summary: state.betaQueue.summary || {},
+      schemaStale: state.betaQueue.schemaStale,
+      missingCols: state.betaQueue.missingCols || [],
+      expectedCols: state.betaQueue.expectedCols || [],
+      limited: true,
+      spreadsheetId: state.betaQueue.spreadsheetId,
+      generatedAt: state.betaQueue.generatedAt || '',
+      queueOnly: true,
+    } : { rows: [], total: 0, summary: {}, queueOnly: true });
     if (state.betaFeed && state.betaFeed.schemaStale && !state.betaFeed.regenerating) {
       renderBetaFeed();
       return;
@@ -3576,6 +3594,7 @@ function renderBetaFeed() {
   const exceptions = betaExceptionRows(rows, ageInfo);
   const queueHtml = renderBetaActionQueue(rows, exceptions, ageInfo);
   const queueLimit = state.betaQueue?.limit || 10;
+  const exceptionCount = state.betaQueue?.counts?.investigate ?? exceptions.length;
   const queueStatus = state.betaQueue?.ok
     ? `<span style="color:var(--muted);font-size:11px">Full queue: ${(state.betaQueue.total || 0).toLocaleString('en-US')} rows · top ${queueLimit} per bucket</span>`
     : limited;
@@ -3658,7 +3677,7 @@ function renderBetaFeed() {
     <div class="beta-toolbar" style="margin-top:-4px">
       <button class="beta-action-btn secondary${viewValue === 'queue' ? ' active' : ''}" onclick="setBetaView('queue')">Action Queue</button>
       <button class="beta-action-btn secondary${viewValue === 'feed' ? ' active' : ''}" onclick="setBetaView('feed')">Decision Feed</button>
-      <button class="beta-action-btn secondary${viewValue === 'exceptions' ? ' active' : ''}" onclick="setBetaView('exceptions')">Exceptions ${exceptions.length ? `(${exceptions.length})` : ''}</button>
+      <button class="beta-action-btn secondary${viewValue === 'exceptions' ? ' active' : ''}" onclick="setBetaView('exceptions')">Exceptions ${exceptionCount ? `(${exceptionCount})` : ''}</button>
     </div>
     <div class="beta-summary">
       <div class="beta-metric"><div class="beta-metric-val">${feed.total || 0}</div><div class="beta-metric-lbl">Matching Rows</div></div>
@@ -3691,7 +3710,8 @@ function renderBetaFeed() {
 
 function setBetaView(v) {
   state.betaFilter.view = v || 'queue';
-  renderBetaFeed();
+  if (state.betaFilter.view === 'queue') renderBetaFeed();
+  else loadBetaFeed();
 }
 
 function setBetaReason(v) {
@@ -3747,7 +3767,9 @@ async function loadBetaDecisionsForInventory() {
   if (!state.betaEnabled) return;
   const storeKey = state.store || 'All';
   if (state.betaDecisionStore === storeKey && Object.keys(state.betaDecisionMap || {}).length) return;
+  if (state.betaDecisionLoading) return;
   try {
+    state.betaDecisionLoading = true;
     const [feed, operationalHealth] = await Promise.all([
       proxyFetch({ action: 'decisionfeed', beta: '1', store: storeKey, limit: 10000 }),
       withTimeout(proxyFetch({ action: 'operationalstatus' }), 8000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
@@ -3768,10 +3790,24 @@ async function loadBetaDecisionsForInventory() {
     state.betaDecisionRows = feed.rows || [];
     state.betaDecisionMap = buildBetaDecisionMap(state.betaDecisionRows);
     state.betaDecisionStore = storeKey;
+    state.betaDecisionLoading = false;
     if (state.tab === 'inventory') renderInventory();
   } catch (err) {
+    state.betaDecisionLoading = false;
     console.warn('Beta decision feed unavailable for inventory.', err);
   }
+}
+
+function scheduleBetaDecisionsForInventory(delayMs = 900) {
+  if (!state.betaEnabled || !state.inventoryData) return;
+  const storeKey = state.store || 'All';
+  if (state.betaDecisionStore === storeKey && Object.keys(state.betaDecisionMap || {}).length) return;
+  clearTimeout(_betaDecisionLoadTimer);
+  _betaDecisionLoadTimer = setTimeout(() => {
+    const run = () => loadBetaDecisionsForInventory();
+    if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 4000 });
+    else run();
+  }, delayMs);
 }
 
 // ════════════════════════════════════════════════════════
@@ -3822,8 +3858,17 @@ function init() {
       if (isInv) updateCatToggleBtn();
       document.querySelector('.date-controls').style.display = (isInv || isBeta) ? 'none' : '';
       if (isInv && !state.inventoryData) loadInventoryData();
-      if (isInv && state.inventoryData)  renderInventory();
-      if (state.tab === 'performance' && state.cogsData) renderAll();
+      if (isInv && state.inventoryData) {
+        renderInventory();
+        scheduleBetaDecisionsForInventory(700);
+      }
+      if (state.tab === 'performance') {
+        if (state.cogsData) renderAll();
+        else {
+          setLoadingAll();
+          loadData();
+        }
+      }
       if (state.tab === 'flags') renderFlags();
       if (state.tab === 'orders') renderOrders();
       if (state.tab === 'transfers') renderTransfers();
@@ -3905,7 +3950,6 @@ function init() {
   initInvFilters();
   updateOrderBadge();
   updateTransferBadge();
-  loadData();
   loadInventoryData();
 
   // Sync shared kills & flags from backend, then poll every 5 min for other users' changes
@@ -4362,7 +4406,7 @@ async function loadInventoryData() {
     if (cartPatched) saveOrderCart();
 
     renderInventory();
-    loadBetaDecisionsForInventory();
+    scheduleBetaDecisionsForInventory(900);
     if (state.tab === 'flags') renderFlags();
 
     // Load OOS date map — async, non-blocking; re-renders inventory when ready
@@ -5912,6 +5956,7 @@ function openQueueDecisionInInventory(store, sku, productName) {
   if (invTab && state.tab !== 'inventory') invTab.click();
   else if (state.inventoryData) renderInventory();
   else loadInventoryData();
+  scheduleBetaDecisionsForInventory(500);
 
   requestAnimationFrame(() => {
     document.getElementById('inventoryContent')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -6885,6 +6930,15 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.33', date: 'Jun 1, 2026',
+    items: [
+      'Beta opens Action Queue from the ranked backend queue without pulling the 500-row Decision Feed table first',
+      'Decision Feed and Exceptions rows now load only when those views are opened',
+      'Inventory renders the prepared snapshot first, then loads recommendation details after the initial page is usable',
+      'Performance sales, COGS, and budget requests wait until the Performance tab is opened',
+    ]
+  },
   {
     v: 'v2.32', date: 'May 30, 2026',
     items: [
