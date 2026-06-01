@@ -33,6 +33,7 @@ const SHEET_GIDS = {
 const LEAD_TIME_DAYS    = 7;
 const SAFETY_STOCK_DAYS = 7;
 const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 14 days
+const STANDARD_VENDOR_LEAD_DAYS = 7;
 const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
 const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -125,6 +126,7 @@ function doGet(e) {
     if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
     if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
     if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
+    if (params.action === 'decisionqueue')  return jsonOut(readBetaDecisionQueue(params));
     return jsonOut({ error: 'Unknown action' }, params.callback);
   } catch (err) {
     return jsonOut({ error: err.message, stack: err.stack }, params.callback);
@@ -583,7 +585,7 @@ function loadBetaDecisionConfig() {
     skuOverrides[sku] = {
       sku,
       overrideType: String(row.overrideType || '').trim(),
-      leadTimeDays: Number(row.leadTimeDays) || null,
+      leadTimeDays: null,
       minOrderQty: Number(row.minOrderQty) || null,
       orderMultiple: Number(row.orderMultiple) || null,
       transferFirst: row.transferFirst === true || String(row.transferFirst).toLowerCase() === 'true',
@@ -600,7 +602,7 @@ function loadBetaDecisionConfig() {
       categoryPattern: String(r.categoryPattern || ''),
       brandPattern: String(r.brandPattern || ''),
       vendorPattern: String(r.vendorPattern || ''),
-      leadTimeDays: Number(r.leadTimeDays) || LEAD_TIME_DAYS,
+      leadTimeDays: STANDARD_VENDOR_LEAD_DAYS,
       safetyStockDays: Number(r.safetyStockDays) || SAFETY_STOCK_DAYS,
       minOrderQty: Number(r.minOrderQty) || 1,
       orderMultiple: Number(r.orderMultiple) || 1,
@@ -616,7 +618,7 @@ function loadBetaDecisionConfig() {
       vendor: String(r.vendor || ''),
       brand: String(r.brand || ''),
       category: String(r.category || ''),
-      leadTimeDays: Number(r.leadTimeDays) || null,
+      leadTimeDays: null,
       buyerNotes: String(r.buyerNotes || ''),
       order: i,
     }));
@@ -808,6 +810,14 @@ function loadExistingDecisionDonors_(targetSet) {
 function buildDecisionFeedRows(targetStores) {
   const generatedAt = new Date().toISOString();
   const velMap = buildVelocityMap();
+  const operationalSnapshot = readOperationalSnapshot_('inventory_bundle_v1');
+  const operationalInventoryByStore = {};
+  if (operationalSnapshot && operationalSnapshot.inventory) {
+    for (const entry of operationalSnapshot.inventory || []) {
+      if (!entry || !entry.store) continue;
+      operationalInventoryByStore[entry.store] = entry.products || [];
+    }
+  }
   const config = loadBetaDecisionConfig();
   const betaStores = betaStoreKeys_();
   const shared = getSharedState({ beta: '1' });
@@ -827,9 +837,13 @@ function buildDecisionFeedRows(targetStores) {
   }
 
   for (const store of targetSet) {
-    const inv = getInventory({ store });
-    if (inv.error) continue;
-    for (const p of inv.products || []) {
+    let products = operationalInventoryByStore[store] || null;
+    if (!products) {
+      const inv = getInventory({ store });
+      if (inv.error) continue;
+      products = inv.products || [];
+    }
+    for (const p of products) {
       const vel = (velMap[store] || {})[p.name] || {};
       const v14 = vel.vel14 || 0;
       const v30 = vel.vel30 || 0;
@@ -887,7 +901,7 @@ function buildDecisionFeedRows(targetStores) {
     const override = config.skuOverrides[sku] || null;
     const rule = pickReorderRule_(p, config);
     const vendorLead = pickVendorLead_(p, config);
-    const leadTimeDays = (override && override.leadTimeDays) || (vendorLead && vendorLead.leadTimeDays) || rule.leadTimeDays;
+    const leadTimeDays = STANDARD_VENDOR_LEAD_DAYS;
     const safetyStockDays = rule.safetyStockDays || SAFETY_STOCK_DAYS;
     const targetDays = leadTimeDays + safetyStockDays;
     let minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
@@ -906,8 +920,6 @@ function buildDecisionFeedRows(targetStores) {
     if (p.status === 'low') reasonCodes.push('LOW_STOCK');
     if (transferFirst) reasonCodes.push('TRANSFER_FIRST');
     if (overstock || rule.ruleName.toLowerCase().indexOf('green cross') >= 0) reasonCodes.push('GREEN_CROSS_OVERSTOCK');
-    if (override && override.leadTimeDays) reasonCodes.push('LONG_LEAD_SKU');
-    if (!override && vendorLead && vendorLead.leadTimeDays && vendorLead.leadTimeDays !== rule.leadTimeDays) reasonCodes.push('VENDOR_LEAD_TIME');
     if (flagged.has(flagKey)) reasonCodes.push('FLAGGED_REVIEW');
     if (killed[flagKey]) reasonCodes.push('KILL_LIST');
 
@@ -1133,6 +1145,191 @@ function readBetaDecisionFeed(params) {
     limited: total > rows.length,
     spreadsheetId: BETA_SPREADSHEET_ID,
     generatedAt: rows[0] ? rows[0].generatedAt : '',
+  };
+}
+
+function decisionFeedRowObj_(raw, idx) {
+  return {
+    generatedAt: raw[idx.generatedAt] || '',
+    store: String(raw[idx.store] || ''),
+    productName: raw[idx.productName] || '',
+    sku: raw[idx.sku] || '',
+    brand: raw[idx.brand] || '',
+    category: raw[idx.category] || '',
+    qty: Number(raw[idx.qty] || 0),
+    sold7: Number(raw[idx.sold7] || 0),
+    sold14: Number(raw[idx.sold14] || 0),
+    sold28: Number(raw[idx.sold28] || 0),
+    vel14: Number(raw[idx.vel14] || 0),
+    doh: raw[idx.doh] === '' ? null : Number(raw[idx.doh] || 0),
+    status: raw[idx.status] || '',
+    recommendedOrderQty: Number(raw[idx.recommendedOrderQty] || 0),
+    recommendedTransferQty: Number(raw[idx.recommendedTransferQty] || 0),
+    donorStore: raw[idx.donorStore] || '',
+    reasonCodes: raw[idx.reasonCodes] || '',
+    whyChips: idx.whyChips == null ? '' : (raw[idx.whyChips] || ''),
+    confidence: Number(raw[idx.confidence] || 0),
+    oosDays: idx.oosDays == null ? 0 : Number(raw[idx.oosDays] || 0),
+    lostUnits: idx.lostUnits == null ? 0 : Number(raw[idx.lostUnits] || 0),
+    missedRevenue: idx.missedRevenue == null ? 0 : Number(raw[idx.missedRevenue] || 0),
+    imageUrl: idx.imageUrl == null ? '' : (raw[idx.imageUrl] || ''),
+    notes: idx.notes == null ? '' : (raw[idx.notes] || ''),
+  };
+}
+
+function decisionQueueIssues_(r) {
+  const issues = [];
+  const reasonText = String(r.reasonCodes || '');
+  const whyText = String(r.whyChips || '');
+  const cat = String(r.category || '').trim();
+  const sku = String(r.sku || '').trim();
+
+  if (!sku) issues.push({ type: 'Data', text: 'missing SKU' });
+  if (!cat || /^other$/i.test(cat)) issues.push({ type: 'Data', text: 'generic category' });
+  if (/\b(?:moq|mult)\s*227\b/i.test(whyText) && !/bulk cannabis flower/i.test(cat)) {
+    issues.push({ type: 'Data', text: 'flower rule but category is not flower' });
+  }
+  if (Number(r.lostUnits || 0) > 0 && !(Number(r.missedRevenue || 0) > 0)) {
+    issues.push({ type: 'Revenue', text: 'lost units missing price' });
+  }
+  if (/TRANSFER_FIRST/.test(reasonText) && !(Number(r.recommendedTransferQty || 0) > 0)) {
+    issues.push({ type: 'Logic', text: 'transfer-first without transfer' });
+  }
+  if ((/OOS|LOW_DOH/.test(reasonText) || String(r.status || '').toLowerCase() === 'oos') &&
+      !(Number(r.recommendedOrderQty || 0) > 0) &&
+      !(Number(r.recommendedTransferQty || 0) > 0) &&
+      !/KILL_LIST/.test(reasonText)) {
+    issues.push({ type: 'Logic', text: 'needs action but no order/transfer' });
+  }
+  return issues;
+}
+
+function decisionQueueScore_(r, issues) {
+  const status = String(r.status || '').toLowerCase();
+  const statusScore = status === 'oos' ? 500
+    : status === 'critical' ? 350
+    : status === 'low' ? 160
+    : status === 'watch' ? 60
+    : status === 'slow' ? -30 : 0;
+  return statusScore +
+    Number(r.missedRevenue || 0) * 5 +
+    Number(r.lostUnits || 0) * 35 +
+    Number(r.recommendedOrderQty || 0) * 2 +
+    Number(r.recommendedTransferQty || 0) * 2 +
+    Number(r.confidence || 0) +
+    (issues || []).length * 45;
+}
+
+function decisionQueueAction_(bucket, r, issues) {
+  if (bucket === 'order') return 'Buy ' + Number(r.recommendedOrderQty || 0).toLocaleString('en-US') + ' · ' + String(r.status || '').toUpperCase();
+  if (bucket === 'transfer') return 'Move ' + Number(r.recommendedTransferQty || 0).toLocaleString('en-US') + (r.donorStore ? ' from ' + r.donorStore : '');
+  if (bucket === 'investigate') return ((issues && issues[0] && issues[0].type) || 'Review') + ' check';
+  return String(r.reasonCodes || 'Slow mover').split(',')[0] || 'Review';
+}
+
+function readBetaDecisionQueue(params) {
+  if (getDataMode() !== 'beta' && params.beta !== '1') {
+    return { ok: false, error: 'Beta decision queue requires beta=1 or GC_DATA_MODE=beta.' };
+  }
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { ok: true, buckets: {}, counts: {}, total: 0, spreadsheetId: BETA_SPREADSHEET_ID };
+  }
+
+  const values = sheet.getDataRange().getValues();
+  const headers = values.shift().map(function(h) { return String(h || ''); });
+  const idx = {};
+  headers.forEach(function(h, i) { idx[h] = i; });
+  const missingCols = DECISION_FEED_COLS.filter(function(col) { return idx[col] == null; });
+  const schemaStale = missingCols.length > 0 || headers.join('|') !== DECISION_FEED_COLS.join('|');
+  const store = String(params.store || '').trim();
+  const status = String(params.status || '').trim().toLowerCase();
+  const reason = String(params.reason || '').trim().toUpperCase();
+  const search = String(params.q || '').trim().toLowerCase();
+  const limit = Math.min(Math.max(parseInt(params.limit || '10', 10) || 10, 1), 30);
+
+  const buckets = {
+    order: { label: 'Order Today', count: 0, items: [] },
+    transfer: { label: 'Transfer Today', count: 0, items: [] },
+    investigate: { label: 'Investigate', count: 0, items: [] },
+    dead: { label: 'Dead / Kill Review', count: 0, items: [] },
+  };
+  const allItems = { order: [], transfer: [], investigate: [], dead: [] };
+  const summary = { orderLines: 0, transferLines: 0, killList: 0, orderUnits: 0, transferUnits: 0, missedRevenue: 0, lostUnits: 0 };
+  let total = 0;
+  let generatedAt = '';
+
+  for (let i = 0; i < values.length; i++) {
+    const raw = values[i];
+    const rowStore = String(raw[idx.store] || '');
+    const rowStatus = String(raw[idx.status] || '').toLowerCase();
+    const rowReason = String(raw[idx.reasonCodes] || '').toUpperCase();
+    const haystack = [
+      raw[idx.productName], raw[idx.sku], raw[idx.brand], raw[idx.category], rowStore, rowReason,
+    ].join(' ').toLowerCase();
+    if (store && store !== 'All' && rowStore !== store) continue;
+    if (status && rowStatus !== status) continue;
+    if (reason && rowReason.indexOf(reason) === -1) continue;
+    if (search && haystack.indexOf(search) === -1) continue;
+
+    const r = decisionFeedRowObj_(raw, idx);
+    if (!generatedAt && r.generatedAt) generatedAt = r.generatedAt;
+    total++;
+    summary.missedRevenue += Number(r.missedRevenue || 0);
+    summary.lostUnits += Number(r.lostUnits || 0);
+    if (r.recommendedOrderQty > 0) { summary.orderLines++; summary.orderUnits += r.recommendedOrderQty; }
+    if (r.recommendedTransferQty > 0) { summary.transferLines++; summary.transferUnits += r.recommendedTransferQty; }
+    if (rowReason.indexOf('KILL_LIST') !== -1) summary.killList++;
+
+    const issues = decisionQueueIssues_(r);
+    const score = decisionQueueScore_(r, issues);
+    const base = {
+      productName: r.productName,
+      store: r.store,
+      sku: r.sku,
+      brand: r.brand,
+      category: r.category,
+      status: r.status,
+      recommendedOrderQty: r.recommendedOrderQty,
+      recommendedTransferQty: r.recommendedTransferQty,
+      donorStore: r.donorStore,
+      missedRevenue: r.missedRevenue,
+      lostUnits: r.lostUnits,
+      reasonCodes: r.reasonCodes,
+      confidence: r.confidence,
+      issues: issues,
+      score: score,
+    };
+    if (issues.length) allItems.investigate.push(Object.assign({}, base, { action: decisionQueueAction_('investigate', r, issues) }));
+    if (/KILL_LIST|DEAD|SLOW/.test(rowReason) || rowStatus === 'slow') allItems.dead.push(Object.assign({}, base, { action: decisionQueueAction_('dead', r, issues) }));
+    if (r.recommendedTransferQty > 0 && rowReason.indexOf('KILL_LIST') === -1) allItems.transfer.push(Object.assign({}, base, { action: decisionQueueAction_('transfer', r, issues) }));
+    if (r.recommendedOrderQty > 0 && rowReason.indexOf('KILL_LIST') === -1) allItems.order.push(Object.assign({}, base, { action: decisionQueueAction_('order', r, issues) }));
+  }
+
+  Object.keys(allItems).forEach(function(key) {
+    allItems[key].sort(function(a, b) { return b.score - a.score; });
+    buckets[key].count = allItems[key].length;
+    buckets[key].items = allItems[key].slice(0, limit);
+  });
+
+  return {
+    ok: true,
+    buckets: buckets,
+    counts: {
+      order: buckets.order.count,
+      transfer: buckets.transfer.count,
+      investigate: buckets.investigate.count,
+      dead: buckets.dead.count,
+    },
+    total: total,
+    summary: summary,
+    schemaStale: schemaStale,
+    missingCols: missingCols,
+    expectedCols: DECISION_FEED_COLS,
+    spreadsheetId: BETA_SPREADSHEET_ID,
+    generatedAt: generatedAt,
+    limit: limit,
   };
 }
 
@@ -2668,22 +2865,51 @@ function buildOperationalBundle_(force) {
 
 function getOperationalBundle(params) {
   const key = 'inventory_bundle_v1';
-  if (params.force !== '1') {
-    const cached = readOperationalSnapshot_(key);
-    if (cached) return cached;
+  const snapshot = readOperationalSnapshot_(key);
+
+  if (params.force === '1') {
+    // Caller wants fresh data, but a synchronous rebuild costs 36+ Dutchie URL fetches
+    // and may exhaust the daily quota. Instead, schedule an async background rebuild
+    // (runs in ~60s via GAS trigger) and return the current snapshot for now.
+    try { scheduleOperationalWarmRun(); } catch (e) { Logger.log('scheduleOperationalWarmRun failed: ' + e.message); }
+    if (snapshot) {
+      return Object.assign({}, snapshot, { refreshScheduled: true,
+        message: 'Snapshot refresh has been scheduled (runs in ~60s). This response is the previous snapshot.' });
+    }
+    // No snapshot exists — schedule the build and tell the caller to try again
     return {
       ok: false,
       error: 'operational_snapshot_missing',
       source: 'missing',
+      refreshScheduled: true,
       generatedAt: '',
       velocity: null,
       inventory: [],
-      errors: ['Operational snapshot is not ready yet. Run warmOperationalCaches or wait for the nightly trigger.'],
+      errors: ['Operational snapshot is being built now (scheduled). Try again in ~2 minutes.'],
     };
   }
-  const bundle = buildOperationalBundle_(params.force === '1');
-  writeOperationalSnapshot_(key, bundle);
-  return bundle;
+
+  if (snapshot) return snapshot;
+
+  // Snapshot missing — auto-schedule a rebuild once (self-healing). Uses a throttle key so
+  // we don't pile up triggers if many users hit this simultaneously.
+  const props = PropertiesService.getScriptProperties();
+  const throttleKey = 'gc_snapshot_autoschedule_day';
+  const today = new Date().toISOString().slice(0, 10);
+  if (props.getProperty(throttleKey) !== today) {
+    props.setProperty(throttleKey, today);
+    try { scheduleOperationalWarmRun(); } catch (e) { Logger.log('Auto-schedule snapshot failed: ' + e.message); }
+  }
+
+  return {
+    ok: false,
+    error: 'operational_snapshot_missing',
+    source: 'missing',
+    generatedAt: '',
+    velocity: null,
+    inventory: [],
+    errors: ['Operational snapshot is not ready yet — a rebuild has been scheduled automatically (~2 min). Please refresh after waiting.'],
+  };
 }
 
 function warmOperationalCaches() {
