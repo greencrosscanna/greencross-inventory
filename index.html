@@ -1652,7 +1652,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.34</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Single-store view now loads from the operational snapshot instead of hitting the Dutchie API directly — switching between All / Bend / Hillsboro etc. costs zero extra API calls</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.32</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta Action Queue items now jump straight to the matching Inventory product group with filters cleared and All Stores selected</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.31</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta freshness panel now separates snapshot age, Decision Feed age, and midnight job status with clear Regenerate Feed, Build Snapshot, and Install Trigger actions</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.30</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta now shows a Decision Rules card for vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding</span></div>
@@ -4212,34 +4213,49 @@ async function loadInventoryData() {
     const forceServerRefresh = !!state.forceServerRefresh;
     let invResults = null;
 
-    if (state.store === 'All') {
-      // Always load from snapshot — never force-rebuild on user load (costs 36+ Dutchie API calls).
-      const bundle = await proxyFetch({ action: 'operationalbundle' }, 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
-      if (bundle && bundle.source === 'missing') {
-        // Snapshot hasn't been built yet (or was cleared). Show a helpful message rather
-        // than burning 36 URL fetches trying to rebuild — the nightly trigger owns this.
+    // Always try the operational snapshot first — it contains all stores, so it works for
+    // single-store views too. The 12h localStorage cache means switching "All"↔"Bend" costs
+    // zero extra network calls once the first fetch lands.
+    const bundle = await proxyFetch({ action: 'operationalbundle' }, 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
+
+    if (bundle && bundle.source === 'missing') {
+      if (state.store === 'All') {
+        // All-stores view requires the snapshot — don't burn 36 API calls as fallback.
         throw new Error(
           'Inventory snapshot is not ready yet. ' +
           'Open Settings → Admin → "Build Snapshot Now" to build it (takes ~2 min), ' +
           'then refresh. The nightly sync also runs at midnight.'
         );
       }
-      if (bundle && bundle.velocity && Array.isArray(bundle.inventory)) {
+      // Single-store: snapshot missing is not fatal — fall through to individual API call below.
+      console.warn('Snapshot missing — falling back to live inventory for', state.store);
+    } else if (bundle && bundle.velocity && Array.isArray(bundle.inventory)) {
+      // Snapshot available — extract the target store(s) from it.
+      const bundleStoreMap = new Map(bundle.inventory.map(row => [row.store, row]));
+      const missing = targetStores.filter(s => !bundleStoreMap.has(s));
+      if (missing.length === 0) {
+        // All target stores found in snapshot — no API calls needed.
         state.velocityData = bundle.velocity;
-        invResults = bundle.inventory.map(row => ({
-          store: row.store,
-          products: row.products || [],
-          error: row.error || '',
-        }));
+        invResults = targetStores.map(s => {
+          const row = bundleStoreMap.get(s);
+          return { store: s, products: row.products || [], error: row.error || '' };
+        });
         const bar = document.getElementById('loadBar');
         if (bar) bar.style.width = '100%';
-      } else if (bundle && !bundle.ok) {
-        throw new Error('Inventory bundle error: ' + (bundle.error || 'unknown') +
-          '. Open Settings → Admin → "Build Snapshot Now" to rebuild, then refresh.');
+      } else {
+        // Some stores present in snapshot, others not — use snapshot for what we have and
+        // fall through to API for the rest. (Rare, but handles partial snapshot builds.)
+        state.velocityData = bundle.velocity;
+        console.warn('Snapshot missing stores, will fetch live:', missing.join(', '));
+        // Note: invResults stays null → full fallback below. Partial merging is complex;
+        // the full API fallback is safe because targetStores is small.
       }
+    } else if (bundle && !bundle.ok && state.store === 'All') {
+      throw new Error('Inventory bundle error: ' + (bundle.error || 'unknown') +
+        '. Open Settings → Admin → "Build Snapshot Now" to rebuild, then refresh.');
     }
 
-    // Step 1: velocity (same-day operational cache — one sheet read covers all stores)
+    // Step 1: velocity (from snapshot above, or fetch separately if snapshot was missing)
     if (!state.velocityData) {
       const velParams = forceServerRefresh ? { action: 'velocity', force: '1' } : { action: 'velocity' };
       state.velocityData = await proxyFetch(velParams, forceServerRefresh ? null : 'vel_all', OPERATIONAL_CACHE_TTL_MS);
@@ -6930,6 +6946,14 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.34', date: 'Jun 1, 2026',
+    items: [
+      'Single-store inventory now loads from the midnight operational snapshot instead of hitting the Dutchie API directly',
+      'Switching between All, Bend, Hillsboro, etc. costs zero extra API calls — all store data comes from the same cached bundle',
+      'Velocity data is also pulled from the snapshot for single-store views, eliminating a second network round-trip',
+    ]
+  },
   {
     v: 'v2.33', date: 'Jun 1, 2026',
     items: [
