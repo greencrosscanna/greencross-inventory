@@ -1652,7 +1652,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.36</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Inventory summary bar now shows a Lost Revenue pill: total estimated revenue lost while OOS products have been out of stock — click it to filter straight to the OOS list</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.37</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Velocity history fix: sync now processes up to 8 × 14-day chunks per hourly call (was 1), so the full 180-day backfill completes in 2 runs instead of 13 — bars 3 and 4 of the velocity sparkline will populate after the next sync</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.36</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Inventory summary bar now shows a Lost Revenue pill: total estimated revenue lost while OOS products have been out of stock — click it to filter straight to the OOS list</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.35</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Transfer suggestion buttons disappear once added to the transfer cart, matching order button behaviour — no more lingering amber buttons after a transfer is queued</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.34</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Single-store view now loads from the operational snapshot instead of hitting the Dutchie API directly — switching between All / Bend / Hillsboro etc. costs zero extra API calls</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
@@ -6979,6 +6980,14 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.37', date: 'Jun 1, 2026',
+    items: [
+      'Velocity history fix: sync now processes up to 8 × 14-day chunks per hourly call (was 1)',
+      'Full 180-day backfill completes in ~2 hourly runs instead of 13',
+      'Bars 3 and 4 of the 4-week velocity sparkline will populate after the next sync cycle',
+    ]
+  },
   {
     v: 'v2.36', date: 'Jun 1, 2026',
     items: [

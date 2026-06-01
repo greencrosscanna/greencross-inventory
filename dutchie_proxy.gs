@@ -1511,11 +1511,30 @@ function syncVelocityCache() {
 
   const CHUNK_DAYS = 14;
   const chunkMs    = CHUNK_DAYS * 86400000;
-  const chunkEnd   = new Date(Math.min(fetchFrom.getTime() + chunkMs, now.getTime()));
-  const remaining  = Math.max(0, Math.ceil((now.getTime() - chunkEnd.getTime()) / 86400000));
+  // GAS time limit is 6 min. Each _syncChunk call makes 6 Dutchie fetches (~20-30s).
+  // We can safely run up to ~8 chunks (3.5 min) per trigger invocation, which means
+  // a full 180-day backfill completes in 2 hourly trigger calls instead of 13.
+  const MAX_CHUNKS  = 8;
+  const DEADLINE_MS = 200 * 1000; // 3m20s safety margin
+  const callStart   = Date.now();
 
-  const result = _syncChunk(props, fetchFrom, chunkEnd, true);
-  return { ...result, remaining, backfillComplete: remaining === 0 };
+  let totalSynced = 0;
+  let chunkStart  = fetchFrom;
+  let lastResult  = { synced: 0, upTo: fetchFrom.toISOString() };
+  let chunksRun   = 0;
+
+  while (chunksRun < MAX_CHUNKS && Date.now() - callStart < DEADLINE_MS) {
+    const chunkEnd = new Date(Math.min(chunkStart.getTime() + chunkMs, now.getTime()));
+    if (chunkEnd <= chunkStart) break; // caught up
+    lastResult = _syncChunk(props, chunkStart, chunkEnd, true);
+    totalSynced += lastResult.synced || 0;
+    chunksRun++;
+    chunkStart = chunkEnd;
+    if (chunkEnd >= now) break; // fully caught up
+  }
+
+  const remaining = Math.max(0, Math.ceil((now.getTime() - chunkStart.getTime()) / 86400000));
+  return { synced: totalSynced, upTo: lastResult.upTo, chunksRun, remaining, backfillComplete: remaining === 0 };
 }
 
 // Internal: fetch one time window for all stores, upsert into sheet.
