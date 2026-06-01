@@ -1652,7 +1652,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.34</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Single-store view now loads from the operational snapshot instead of hitting the Dutchie API directly — switching between All / Bend / Hillsboro etc. costs zero extra API calls</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.35</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Transfer suggestion buttons disappear once added to the transfer cart, matching order button behaviour — no more lingering amber buttons after a transfer is queued</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.34</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Single-store view now loads from the operational snapshot instead of hitting the Dutchie API directly — switching between All / Bend / Hillsboro etc. costs zero extra API calls</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.32</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta Action Queue items now jump straight to the matching Inventory product group with filters cleared and All Stores selected</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.31</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta freshness panel now separates snapshot age, Decision Feed age, and midnight job status with clear Regenerate Feed, Build Snapshot, and Install Trigger actions</span></div>
@@ -4964,8 +4965,9 @@ function renderRestockPanel(candidates, selectedStore) {
       const inTransfer = state.transferCart.some(i => i.key === txKey);
 
       const qtyLabel = formatOrderQty(orderQtyProduct(sugg.recipient, betaDecisionForProduct(sugg.recipient)), qty);
-      const txBtn = safe > 0
-        ? `<button class="transfer-btn${inTransfer ? ' in-transfer' : ''}" onclick="event.stopPropagation();addToTransferByKey('${txKeyEsc}')" title="${inTransfer ? 'In transfer queue' : 'Add to transfer queue'}">↔${qtyLabel}</button>`
+      // Hide button once in cart — keeps the restock panel stable (no amber buttons lingering)
+      const txBtn = safe > 0 && !inTransfer
+        ? `<button class="transfer-btn" onclick="event.stopPropagation();addToTransferByKey('${txKeyEsc}')" title="Add to transfer queue">↔${qtyLabel}</button>`
         : '';
 
       return `<span class="restock-donor-chip" style="border-left: 2px solid ${storeColor(d.store)}">
@@ -5647,8 +5649,11 @@ function renderInventory() {
         const txKey = transferKey(betaTransfer);
         _transferSuggMap[txKey] = betaTransfer;
         const inTransfer = state.transferCart.some(i => i.key === txKey);
-        const txKeyEsc = txKey.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-        actions.push(`<button class="transfer-btn${inTransfer ? ' in-transfer' : ''}" onclick="event.stopPropagation();addToTransferByKey('${txKeyEsc}')" title="${inTransfer ? 'In transfers' : 'Add beta recommended transfer'}">↔${formatOrderQty(qtyProduct, betaTransfer.qty)}</button>`);
+        // Hide when already in transfer cart — mirrors order buttons disappearing when qty→0
+        if (!inTransfer) {
+          const txKeyEsc = txKey.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+          actions.push(`<button class="transfer-btn" onclick="event.stopPropagation();addToTransferByKey('${txKeyEsc}')" title="Add beta recommended transfer">↔${formatOrderQty(qtyProduct, betaTransfer.qty)}</button>`);
+        }
       }
       return actions.join('');
     }
@@ -6946,6 +6951,13 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.35', date: 'Jun 1, 2026',
+    items: [
+      'Transfer suggestion buttons now disappear once added to the transfer cart, matching how order buttons behave',
+      'Applies to all three surfaces: flat inventory rows, multi-store group child rows, and the OOS restock panel',
+    ]
+  },
   {
     v: 'v2.34', date: 'Jun 1, 2026',
     items: [
