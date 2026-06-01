@@ -1652,7 +1652,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.35</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Transfer suggestion buttons disappear once added to the transfer cart, matching order button behaviour — no more lingering amber buttons after a transfer is queued</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.36</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Inventory summary bar now shows a Lost Revenue pill: total estimated revenue lost while OOS products have been out of stock — click it to filter straight to the OOS list</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.35</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Transfer suggestion buttons disappear once added to the transfer cart, matching order button behaviour — no more lingering amber buttons after a transfer is queued</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.34</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Single-store view now loads from the operational snapshot instead of hitting the Dutchie API directly — switching between All / Bend / Hillsboro etc. costs zero extra API calls</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.32</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta Action Queue items now jump straight to the matching Inventory product group with filters cleared and All Stores selected</span></div>
@@ -1748,6 +1749,10 @@ if (location.protocol === 'file:') {
       <div class="inv-wide-pill">
         <div class="iwp-label">Gross Margin</div>
         <div class="iwp-value" id="iwpMargin" style="color:var(--green)">—</div>
+      </div>
+      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated revenue lost while OOS products have been out of stock — click to filter to OOS" style="cursor:pointer;display:none">
+        <div class="iwp-label" style="color:var(--red)">Lost Revenue</div>
+        <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)">—</div>
       </div>
       <button class="inv-status-pill" data-status="oos" onclick="invFilterStatus('oos')" style="color:var(--red)">
         <span class="isp-label">Out of Stock</span>
@@ -5098,7 +5103,17 @@ function renderInventory() {
   const counts = { oos: 0, critical: 0, low: 0, watch: 0, ok: 0, slow: 0 };
   const totalVal = { oos: 0, critical: 0, low: 0, watch: 0, ok: 0, slow: 0 };
   let totalInvValue = 0;
-  for (const p of storeScoped) { counts[p.status]++; totalVal[p.status] += p.value || 0; totalInvValue += p.value || 0; }
+  let totalMissedRevenue = 0;
+  let totalLostUnits = 0;
+  for (const p of storeScoped) {
+    counts[p.status]++;
+    totalVal[p.status] += p.value || 0;
+    totalInvValue += p.value || 0;
+    if (p.status === 'oos') {
+      const d = betaDecisionForProduct(p);
+      if (d) { totalMissedRevenue += Number(d.missedRevenue || 0); totalLostUnits += Number(d.lostUnits || 0); }
+    }
+  }
   const needsReorder = storeScoped.filter(p => p.reorderQty > 0).length;
   const atRiskVal = (totalVal.oos || 0) + (totalVal.critical || 0) + (totalVal.low || 0);
 
@@ -5236,7 +5251,7 @@ function renderInventory() {
   }
 
   // Populate summary bar
-  updateInvSummaryBar(counts, needsReorder, totalInvValue);
+  updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRevenue, totalLostUnits);
 
   // Local row-building helpers
   const fmt = v => v % 1 === 0 ? v : v.toFixed(1);
@@ -5822,7 +5837,7 @@ function invSortBy(col) {
   renderInventory();
 }
 
-function updateInvSummaryBar(counts, needsReorder, totalInvValue) {
+function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRevenue, totalLostUnits) {
   // Wide pills
   const el = n => document.getElementById(n);
   const setFinancial = (id, val) => {
@@ -5831,6 +5846,19 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue) {
     else node.textContent = val;
   };
   setFinancial('iwpInvValue', totalInvValue > 0 ? fmtK(totalInvValue) : '—');
+  // Lost revenue pill — only visible when there's beta data for OOS products
+  const missedPill = el('iwpMissedRev');
+  if (missedPill) {
+    if (totalMissedRevenue > 0) {
+      setFinancial('iwpMissedRevVal', fmtK(totalMissedRevenue));
+      missedPill.style.display = '';
+    } else if (totalLostUnits > 0) {
+      const node = el('iwpMissedRevVal'); if (node) node.textContent = Math.round(totalLostUnits) + 'u';
+      missedPill.style.display = '';
+    } else {
+      missedPill.style.display = 'none';
+    }
+  }
   const _sData = state.inv28Sales || state.salesData;
   const _cData = state.inv28Cogs  || state.cogsData;
   if (_sData && _cData) {
@@ -6951,6 +6979,15 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.36', date: 'Jun 1, 2026',
+    items: [
+      'Inventory summary bar now shows a "Lost Revenue" pill: total estimated revenue missed while OOS products have been out of stock',
+      'Pill appears only when beta decision data is available and at least one OOS product has a price on file',
+      'Falls back to "lost units" count when no price data is available',
+      'Click the pill to filter the inventory list to OOS products',
+    ]
+  },
   {
     v: 'v2.35', date: 'Jun 1, 2026',
     items: [
