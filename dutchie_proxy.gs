@@ -1520,9 +1520,20 @@ function syncVelocityCache() {
   const props      = PropertiesService.getScriptProperties();
   const lastSync   = props.getProperty('velSyncDate');
   const now        = new Date();
-  const cutoff90   = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000);
-  const fromDate   = lastSync ? new Date(lastSync) : cutoff90;
-  const fetchFrom  = fromDate < cutoff90 ? cutoff90 : fromDate;
+  const cutoff180  = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000); // renamed from cutoff90 (was misleading)
+  const fromDate   = lastSync ? new Date(lastSync) : cutoff180;
+  const fetchFrom  = fromDate < cutoff180 ? cutoff180 : fromDate;
+
+  // Self-heal: if backfill was running but no trigger is active, restart it.
+  const backfillStatus = props.getProperty('backfillStatus') || '';
+  if (backfillStatus.startsWith('running:') || backfillStatus === 'pending') {
+    const hasBackfillTrigger = ScriptApp.getProjectTriggers()
+      .some(t => t.getHandlerFunction() === '_runBackfillTrigger');
+    if (!hasBackfillTrigger) {
+      Logger.log('syncVelocityCache: stalled backfill detected (' + backfillStatus + '), restarting');
+      _installBackfillTrigger();
+    }
+  }
 
   const CHUNK_DAYS = 14;
   const chunkMs    = CHUNK_DAYS * 86400000;
@@ -1558,7 +1569,7 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
   const fromISO = fromDate.toISOString();
   const toISO   = toDate.toISOString();
   const now     = Date.now();
-  const cutoff90Str = new Date(now - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const cutoff180Str = new Date(now - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10); // 180-day retention cutoff
 
   const productDict = buildProductIdDict();
 
@@ -1588,7 +1599,7 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
       if (tx.isVoid || tx.isReturn) continue;
       if (!Array.isArray(tx.items)) continue;
       const dateStr = (tx.transactionDateLocalTime || tx.transactionDate || '').slice(0, 10);
-      if (!dateStr || dateStr < cutoff90Str) continue; // skip rows outside the retention window
+      if (!dateStr || dateStr < cutoff180Str) continue; // skip rows outside the retention window
 
       for (const item of tx.items) {
         if (item.isReturned) continue;
@@ -1615,7 +1626,7 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
     // row[0] may be a Date object (Google Sheets auto-converts date strings); use _velDateToYMD
     // so the key matches the plain-string keys built from newRows above.
     const kept = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
-    const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff90Str);
+    const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
     const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
     sheet.clearContents();
     sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
@@ -1721,20 +1732,34 @@ function _runBackfillTrigger() {
 
   const props    = PropertiesService.getScriptProperties();
   const fromStr  = props.getProperty('backfillFrom');
-  if (!fromStr) return;
+  if (!fromStr) {
+    Logger.log('_runBackfillTrigger: backfillFrom missing, aborting');
+    return;
+  }
 
   const now      = new Date();
   const fromDate = new Date(fromStr + 'T00:00:00Z');
   const CHUNK    = 7 * 86400000;
   const toDate   = new Date(Math.min(fromDate.getTime() + CHUNK, now.getTime()));
 
-  _syncChunk(props, fromDate, toDate, false); // don't touch velSyncDate
+  try {
+    const result = _syncChunk(props, fromDate, toDate, false); // don't touch velSyncDate
+    Logger.log('_runBackfillTrigger: synced ' + fromStr + ' → ' + toDate.toISOString().slice(0,10) + ' (' + (result.synced || 0) + ' rows)');
+  } catch(e) {
+    // Log the error and stamp it into status so velbackfillstatus exposes it;
+    // do NOT reschedule — a broken trigger loop wastes quota silently.
+    const errMsg = 'error:' + fromStr + ':' + e.message;
+    props.setProperty('backfillStatus', errMsg);
+    Logger.log('_runBackfillTrigger ERROR at ' + fromStr + ': ' + e.message + '\n' + e.stack);
+    return;
+  }
 
   const nextFrom = toDate.toISOString().slice(0, 10);
   const done = toDate >= now;
   if (done) {
     props.deleteProperty('backfillFrom');
     props.setProperty('backfillStatus', 'complete:' + nextFrom);
+    Logger.log('_runBackfillTrigger: COMPLETE at ' + nextFrom);
   } else {
     props.setProperty('backfillFrom', nextFrom);
     props.setProperty('backfillStatus', 'running:' + nextFrom);
