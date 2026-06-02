@@ -398,10 +398,22 @@ if (location.protocol === 'file:') {
   .scanner-aim-corner.br { bottom: 28%; right: 12%; border-bottom-width: 3px; border-right-width: 3px; border-radius: 0 0 4px 0; }
 
   .scanner-hint {
-    position: absolute; bottom: 12px; left: 0; right: 0;
+    position: absolute; bottom: 78px; left: 0; right: 0;
     text-align: center; font-size: 12px; color: rgba(255,255,255,.6);
     pointer-events: none;
   }
+  /* Snap-photo shutter — opens the native iOS camera (real autofocus/macro) for
+     close-up labels the live web camera can't focus on (iOS exposes no web focus). */
+  .scanner-snap-btn {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: 58px; height: 58px; border-radius: 50%;
+    background: rgba(255,255,255,.94); color: #000;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 27px; line-height: 1; cursor: pointer; z-index: 6;
+    box-shadow: 0 2px 12px rgba(0,0,0,.45); border: 3px solid rgba(0,0,0,.18);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .scanner-snap-btn:active { transform: translateX(-50%) scale(.93); }
 
   /* Result area */
   .scanner-result-area { flex: 1; overflow-y: auto; padding: 10px; }
@@ -1661,7 +1673,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.46</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: return-to-scan camera restore + autofocus/tap-to-focus (superseded by v2.45 hotfix)</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.43</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.42</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 3: parallel store inventory fetches cut bundle build from ~9s to ~1.5s; GAS error log with ⚠ badge in Settings if overnight failures occur; Vel Cache date column forced to text format so Sheets stops auto-converting dates; decision feed staleness guard — feed older than 26h shows ⚠ stale and auto-schedules a background refresh</span></div>
@@ -1924,6 +1937,15 @@ if (location.protocol === 'file:') {
           <div class="scanner-aim-corner br"></div>
         </div>
         <div class="scanner-hint" id="scannerHint">Point at a product barcode or QR label</div>
+        <!-- Snap-photo shutter: hands off to the native iOS camera (real autofocus +
+             macro) for close-up labels the live web camera can't focus on. Reuses the
+             existing handleScannerFile decode pipeline. capture="environment" opens the
+             rear camera directly. -->
+        <label class="scanner-snap-btn" id="scannerSnapBtn" title="Snap a sharp close-up (native camera autofocus)">
+          📸
+          <input type="file" accept="image/*" capture="environment" id="scannerSnapInput"
+                 style="display:none" onchange="handleScannerFile(this)">
+        </label>
       </div>
       <!-- Static file-input fallback (shown when camera unavailable or previously denied) -->
       <div id="scannerFileArea" style="display:none;flex-direction:column;align-items:center;justify-content:center;
@@ -6559,7 +6581,7 @@ function initScanner() {
         () => {}
       ).then(() => {
         _scannerActive = true;
-        hint.textContent = 'Tap the view to refocus · point at a barcode or QR label';
+        hint.textContent = 'Point at a barcode · tap 📸 for a sharp close-up';
         SCAN_DIAG.last = 'cam:env';
         startScannerDiagnostics();
         startNativeLiveScanner();
@@ -6798,9 +6820,11 @@ function resumeScanner() {
   if (camArea)  camArea.style.display  = prevDenied ? 'none' : '';
   if (fileArea) fileArea.style.display = prevDenied ? 'flex' : 'none';
   if (manArea)  manArea.style.display  = '';
-  // Reset file input so the same file can be selected again
+  // Reset file inputs so the same photo can be picked/snapped again
   const fi = document.getElementById('scannerFileInput');
   if (fi) fi.value = '';
+  const si = document.getElementById('scannerSnapInput');
+  if (si) si.value = '';
   // If file area is visible (camera denied), nothing more to do
   if (fileArea && fileArea.style.display !== 'none') return;
   if (!window.isSecureContext) return;
