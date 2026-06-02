@@ -1575,10 +1575,18 @@ function syncVelocityCache() {
   // the vel cache silently lost data during a rewrite (GAS timeout mid-setValues).
   // Roll velSyncDate back to the last confirmed write date so the next trigger re-fills the gap.
   // A 4-hour cooldown prevents thrashing if the API genuinely has no recent data.
-  const velLastWriteDate = props.getProperty('velLastWriteDate');
+  const velLastWriteDate  = props.getProperty('velLastWriteDate');
   const velSheetCorrupted = props.getProperty('velSheetCorrupted') || '';
-  // Fire gap self-heal when caught up (remaining===0) OR when a mid-write
-  // truncation was detected — corruption doesn't wait for catch-up.
+
+  // If corruption flag is set but we've never successfully written any rows,
+  // there's nothing to roll back to — clear the flag so the sync can proceed.
+  if (velSheetCorrupted && !velLastWriteDate) {
+    props.deleteProperty('velSheetCorrupted');
+    Logger.log('syncVelocityCache: corruption flag cleared — no velLastWriteDate to roll back to; sync will proceed from current position.');
+  }
+
+  // Gap self-heal: fire when caught up (remaining===0) with a large gap, OR immediately
+  // when a mid-write truncation was detected (corruption doesn't wait for catch-up).
   if (velLastWriteDate && (remaining === 0 || velSheetCorrupted)) {
     const gapDays = (now.getTime() - new Date(velLastWriteDate + 'T12:00:00').getTime()) / 86400000;
     const healedAt = props.getProperty('velGapHealedAt') || '';
@@ -1588,6 +1596,7 @@ function syncVelocityCache() {
         + ' is ' + Math.round(gapDays) + ' days behind now. Rolling velSyncDate back to re-sync.');
       props.setProperty('velSyncDate', new Date(velLastWriteDate + 'T00:00:00Z').toISOString());
       props.setProperty('velGapHealedAt', now.toISOString());
+      props.deleteProperty('velSheetCorrupted'); // clear flag — re-sync will write fresh data
       return { synced: totalSynced, upTo: lastResult.upTo, chunksRun, remaining, backfillComplete: false, gapHealed: true, gapFrom: velLastWriteDate };
     }
   }
@@ -1874,25 +1883,19 @@ function velProductDiagnostic(params) {
   const searchName = String(params.name || '').toLowerCase().trim();
   if (!searchId && !searchName) return { error: 'Provide id or name param', rows: [] };
 
-  // Pass 1: read only the 4 columns needed to identify matches (date, store, productId, name).
-  // For a 70K-row sheet this is 280K cells instead of 560K — 50% less I/O.
-  const filterData = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
-  const matchIndices = [];
+  // Read all 8 columns in one call. A two-pass "narrow then fetch" approach sounds
+  // efficient but firing one getRange per matching row (N+1) costs ~30ms × N API calls
+  // and easily exceeds the GAS execution limit for popular products. One bulk read wins.
+  const filterData = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  const matches = [];
   for (let i = 0; i < filterData.length; i++) {
     const pid   = String(filterData[i][2] || '').toLowerCase();
     const pname = String(filterData[i][3] || '').toLowerCase();
     if ((searchId && pid.includes(searchId)) || (searchName && pname.includes(searchName))) {
-      matchIndices.push(i);
+      matches.push(filterData[i]);
     }
   }
-  if (!matchIndices.length) return { found: false, searchId, searchName, totalRows: filterData.length };
-
-  // Pass 2: read the full 8 columns only for the matching rows (tiny subset).
-  const matches = matchIndices.map(i => {
-    const partial = filterData[i]; // [date, store, productId, name]
-    const fullRow = sheet.getRange(i + 2, 1, 1, VEL_COLS.length).getValues()[0];
-    return fullRow;
-  });
+  if (!matches.length) return { found: false, searchId, searchName, totalRows: filterData.length };
 
   // Summarise by store: earliest date, latest date, total qty, row count
   const byStore = {};
@@ -3071,7 +3074,8 @@ function getOperationalSnapshotStatus() {
   const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   const sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
   const triggers = ScriptApp.getProjectTriggers();
-  const warmTriggerInstalled = triggers.some(t => t.getHandlerFunction() === 'warmOperationalCaches');
+  const WARM_HANDLERS = ['warmOperationalCaches', 'warmVelocityOnly', 'warmBundleOnly', 'warmDecisionFeedOnly'];
+  const warmTriggerInstalled = triggers.some(t => WARM_HANDLERS.includes(t.getHandlerFunction()));
 
   if (!sheet || sheet.getLastRow() < 2) {
     return {
@@ -3288,10 +3292,12 @@ function warmOperationalCaches() {
   const bundleResult = warmBundleOnly();
   const feedResult   = warmDecisionFeedOnly();
 
+  // Phase functions already prefix their own errors ('velocity: ...', 'operational bundle: ...').
+  // Spread them directly — don't re-prefix or the status panel shows 'velocity: velocity: msg'.
   const allErrors = [
-    ...velResult.errors.map(e => 'velocity: ' + e),
-    ...bundleResult.errors.map(e => 'bundle: ' + e),
-    ...feedResult.errors.map(e => 'feed: ' + e),
+    ...velResult.errors,
+    ...bundleResult.errors,
+    ...feedResult.errors,
   ];
 
   const result = {
@@ -3318,18 +3324,20 @@ function warmOperationalCaches() {
 }
 
 function setupOperationalCacheTrigger() {
+  // Remove all existing warm triggers (old single trigger + any phase triggers).
+  const WARM_HANDLERS = ['warmOperationalCaches', 'warmVelocityOnly', 'warmBundleOnly', 'warmDecisionFeedOnly'];
   ScriptApp.getProjectTriggers()
-    .filter(t => t.getHandlerFunction() === 'warmOperationalCaches')
+    .filter(t => WARM_HANDLERS.includes(t.getHandlerFunction()))
     .forEach(t => ScriptApp.deleteTrigger(t));
 
-  ScriptApp.newTrigger('warmOperationalCaches')
-    .timeBased()
-    .everyDays(1)
-    .atHour(0)
-    .create();
+  // Install three staggered daily triggers — each phase gets a fresh 6-min GAS execution.
+  // Velocity at midnight (fastest, ~2 min), bundle at 1am (~4 min), feed at 2am (~2 min).
+  ScriptApp.newTrigger('warmVelocityOnly').timeBased().everyDays(1).atHour(0).create();
+  ScriptApp.newTrigger('warmBundleOnly').timeBased().everyDays(1).atHour(1).create();
+  ScriptApp.newTrigger('warmDecisionFeedOnly').timeBased().everyDays(1).atHour(2).create();
 
-  Logger.log('Operational cache trigger created — will run nightly at midnight.');
-  return { ok: true, message: 'Operational cache trigger created — will run nightly at midnight.' };
+  Logger.log('Warm cache triggers installed: velocity at midnight, bundle at 1am, feed at 2am.');
+  return { ok: true, message: 'Three nightly triggers installed: velocity at midnight, bundle at 1am, feed at 2am.' };
 }
 
 // ─── SHEET HELPERS ────────────────────────────────────────────────────────────

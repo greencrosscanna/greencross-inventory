@@ -2205,7 +2205,7 @@ async function getOperationalStatus(force) {
     proxyFetch({ action: 'operationalstatus' }),
     12000, 'Snapshot status'
   ).catch(err => ({ ok: false, error: err.message }));
-  if (status && status.ok !== false) cacheSet('op_status', status, 5 * 60 * 1000); // 5-min TTL
+  if (status && status.ok === true) cacheSet('op_status', status, 5 * 60 * 1000); // 5-min TTL
   return status;
 }
 function cacheClear() {
