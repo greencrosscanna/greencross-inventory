@@ -2192,6 +2192,22 @@ function cacheSet(key, data, ttlMs) {
   }
 }
 function cacheDelete(key) { localStorage.removeItem(CACHE_PREFIX + key); }
+
+// Shared operationalstatus helper — caches result for 5 min so multiple call sites
+// (Beta feed, Settings panel, inventory load freshness check) share one round-trip.
+// Pass force=true to bypass the cache (e.g. after triggering a snapshot build).
+async function getOperationalStatus(force) {
+  if (!force) {
+    const cached = cacheGet('op_status');
+    if (cached) return cached;
+  }
+  const status = await withTimeout(
+    proxyFetch({ action: 'operationalstatus' }),
+    12000, 'Snapshot status'
+  ).catch(err => ({ ok: false, error: err.message }));
+  if (status && status.ok !== false) cacheSet('op_status', status, 5 * 60 * 1000); // 5-min TTL
+  return status;
+}
 function cacheClear() {
   Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX)).forEach(k => localStorage.removeItem(k));
 }
@@ -3053,7 +3069,7 @@ async function loadBetaFeed() {
       wantsRows
         ? proxyFetch(params)
         : Promise.resolve(null),
-      withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
+      getOperationalStatus(),
       proxyFetch(queueParams).catch(err => ({ ok: false, error: err.message })),
     ]);
     state.operationalHealth = operationalHealth;
@@ -3577,7 +3593,7 @@ async function installWarmTriggerFromHealth(btn) {
   }
   try {
     await withTimeout(proxyFetch({ action: 'installwarmtrigger' }), 30000, 'Trigger install');
-    state.operationalHealth = await withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status');
+    state.operationalHealth = await getOperationalStatus(true); // force-fresh after trigger install
     if (state.tab === 'beta') renderBetaFeed();
     else renderInventory();
   } catch (err) {
@@ -3824,7 +3840,7 @@ async function loadBetaDecisionsForInventory() {
     state.betaDecisionLoading = true;
     const [feed, operationalHealth] = await Promise.all([
       proxyFetch({ action: 'decisionfeed', beta: '1', store: storeKey, limit: 10000 }),
-      withTimeout(proxyFetch({ action: 'operationalstatus' }), 8000, 'Snapshot status').catch(err => ({ ok: false, error: err.message })),
+      getOperationalStatus(),
     ]);
     state.operationalHealth = operationalHealth;
     state.betaDecisionFeedMeta = {
@@ -4274,7 +4290,7 @@ async function loadInventoryData() {
     // Fire-and-forget — never blocks the current render.
     if (bundle && bundle.generatedAt && !forceServerRefresh) {
       const cachedGeneratedAt = bundle.generatedAt;
-      proxyFetch({ action: 'operationalstatus' }).then(status => {
+      getOperationalStatus().then(status => {
         if (status && status.generatedAt && status.generatedAt !== cachedGeneratedAt) {
           console.log('[GC] Bundle stale — cached:', cachedGeneratedAt, '/ server:', status.generatedAt, '— evicting cache');
           cacheDelete('operational_bundle_all');
@@ -7640,7 +7656,7 @@ async function refreshOperationalSnapshotStatus() {
   el.style.color = 'var(--muted)';
   el.title = '';
   try {
-    const status = await withTimeout(proxyFetch({ action: 'operationalstatus' }), 12000, 'Snapshot status');
+    const status = await getOperationalStatus(true); // force-fresh to show latest snapshot state
     const warmState = status.warmStatus && status.warmStatus.state;
     if (warmState === 'scheduled' || warmState === 'running') {
       el.textContent = warmState === 'scheduled' ? 'Build scheduled' : 'Building...';

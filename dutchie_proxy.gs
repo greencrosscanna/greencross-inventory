@@ -79,7 +79,10 @@ function doGet(e) {
     if (params.action === 'operationalbundle') return jsonOut(getOperationalBundle(params));
     if (params.action === 'operationalstatus') return jsonOut(getOperationalSnapshotStatus());
     if (params.action === 'velsync')        return jsonOut(syncVelocityCache());
-    if (params.action === 'warmcaches')     return jsonOut(warmOperationalCaches());
+    if (params.action === 'warmcaches')        return jsonOut(warmOperationalCaches());
+    if (params.action === 'warmvelocity')      return jsonOut(warmVelocityOnly());
+    if (params.action === 'warmbundle')        return jsonOut(warmBundleOnly());
+    if (params.action === 'warmdecision')      return jsonOut(warmDecisionFeedOnly());
     if (params.action === 'schedulewarmcaches') return jsonOut(scheduleOperationalWarmRun());
     if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
     if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
@@ -1573,11 +1576,14 @@ function syncVelocityCache() {
   // Roll velSyncDate back to the last confirmed write date so the next trigger re-fills the gap.
   // A 4-hour cooldown prevents thrashing if the API genuinely has no recent data.
   const velLastWriteDate = props.getProperty('velLastWriteDate');
-  if (velLastWriteDate && remaining === 0) {
+  const velSheetCorrupted = props.getProperty('velSheetCorrupted') || '';
+  // Fire gap self-heal when caught up (remaining===0) OR when a mid-write
+  // truncation was detected — corruption doesn't wait for catch-up.
+  if (velLastWriteDate && (remaining === 0 || velSheetCorrupted)) {
     const gapDays = (now.getTime() - new Date(velLastWriteDate + 'T12:00:00').getTime()) / 86400000;
     const healedAt = props.getProperty('velGapHealedAt') || '';
     const cooldownOk = !healedAt || (now.getTime() - new Date(healedAt).getTime()) > 4 * 3600000;
-    if (gapDays > CHUNK_DAYS * 2 && cooldownOk) {
+    if ((gapDays > CHUNK_DAYS * 2 || velSheetCorrupted) && cooldownOk) {
       Logger.log('syncVelocityCache: GAP DETECTED — velLastWriteDate=' + velLastWriteDate
         + ' is ' + Math.round(gapDays) + ' days behind now. Rolling velSyncDate back to re-sync.');
       props.setProperty('velSyncDate', new Date(velLastWriteDate + 'T00:00:00Z').toISOString());
@@ -1667,12 +1673,28 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
       sheet.getRange(lastRow + 1, 1, appendData.length, VEL_COLS.length).setValues(appendData);
     } else {
       // Slow path: dedup, prune, and rewrite the full sheet.
-      const kept   = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
-      const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
+      // Uses batched writes (5K rows/batch) so a GAS timeout mid-write leaves the sheet
+      // partially written from the top rather than completely empty. A post-write row count
+      // check detects truncation and sets velSheetCorrupted so the gap self-heal recovers.
+      const kept    = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
+      const pruned  = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
       const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
       sheet.clearContents();
       sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
-      if (allRows.length > 0) sheet.getRange(2, 1, allRows.length, VEL_COLS.length).setValues(allRows);
+      const WRITE_BATCH = 5000;
+      for (let i = 0; i < allRows.length; i += WRITE_BATCH) {
+        const batch = allRows.slice(i, i + WRITE_BATCH);
+        sheet.getRange(i + 2, 1, batch.length, VEL_COLS.length).setValues(batch);
+      }
+      // Verify: if GAS timed out mid-write the row count will be short.
+      const writtenRows = sheet.getLastRow() - 1; // subtract header
+      if (writtenRows !== allRows.length) {
+        const msg = 'incomplete:' + writtenRows + '/' + allRows.length;
+        props.setProperty('velSheetCorrupted', msg);
+        Logger.log('_syncChunk WRITE INCOMPLETE — ' + msg + '. Gap self-heal will recover.');
+      } else {
+        props.deleteProperty('velSheetCorrupted'); // clear any prior corruption flag
+      }
     }
   }
 
@@ -1848,28 +1870,36 @@ function velProductDiagnostic(params) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { error: 'Vel Cache is empty', rows: [] };
 
-  const data    = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
   const searchId   = String(params.id   || '').toLowerCase().trim();
   const searchName = String(params.name || '').toLowerCase().trim();
-
   if (!searchId && !searchName) return { error: 'Provide id or name param', rows: [] };
 
-  const matches = data.filter(r => {
-    const pid  = String(r[2] || '').toLowerCase();
-    const pname = String(r[3] || '').toLowerCase();
-    if (searchId   && pid.includes(searchId))   return true;
-    if (searchName && pname.includes(searchName)) return true;
-    return false;
-  });
+  // Pass 1: read only the 4 columns needed to identify matches (date, store, productId, name).
+  // For a 70K-row sheet this is 280K cells instead of 560K — 50% less I/O.
+  const filterData = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  const matchIndices = [];
+  for (let i = 0; i < filterData.length; i++) {
+    const pid   = String(filterData[i][2] || '').toLowerCase();
+    const pname = String(filterData[i][3] || '').toLowerCase();
+    if ((searchId && pid.includes(searchId)) || (searchName && pname.includes(searchName))) {
+      matchIndices.push(i);
+    }
+  }
+  if (!matchIndices.length) return { found: false, searchId, searchName, totalRows: filterData.length };
 
-  if (!matches.length) return { found: false, searchId, searchName, totalRows: data.length };
+  // Pass 2: read the full 8 columns only for the matching rows (tiny subset).
+  const matches = matchIndices.map(i => {
+    const partial = filterData[i]; // [date, store, productId, name]
+    const fullRow = sheet.getRange(i + 2, 1, 1, VEL_COLS.length).getValues()[0];
+    return fullRow;
+  });
 
   // Summarise by store: earliest date, latest date, total qty, row count
   const byStore = {};
   for (const r of matches) {
     const store = String(r[1]);
-    const ymd = _velDateToYMD(r[0]);
-    const qty = parseFloat(r[7]) || 0;
+    const ymd   = _velDateToYMD(r[0]);
+    const qty   = parseFloat(r[7]) || 0;
     if (!byStore[store]) byStore[store] = { store, minDate: ymd, maxDate: ymd, totalQty: 0, rows: 0 };
     const s = byStore[store];
     if (ymd < s.minDate) s.minDate = ymd;
@@ -1878,14 +1908,13 @@ function velProductDiagnostic(params) {
     s.rows++;
   }
 
-  const name     = String(matches[0][3]);
-  const brand    = String(matches[0][4]);
-  const category = String(matches[0][5]);
-  const sku      = String(matches[0][6]);
   const velSyncDate = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
-
   return {
-    found: true, name, brand, category, sku,
+    found: true,
+    name:      String(matches[0][3]),
+    brand:     String(matches[0][4]),
+    category:  String(matches[0][5]),
+    sku:       String(matches[0][6]),
     productId: String(matches[0][2]),
     totalMatchRows: matches.length,
     velSyncDate,
@@ -1905,7 +1934,8 @@ function velGapCheck(params) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { error: 'Vel Cache is empty' };
 
-  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  // Read only columns 1-2 (date, store) — 140K cells instead of 560K for a 70K-row sheet.
+  const data = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
 
   // Build set of YYYY-MM-DD dates that have at least one row for this store
   const datesWithData = new Set();
@@ -3180,61 +3210,109 @@ function getOperationalBundle(params) {
   };
 }
 
-function warmOperationalCaches() {
-  const started = new Date();
-  setOperationalWarmStatus_({
-    state: 'running',
-    startedAt: started.toISOString(),
-    message: 'Operational snapshot build running.',
-  });
-  const result = {
-    ok: true,
-    startedAt: started.toISOString(),
-    velocity: null,
-    inventory: [],
-    decisionFeed: null,
-    errors: [],
-  };
+// ── Phase functions — each runs independently and can be triggered separately ──
 
+// Phase 1: sync velocity cache + refresh the cached velocity endpoint.
+// Can run hourly. Fast when already caught up (~2s); up to 3 min for a full backfill.
+function warmVelocityOnly() {
+  const started = new Date();
+  const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
   try {
     result.velocity = syncVelocityCache();
     getVelocityEndpoint({ force: '1' });
   } catch (err) {
     result.errors.push('velocity: ' + err.message);
+    result.ok = false;
   }
+  result.finishedAt      = new Date().toISOString();
+  result.durationSeconds = Math.round((new Date() - started) / 1000);
+  return result;
+}
 
+// Phase 2: build the operational inventory bundle (fetches live Dutchie inventory
+// for all stores + attaches cached velocity). Takes ~3-4 min for 6 stores.
+// Run after warmVelocityOnly so the bundle gets fresh velocity data.
+function warmBundleOnly() {
+  const started = new Date();
+  const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
   try {
     const bundle = buildOperationalBundle_(true);
     writeOperationalSnapshot_('inventory_bundle_v1', bundle);
     result.inventory = bundle.inventory.map(inv => ({
-      store: inv.store,
+      store:    inv.store,
       products: (inv.products || []).length,
-      error: inv.error || '',
+      error:    inv.error || '',
     }));
     result.operationalBundle = {
       generatedAt: bundle.generatedAt,
-      stores: bundle.inventory.length,
-      errors: bundle.errors || [],
+      stores:      bundle.inventory.length,
+      errors:      bundle.errors || [],
     };
   } catch (err) {
     result.errors.push('operational bundle: ' + err.message);
+    result.ok = false;
   }
+  result.finishedAt      = new Date().toISOString();
+  result.durationSeconds = Math.round((new Date() - started) / 1000);
+  return result;
+}
 
+// Phase 3: generate the Beta Decision Feed. Takes ~1-2 min.
+// Run after warmBundleOnly so decisions reflect the latest inventory snapshot.
+function warmDecisionFeedOnly() {
+  const started = new Date();
+  const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
   try {
     result.decisionFeed = generateBetaDecisionFeed({ beta: '1', force: '1' });
   } catch (err) {
     result.errors.push('decision feed: ' + err.message);
+    result.ok = false;
   }
+  result.finishedAt      = new Date().toISOString();
+  result.durationSeconds = Math.round((new Date() - started) / 1000);
+  return result;
+}
 
-  result.finishedAt = new Date().toISOString();
-  result.durationSeconds = Math.round((new Date().getTime() - started.getTime()) / 1000);
+// Orchestrator — calls all three phases in order. Keeps the single nightly trigger
+// working unchanged while each phase can also be invoked/debugged independently.
+// If one phase fails its error is recorded but the remaining phases still run.
+function warmOperationalCaches() {
+  const started = new Date();
   setOperationalWarmStatus_({
-    state: result.errors.length ? 'completed_with_warnings' : 'completed',
-    startedAt: result.startedAt,
-    finishedAt: result.finishedAt,
-    durationSeconds: result.durationSeconds,
-    errors: result.errors,
-    operationalBundle: result.operationalBundle || null,
+    state:     'running',
+    startedAt: started.toISOString(),
+    message:   'Operational snapshot build running.',
+  });
+
+  const velResult    = warmVelocityOnly();
+  const bundleResult = warmBundleOnly();
+  const feedResult   = warmDecisionFeedOnly();
+
+  const allErrors = [
+    ...velResult.errors.map(e => 'velocity: ' + e),
+    ...bundleResult.errors.map(e => 'bundle: ' + e),
+    ...feedResult.errors.map(e => 'feed: ' + e),
+  ];
+
+  const result = {
+    ok:              allErrors.length === 0,
+    startedAt:       started.toISOString(),
+    finishedAt:      new Date().toISOString(),
+    durationSeconds: Math.round((new Date() - started) / 1000),
+    velocity:        velResult.velocity,
+    inventory:       bundleResult.inventory || [],
+    operationalBundle: bundleResult.operationalBundle || null,
+    decisionFeed:    feedResult.decisionFeed,
+    errors:          allErrors,
+  };
+
+  setOperationalWarmStatus_({
+    state:            allErrors.length ? 'completed_with_warnings' : 'completed',
+    startedAt:        result.startedAt,
+    finishedAt:       result.finishedAt,
+    durationSeconds:  result.durationSeconds,
+    errors:           allErrors,
+    operationalBundle: result.operationalBundle,
   });
   return result;
 }
