@@ -38,8 +38,9 @@ const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
 const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const OPERATIONAL_WARM_STATUS_KEY = 'gc_operational_warm_status';
-const GAS_ERROR_LOG_KEY            = 'gc_error_log';      // PropertiesService ring buffer
-const GAS_ERROR_LOG_MAX            = 20;                   // keep last N entries
+const GAS_ERROR_LOG_KEY            = 'gc_error_log';          // PropertiesService ring buffer
+const GAS_ERROR_LOG_MAX            = 20;                       // keep last N entries
+const FEED_REFRESH_SCHEDULED_KEY   = FEED_REFRESH_SCHEDULED_KEY; // cooldown for _isFeedStale_
 
 // ── GAS error log ─────────────────────────────────────────────────────────────
 // Lightweight ring buffer stored in PropertiesService so overnight failures are
@@ -50,7 +51,7 @@ function _logGasError(fn, msg) {
     const raw   = props.getProperty(GAS_ERROR_LOG_KEY);
     const log   = raw ? JSON.parse(raw) : [];
     log.push({ ts: new Date().toISOString(), fn: String(fn), msg: String(msg).slice(0, 300) });
-    if (log.length >= GAS_ERROR_LOG_MAX) log.splice(0, log.length - GAS_ERROR_LOG_MAX + 1);
+    if (log.length > GAS_ERROR_LOG_MAX) log.splice(0, log.length - GAS_ERROR_LOG_MAX);
     props.setProperty(GAS_ERROR_LOG_KEY, JSON.stringify(log));
   } catch(e) { /* never let error logging itself crash anything */ }
 }
@@ -1202,17 +1203,16 @@ function _isFeedStale_(generatedAt) {
       // Background-trigger a feed rebuild so the next read will be fresh.
       // Guard with a PropertiesService flag to avoid scheduling multiple triggers.
       const props = PropertiesService.getScriptProperties();
-      const lastScheduled = props.getProperty('feedRefreshScheduledAt') || '';
+      const lastScheduled = props.getProperty(FEED_REFRESH_SCHEDULED_KEY) || '';
       const cooldownOk = !lastScheduled || (Date.now() - new Date(lastScheduled).getTime()) > 30 * 60 * 1000;
       if (cooldownOk) {
-        // Delete any existing warmDecisionFeedOnly triggers before creating a new one
-        // — mirrors the pattern in _installBackfillTrigger and scheduleOperationalWarmRun
-        // to prevent orphaned triggers from accumulating and hitting the 20-trigger limit.
-        ScriptApp.getProjectTriggers()
-          .filter(t => t.getHandlerFunction() === 'warmDecisionFeedOnly')
-          .forEach(t => ScriptApp.deleteTrigger(t));
+        // Create a one-shot trigger. Do NOT delete existing triggers first —
+        // that would wipe the nightly everyDays(1).atHour(2) trigger installed
+        // by setupOperationalCacheTrigger(). One-shot .after() triggers are
+        // auto-deleted by GAS when they fire, so they don't accumulate.
+        // The 30-min cooldown + 20-trigger project limit are the safety bounds.
         ScriptApp.newTrigger('warmDecisionFeedOnly').timeBased().after(60000).create();
-        props.setProperty('feedRefreshScheduledAt', new Date().toISOString());
+        props.setProperty(FEED_REFRESH_SCHEDULED_KEY, new Date().toISOString());
         Logger.log('_isFeedStale_: feed is ' + Math.round(age / 3600000) + 'h old — scheduled refresh.');
       }
     } catch(e) { Logger.log('_isFeedStale_: could not schedule refresh: ' + e.message); }
@@ -1454,8 +1454,9 @@ function getVelSheet() {
     const props     = PropertiesService.getScriptProperties();
     const formatted = props.getProperty('velSheetFormatted');
     if (isNew || !formatted) {
-      // scope the range to actual data rows + header to avoid a 70K-row API call
-      const lastRow = Math.max(sheet.getLastRow(), 1);
+      // Format the entire column A as plain text. On an existing sheet this scopes
+      // to actual data; on a new sheet (lastRow=1) we must cover future rows too.
+      const lastRow = isNew ? sheet.getMaxRows() : Math.max(sheet.getLastRow(), 1);
       sheet.getRange(1, 1, lastRow, 1).setNumberFormat('@STRING@');
       props.setProperty('velSheetFormatted', 'true');
     }

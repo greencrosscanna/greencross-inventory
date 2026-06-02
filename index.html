@@ -7673,7 +7673,7 @@ async function refreshGasErrors() {
     const gear = document.getElementById('btnSettings');
     if (recent.length > 0) {
       if (row)  { row.style.display = ''; cnt.textContent = recent.length + ' in last 24h'; }
-      if (list) { list.style.display = ''; list.innerHTML = recent.slice().reverse().map(e => `<div style="margin-bottom:2px"><span style="color:var(--muted)">${new Date(e.ts).toLocaleTimeString()}</span> <b>${e.fn}</b>: ${escapeHtml(e.msg)}</div>`).join(''); }
+      if (list) { list.style.display = ''; list.innerHTML = recent.slice().reverse().map(e => `<div style="margin-bottom:2px"><span style="color:var(--muted)">${new Date(e.ts).toLocaleTimeString()}</span> <b>${escapeHtml(e.fn)}</b>: ${escapeHtml(e.msg)}</div>`).join(''); }
       if (gear) gear.style.color = 'var(--amber)';
     } else {
       if (row)  row.style.display = 'none';
@@ -7686,7 +7686,6 @@ async function refreshGasErrors() {
 async function clearGasErrorsNow() {
   try {
     await proxyFetch({ action: 'clearerrors' });
-    cacheDelete('op_status'); // force-fresh on next status check
     refreshGasErrors();
   } catch(e) {}
 }
