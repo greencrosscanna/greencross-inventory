@@ -3,23 +3,24 @@
 // Execute as: USER_DEPLOYING | Access: ANYONE_ANONYMOUS
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const SPREADSHEET_ID              = '1OBNzkBrJtLIlf8xknVlGd6Jb8nlkg4_KG-Gq6BD7HHY';
+const LIVE_SPREADSHEET_ID         = '1OBNzkBrJtLIlf8xknVlGd6Jb8nlkg4_KG-Gq6BD7HHY';
+const BETA_SPREADSHEET_ID         = '1expq2qh9uRU51BdBKq_GmYgyHLrRhmryPtWjDJsWdxg';
+const SPREADSHEET_ID              = LIVE_SPREADSHEET_ID;
 const SALES_HISTORY_SPREADSHEET_ID = '18f8iwnnMucXog5fMsLN2VwEoC6kFu3h-b8MDpZlc7ks';
 const SALES_HISTORY_GID            = 1938453538;
 const SNAPSHOT_SHEET_NAME          = 'Inv Snapshot';
 const SKU_DICT_SHEET_NAME          = 'Product SKU Dict';
+const STORE_CONFIG_SHEET_NAME      = 'Config - Stores';
+const SKU_OVERRIDES_SHEET_NAME     = 'Config - SKU Overrides';
+const REORDER_RULES_SHEET_NAME     = 'Config - Reorder Rules';
+const VENDOR_LEAD_TIMES_SHEET_NAME = 'Config - Vendor Lead Times';
+const DECISION_FEED_SHEET_NAME     = 'Decision Feed';
+const OPERATIONAL_SNAPSHOT_SHEET_NAME = 'Operational Snapshot';
+const SHARED_STATE_SHEET_NAME      = 'Shared State';
 const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 
-const STORE_KEYS = {
-  'Bend':        '77e157f3fcdf43d9864daf0420df8c97',
-  'Center':      '6a7e9c3187a6471d8a0a2d05cfa92023',
-  'Commercial':  'd97da3cef3f74dd087cee7d4239a851d',
-  'Hillsboro':   'a2de33457b8f4d35972d3c47832207eb',
-  'Portland Rd': '5671f32c2c2a4756811e9513945815f4',
-  'River Rd':    '5212417431014845a6db39bcb4ccef6b',
-};
-
-const STORES = Object.keys(STORE_KEYS);
+const STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
+const DUTCHIE_STORE_KEYS_PROP = 'DUTCHIE_STORE_KEYS_JSON';
 
 const SHEET_GIDS = {
   income: 1548231883,
@@ -28,19 +29,34 @@ const SHEET_GIDS = {
   sublet: 1274502465,
 };
 
-// Reorder defaults — override per-category in a future Config Sheet
-const LEAD_TIME_DAYS    = 5;
+// Reorder defaults — current team-confirmed vendor replenishment window is 7 days.
+const LEAD_TIME_DAYS    = 7;
 const SAFETY_STOCK_DAYS = 7;
-const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 12 days
+const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 14 days
+const STANDARD_VENDOR_LEAD_DAYS = 7;
+const GC_USERS_KEY      = 'gc_users';
+const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
+const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const OPERATIONAL_WARM_STATUS_KEY = 'gc_operational_warm_status';
+
+function getDataMode() {
+  return (PropertiesService.getScriptProperties().getProperty('GC_DATA_MODE') || 'live').toLowerCase();
+}
+
+function getDataSpreadsheetId() {
+  return getDataMode() === 'beta' ? BETA_SPREADSHEET_ID : LIVE_SPREADSHEET_ID;
+}
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 function testEmail() {
   MailApp.sendEmail('sky@greencrosscanna.com', '🐞 Bug Reporter Test', 'Mail scope is working — bug reports will now send emails.');
 }
 
-// Run once from the editor to store the LeafLink API key securely
-function setLeafLinkKey() {
-  PropertiesService.getScriptProperties().setProperty('LL_API_KEY', 'db595e95a1b64d0c3265e73f98a35e4d925a34aeb24f7459ff3e1a5debc15fb5');
+// Run once from the editor to store the LeafLink API key securely.
+// Do not expose this as an HTTP route.
+function setLeafLinkKeyFromValue_(apiKey) {
+  if (!apiKey) throw new Error('Pass the LeafLink API key as the apiKey argument.');
+  PropertiesService.getScriptProperties().setProperty('LL_API_KEY', String(apiKey).trim());
   Logger.log('LeafLink API key saved.');
 }
 
@@ -53,22 +69,33 @@ function doGet(e) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
   try {
+    if (params.action === 'login') return jsonOut(loginUser(params), params.callback);
+    const auth = requireAuth_(params);
+    if (!auth.ok) return jsonOut(auth);
     // Inventory
     if (params.action === 'inventory')      return jsonOut(getInventory(params));
     if (params.action === 'inventorylive')  return jsonOut(getLiveInventory(params));
     if (params.action === 'velocity')       return jsonOut(getVelocityEndpoint(params));
+    if (params.action === 'operationalbundle') return jsonOut(getOperationalBundle(params));
+    if (params.action === 'operationalstatus') return jsonOut(getOperationalSnapshotStatus());
     if (params.action === 'velsync')        return jsonOut(syncVelocityCache());
+    if (params.action === 'warmcaches')     return jsonOut(warmOperationalCaches());
+    if (params.action === 'schedulewarmcaches') return jsonOut(scheduleOperationalWarmRun());
+    if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
     if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
     if (params.action === 'triggerstatus')  return jsonOut(getTriggerStatus());
     if (params.action === 'velreset')       return jsonOut(resetVelSyncDate());
+    if (params.action === 'velresyncfrom')  return jsonOut(velResyncFrom(params));
+    if (params.action === 'veldedup')       return jsonOut(velDedup());
     if (params.action === 'velclear')       return jsonOut(clearVelCache());
     if (params.action === 'velbackfill')       return jsonOut(velBackfillChunk(params));
     if (params.action === 'velbackfillstatus') return jsonOut(velBackfillStatus());
-    if (params.action === 'login')             return jsonOut(loginUser(params));
-    if (params.action === 'getstate')          return jsonOut(getSharedState());
-    if (params.action === 'sharedkill')        return jsonOut(sharedKill(params.key, params.ts));
-    if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params.key));
-    if (params.action === 'sharedflag')        return jsonOut(sharedFlag(params.key));
+    if (params.action === 'velproduct')        return jsonOut(velProductDiagnostic(params));
+    if (params.action === 'velgapcheck')       return jsonOut(velGapCheck(params));
+    if (params.action === 'getstate')          return jsonOut(getSharedState(params));
+    if (params.action === 'sharedkill')        return jsonOut(sharedKill(params));
+    if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params));
+    if (params.action === 'sharedflag')        return jsonOut(sharedFlag(params));
     if (params.action === 'salesdiag')      return jsonOut(getSalesHistoryDiagnostics());
     if (params.action === 'apiexplore')     return jsonOut(exploreApi(params));
     if (params.action === 'skuprobe')       return jsonOut(skuRoomProbe(params));
@@ -100,15 +127,25 @@ function doGet(e) {
     if (params.action === 'storetxhistory') return jsonOut(getStoreTxHistory(params));
     if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
-    return jsonOut({ error: 'Unknown action' });
+    if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
+    if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
+    if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
+    if (params.action === 'decisionqueue')  return jsonOut(readBetaDecisionQueue(params));
+    return jsonOut({ error: 'Unknown action' }, params.callback);
   } catch (err) {
-    return jsonOut({ error: err.message, stack: err.stack });
+    return jsonOut({ error: err.message, stack: err.stack }, params.callback);
   }
 }
 
-function jsonOut(obj) {
+function jsonOut(obj, callback) {
+  const body = JSON.stringify(obj);
+  if (callback && /^[A-Za-z_$][0-9A-Za-z_$]*$/.test(String(callback))) {
+    return ContentService
+      .createTextOutput(String(callback) + '(' + body + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
   return ContentService
-    .createTextOutput(JSON.stringify(obj))
+    .createTextOutput(body)
     .setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -183,9 +220,23 @@ function normalizeStoreName(raw) {
 }
 
 function dutchieAuth(store) {
-  const key = STORE_KEYS[store];
+  const key = getDutchieStoreKeys_()[store];
   if (!key) throw new Error('Unknown store: ' + store);
   return 'Basic ' + Utilities.base64Encode(key + ':');
+}
+
+function getDutchieStoreKeys_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(DUTCHIE_STORE_KEYS_PROP);
+  if (!raw) throw new Error('Dutchie store keys are not configured.');
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error('Dutchie store keys are invalid JSON.');
+  }
+}
+
+function isKnownStore(store) {
+  return !!getDutchieStoreKeys_()[store];
 }
 
 function parseSaleDate(raw) {
@@ -305,7 +356,7 @@ function buildRoomData(store) {
   }
 
   const result = { roomNameType, roomIdType, invRoomMap, returnedPackageIds: [...returnedPackageIds] };
-  try { cache.put(cacheKey, JSON.stringify(result), 300); } catch(e) {} // 5 min — match inventory cache
+  try { cache.put(cacheKey, JSON.stringify(result), INV_CACHE_TTL); } catch(e) {}
   return result;
 }
 
@@ -319,17 +370,18 @@ function buildInventoryRoomMap(store) {
 // Room is determined by the latest "Move" transaction per inventoryId.
 // River Rd is the distribution hub: packages received but never moved default to 'distro'
 // (staged for distribution to other stores). At all other stores they default to 'back'.
-const INV_CACHE_TTL = 300; // seconds — 5 min server-side cache per store
+const OPERATIONAL_CACHE_TTL = 21600; // seconds — CacheService max, keeps same-day loads fast
+const INV_CACHE_TTL = OPERATIONAL_CACHE_TTL;
 
 function getInventory(params) {
   const store = params.store;
-  if (!store || !STORE_KEYS[store]) return { error: 'Unknown store: ' + store };
+  if (!store || !isKnownStore(store)) return { error: 'Unknown store: ' + store };
 
   // Serve from GAS cache if fresh — prevents redundant Dutchie calls across users
   const scriptCache = CacheService.getScriptCache();
   const cacheKey    = 'inv5_' + store;
   const cached      = scriptCache.get(cacheKey);
-  if (cached) {
+  if (params.force !== '1' && cached) {
     try { return JSON.parse(cached); } catch(e) {}
   }
 
@@ -372,11 +424,14 @@ function getInventory(params) {
         qtySample:    0,
         value:        0,
         unitCost:     0,
+        unitPrice:    Number(item.unitPrice || item.price || item.retailPrice || item.defaultUnitPrice || item.medPrice || item.recPrice || 0),
         lastMod:      '',
         img:          item.imageUrl || item.productImageUrl || item.photo || '',
       };
     }
     const p = productMap[name];
+    const itemPrice = Number(item.unitPrice || item.price || item.retailPrice || item.defaultUnitPrice || item.medPrice || item.recPrice || 0);
+    if (itemPrice > 0) p.unitPrice = itemPrice;
 
     // Classification priority:
     // 1. roomQuantities array — direct per-package room split from Dutchie (most accurate)
@@ -477,12 +532,809 @@ function getInventory(params) {
       qtySample:     Math.round(p.qtySample     * 10) / 10,
       value:         Math.round(p.value        * 100) / 100,
       unitCost:      Math.round(p.unitCost     * 100) / 100,
+      unitPrice:     Math.round(p.unitPrice    * 100) / 100,
     };
   });
 
   const result = { store, products };
   try { scriptCache.put(cacheKey, JSON.stringify(result), INV_CACHE_TTL); } catch(e) {}
   return result;
+}
+
+// ─── BETA DECISION FEED ───────────────────────────────────────────────────────
+const DECISION_FEED_COLS = [
+  'generatedAt','store','productName','sku','brand','category','qty','sold7','sold14','sold28',
+  'vel14','doh','status','recommendedOrderQty','recommendedTransferQty','donorStore',
+  'reasonCodes','whyChips','confidence','openOrderQty','oosDays','lostUnits','missedRevenue',
+  'imageUrl','lastSeen','notes'
+];
+
+function sheetToObjects_(sheetName, spreadsheetId) {
+  const ss = SpreadsheetApp.openById(spreadsheetId || getDataSpreadsheetId());
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const values = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
+  const headers = values[0].map(h => String(h || '').trim());
+  return values.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i) => { if (h) obj[h] = row[i]; });
+    return obj;
+  }).filter(obj => Object.values(obj).some(v => v !== '' && v !== null));
+}
+
+function loadStoreConfig_(spreadsheetId) {
+  const rows = sheetToObjects_(STORE_CONFIG_SHEET_NAME, spreadsheetId || BETA_SPREADSHEET_ID)
+    .filter(r => String(r.active).toLowerCase() !== 'false')
+    .map(r => ({
+      storeKey: String(r.storeKey || '').trim(),
+      displayName: String(r.displayName || '').trim(),
+      sortOrder: Number(r.sortOrder) || 999,
+      color: String(r.color || '').trim(),
+      dutchieLocationKeyProperty: String(r.dutchieLocationKeyProperty || '').trim(),
+    }))
+    .filter(r => r.storeKey)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.storeKey.localeCompare(b.storeKey));
+  return rows.length ? rows : STORES.map((storeKey, i) => ({ storeKey, displayName: storeKey, sortOrder: i + 1 }));
+}
+
+function betaStoreKeys_() {
+  return loadStoreConfig_(BETA_SPREADSHEET_ID).map(r => r.storeKey);
+}
+
+function loadBetaDecisionConfig() {
+  const skuOverrides = {};
+  for (const row of sheetToObjects_(SKU_OVERRIDES_SHEET_NAME, BETA_SPREADSHEET_ID)) {
+    const sku = String(row.sku || '').trim();
+    if (!sku || String(row.enabled).toLowerCase() === 'false') continue;
+    skuOverrides[sku] = {
+      sku,
+      overrideType: String(row.overrideType || '').trim(),
+      leadTimeDays: null,
+      minOrderQty: Number(row.minOrderQty) || null,
+      orderMultiple: Number(row.orderMultiple) || null,
+      transferFirst: row.transferFirst === true || String(row.transferFirst).toLowerCase() === 'true',
+      overstock: row.overstock === true || String(row.overstock).toLowerCase() === 'true',
+      killCandidate: row.killCandidate === true || String(row.killCandidate).toLowerCase() === 'true',
+      notes: String(row.notes || ''),
+    };
+  }
+
+  const reorderRules = sheetToObjects_(REORDER_RULES_SHEET_NAME, BETA_SPREADSHEET_ID)
+    .filter(r => String(r.enabled).toLowerCase() !== 'false')
+    .map(r => ({
+      ruleName: String(r.ruleName || ''),
+      categoryPattern: String(r.categoryPattern || ''),
+      brandPattern: String(r.brandPattern || ''),
+      vendorPattern: String(r.vendorPattern || ''),
+      leadTimeDays: STANDARD_VENDOR_LEAD_DAYS,
+      safetyStockDays: Number(r.safetyStockDays) || SAFETY_STOCK_DAYS,
+      minOrderQty: Number(r.minOrderQty) || 1,
+      orderMultiple: Number(r.orderMultiple) || 1,
+      transferMinQty: Number(r.transferMinQty) || 1,
+      priority: Number(r.priority) || 999,
+      notes: String(r.notes || ''),
+    }))
+    .sort((a, b) => a.priority - b.priority);
+
+  const vendorLeadTimes = sheetToObjects_(VENDOR_LEAD_TIMES_SHEET_NAME, BETA_SPREADSHEET_ID)
+    .filter(r => String(r.active).toLowerCase() !== 'false')
+    .map((r, i) => ({
+      vendor: String(r.vendor || ''),
+      brand: String(r.brand || ''),
+      category: String(r.category || ''),
+      leadTimeDays: null,
+      buyerNotes: String(r.buyerNotes || ''),
+      order: i,
+    }));
+
+  return { skuOverrides, reorderRules, vendorLeadTimes };
+}
+
+function patternMatches_(pattern, value) {
+  const p = String(pattern || '').trim();
+  if (!p || p === '*') return true;
+  const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp('^' + escaped + '$', 'i').test(String(value || ''));
+}
+
+function patternSpecificity_(pattern) {
+  const p = String(pattern || '').trim();
+  if (!p || p === '*') return 0;
+  return p.replace(/\*/g, '').length;
+}
+
+function pickReorderRule_(p, config) {
+  return config.reorderRules.find(r =>
+    ruleAppliesToProduct_(r, p) &&
+    patternMatches_(r.categoryPattern, p.category) &&
+    patternMatches_(r.brandPattern, p.brand) &&
+    patternMatches_(r.vendorPattern, p.vendor)
+  ) || {
+    ruleName: 'Default',
+    leadTimeDays: LEAD_TIME_DAYS,
+    safetyStockDays: SAFETY_STOCK_DAYS,
+    minOrderQty: 1,
+    orderMultiple: 1,
+    transferMinQty: 1,
+  };
+}
+
+function ruleAppliesToProduct_(rule, p) {
+  const name = String(rule.ruleName || '').toLowerCase();
+  const category = String(p.category || '').toLowerCase();
+  if (name.indexOf('slow') >= 0) {
+    return p.status === 'slow' || (p.sold28 || 0) <= 3;
+  }
+  if (name.indexOf('green cross') >= 0) {
+    return /apparel|accessor|paraphernalia|battery|lighter/i.test(category + ' ' + p.name);
+  }
+  return true;
+}
+
+function pickVendorLead_(p, config) {
+  return config.vendorLeadTimes
+    .filter(r =>
+      patternMatches_(r.vendor || '*', p.vendor || '') &&
+      patternMatches_(r.brand || '*', p.brand || '') &&
+      patternMatches_(r.category || '*', p.category || '')
+    )
+    .map(r => ({
+      ...r,
+      specificity: patternSpecificity_(r.vendor) + patternSpecificity_(r.brand) + patternSpecificity_(r.category),
+    }))
+    .sort((a, b) =>
+      b.specificity - a.specificity ||
+      (b.leadTimeDays || 0) - (a.leadTimeDays || 0) ||
+      a.order - b.order
+    )[0] || null;
+}
+
+function roundToMultiple_(qty, multiple) {
+  const m = Number(multiple) || 1;
+  if (qty <= 0) return 0;
+  return Math.ceil(qty / m) * m;
+}
+
+function fmtChipNum_(n) {
+  const v = Number(n || 0);
+  if (Math.abs(v) >= 10 || v % 1 === 0) return String(Math.round(v));
+  return v.toFixed(1);
+}
+
+function buildWhyChips_(p, ctx) {
+  const chips = [];
+  if (ctx.missedRevenue > 0) chips.push('$' + fmtChipNum_(ctx.missedRevenue) + ' missed');
+  if (ctx.lostUnits > 0) chips.push('lost ' + fmtChipNum_(ctx.lostUnits) + 'u');
+  if (p.sold28 > 0) chips.push('sold28 ' + fmtChipNum_(p.sold28));
+  else if (p.sold14 > 0) chips.push('sold14 ' + fmtChipNum_(p.sold14));
+  else if (p.sold7 > 0) chips.push('sold7 ' + fmtChipNum_(p.sold7));
+  if (p.doh != null && p.doh !== '') chips.push((p.doh < 1 ? '<1' : fmtChipNum_(p.doh)) + ' DOH');
+  if (ctx.leadTimeDays) chips.push('lead ' + ctx.leadTimeDays + 'd');
+  if (ctx.safetyStockDays) chips.push('safety ' + ctx.safetyStockDays + 'd');
+  if (ctx.minOrderQty && ctx.minOrderQty > 1) chips.push('MOQ ' + ctx.minOrderQty);
+  if (ctx.orderMultiple && ctx.orderMultiple > 1) chips.push('mult ' + ctx.orderMultiple);
+  if (ctx.recommendedTransferQty > 0) chips.push('transfer ' + fmtChipNum_(ctx.recommendedTransferQty));
+  if (ctx.donorStore) chips.push('donor ' + ctx.donorStore);
+  if (ctx.recommendedOrderQty > 0) chips.push('buy ' + fmtChipNum_(ctx.recommendedOrderQty));
+  if (ctx.openOrderQty > 0) chips.push('open ' + fmtChipNum_(ctx.openOrderQty));
+  return chips.slice(0, 8).join('|');
+}
+
+function buildOosLastSeenMap_() {
+  try {
+    const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+    const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return {};
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
+    const lastSeen = {};
+    for (const row of data) {
+      const dateRaw = row[0], store = String(row[1] || '').trim();
+      const name = String(row[2] || '').trim(), sku = String(row[5] || '').trim();
+      if (!store || (!name && !sku)) continue;
+      const dateStr = dateRaw instanceof Date
+        ? dateRaw.toISOString().slice(0, 10)
+        : String(dateRaw).slice(0, 10);
+      const key = store + '::' + (sku || name);
+      if (!lastSeen[key] || dateStr > lastSeen[key]) lastSeen[key] = dateStr;
+      if (sku) {
+        const skuKey = store + '::' + sku;
+        if (!lastSeen[skuKey] || dateStr > lastSeen[skuKey]) lastSeen[skuKey] = dateStr;
+      }
+      if (name) {
+        const nameKey = store + '::' + name;
+        if (!lastSeen[nameKey] || dateStr > lastSeen[nameKey]) lastSeen[nameKey] = dateStr;
+      }
+    }
+    return lastSeen;
+  } catch (err) {
+    Logger.log('buildOosLastSeenMap_ failed: ' + err.message);
+    return {};
+  }
+}
+
+function estimateLostSales_(p, lastSeenMap, velocity) {
+  if (!p || p.status !== 'oos') return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
+  if (Number(p.qty || 0) > 0) return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
+  const lastSeen = lastSeenMap[p.store + '::' + (p.sku || '')] || lastSeenMap[p.store + '::' + (p.name || '')];
+  if (!lastSeen) return { oosDays: 0, lostUnits: 0, missedRevenue: 0 };
+  const oosStart = new Date(lastSeen + 'T12:00:00Z');
+  oosStart.setUTCDate(oosStart.getUTCDate() + 1);
+  const oosDays = Math.max(0, Math.floor((Date.now() - oosStart.getTime()) / 86400000));
+  const lostUnits = Math.round(Math.max(0, oosDays * (velocity || 0)) * 10) / 10;
+  const unitPrice = Number(p.unitPrice || 0);
+  const missedRevenue = unitPrice > 0 ? Math.round(lostUnits * unitPrice * 100) / 100 : 0;
+  return { oosDays, lostUnits, missedRevenue };
+}
+
+function productKey_(p) {
+  return String(p.sku || p.name || '').trim();
+}
+
+function transferDays_(a, b) {
+  const salem = { 'Center': true, 'Commercial': true, 'Portland Rd': true, 'River Rd': true };
+  const aS = !!salem[a], bS = !!salem[b];
+  if (aS && bS) return 3;
+  return 7;
+}
+
+function loadExistingDecisionDonors_(targetSet) {
+  try {
+    const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return [];
+    const values = sheet.getDataRange().getValues();
+    const headers = values.shift().map(h => String(h || ''));
+    const idx = {};
+    headers.forEach((h, i) => { idx[h] = i; });
+    return values
+      .filter(r => !targetSet.has(String(r[idx.store] || '')))
+      .map(r => ({
+        store: String(r[idx.store] || ''),
+        name: String(r[idx.productName] || ''),
+        sku: String(r[idx.sku] || ''),
+        brand: String(r[idx.brand] || ''),
+        category: String(r[idx.category] || ''),
+        qty: Number(r[idx.qty] || 0),
+        vel7: 0,
+        vel14: Number(r[idx.vel14] || 0),
+        vel30: 0,
+        sold7: Number(r[idx.sold7] || 0),
+        sold14: Number(r[idx.sold14] || 0),
+        sold28: Number(r[idx.sold28] || 0),
+        doh: r[idx.doh] === '' ? null : Number(r[idx.doh] || 0),
+        status: String(r[idx.status] || ''),
+      }))
+      .filter(r => r.store && r.name);
+  } catch (err) {
+    Logger.log('loadExistingDecisionDonors_ failed: ' + err.message);
+    return [];
+  }
+}
+
+function buildDecisionFeedRows(targetStores) {
+  const generatedAt = new Date().toISOString();
+  const velMap = buildVelocityMap();
+  const operationalSnapshot = readOperationalSnapshot_('inventory_bundle_v1');
+  const operationalInventoryByStore = {};
+  if (operationalSnapshot && operationalSnapshot.inventory) {
+    for (const entry of operationalSnapshot.inventory || []) {
+      if (!entry || !entry.store) continue;
+      operationalInventoryByStore[entry.store] = entry.products || [];
+    }
+  }
+  const config = loadBetaDecisionConfig();
+  const betaStores = betaStoreKeys_();
+  const shared = getSharedState({ beta: '1' });
+  const killed = shared.killed || {};
+  const flagged = new Set(shared.flagged || []);
+  const oosLastSeen = buildOosLastSeenMap_();
+  const byKey = {};
+  const rows = [];
+  const targetSet = new Set((targetStores && targetStores.length ? targetStores : betaStores));
+
+  if (targetSet.size < betaStores.length) {
+    for (const donor of loadExistingDecisionDonors_(targetSet)) {
+      const key = productKey_(donor);
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(donor);
+    }
+  }
+
+  for (const store of targetSet) {
+    let products = operationalInventoryByStore[store] || null;
+    if (!products) {
+      const inv = getInventory({ store });
+      if (inv.error) continue;
+      products = inv.products || [];
+    }
+    for (const p of products) {
+      const vel = (velMap[store] || {})[p.name] || {};
+      const v14 = vel.vel14 || 0;
+      const v30 = vel.vel30 || 0;
+      const v7 = vel.vel7 || 0;
+      const primaryVel = v14 > 0 ? v14 : (v30 > 0 ? v30 : v7);
+      const doh = p.qty === 0 ? 0 : (primaryVel > 0 ? Math.round((p.qty / primaryVel) * 10) / 10 : null);
+      const status = p.qty === 0 ? 'oos' : (doh == null ? 'slow' : (doh < 3 ? 'critical' : doh < 7 ? 'low' : doh < 14 ? 'watch' : 'ok'));
+      const full = {
+        ...p,
+        store,
+        brand: p.brand || vel.brand || '',
+        category: p.category || vel.category || 'Other',
+        vel7: v7,
+        vel14: v14,
+        vel30: v30,
+        sold7: vel.qty7 || Math.round(v7 * 7) || 0,
+        sold14: vel.qty14 || Math.round(v14 * 14) || 0,
+        sold28: vel.qty28 || Math.round((vel.vel28 || 0) * 28) || 0,
+        unitPrice: p.unitPrice || 0,
+        doh,
+        status,
+      };
+      const key = productKey_(full);
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(full);
+      if (targetSet.has(store)) rows.push(full);
+    }
+  }
+
+  const priceByProductKey = {};
+  for (const p of rows) {
+    const key = productKey_(p);
+    if (key && p.unitPrice > 0 && !priceByProductKey[key]) priceByProductKey[key] = p.unitPrice;
+  }
+  for (const p of rows) {
+    if (!(p.unitPrice > 0)) p.unitPrice = priceByProductKey[productKey_(p)] || 0;
+  }
+
+  const statusRank = { oos: 0, critical: 1, low: 2, watch: 3, slow: 4, ok: 5 };
+  const donorRemainingByKey = {};
+  function donorRemainingFor_(productKey, donor) {
+    const k = productKey + '|' + donor.store;
+    if (donorRemainingByKey[k] == null) donorRemainingByKey[k] = donor.qty || 0;
+    return donorRemainingByKey[k];
+  }
+
+  const decisionInputs = rows.slice().sort((a, b) =>
+    (statusRank[a.status] == null ? 9 : statusRank[a.status]) - (statusRank[b.status] == null ? 9 : statusRank[b.status]) ||
+    (a.doh == null ? 999 : a.doh) - (b.doh == null ? 999 : b.doh) ||
+    (b.vel14 || b.vel30 || b.vel7 || 0) - (a.vel14 || a.vel30 || a.vel7 || 0)
+  );
+
+  return decisionInputs.map(p => {
+    const sku = String(p.sku || '').trim();
+    const override = config.skuOverrides[sku] || null;
+    const rule = pickReorderRule_(p, config);
+    const vendorLead = pickVendorLead_(p, config);
+    const leadTimeDays = STANDARD_VENDOR_LEAD_DAYS;
+    const safetyStockDays = rule.safetyStockDays || SAFETY_STOCK_DAYS;
+    const targetDays = leadTimeDays + safetyStockDays;
+    let minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
+    let orderMultiple = (override && override.orderMultiple) || rule.orderMultiple || 1;
+    if (/bulk cannabis flower/i.test(String(p.category || ''))) {
+      minOrderQty = Math.max(minOrderQty, 227);
+      orderMultiple = Math.max(orderMultiple, 227);
+    }
+    const transferFirst = (override && override.transferFirst) || rule.ruleName.toLowerCase().indexOf('transfer first') >= 0;
+    const overstock = override && override.overstock;
+    const reasonCodes = [];
+    const flagKey = sku + '|' + p.store;
+
+    if (p.status === 'oos') reasonCodes.push('OOS');
+    if (p.status === 'critical') reasonCodes.push('LOW_DOH');
+    if (p.status === 'low') reasonCodes.push('LOW_STOCK');
+    if (transferFirst) reasonCodes.push('TRANSFER_FIRST');
+    if (overstock || rule.ruleName.toLowerCase().indexOf('green cross') >= 0) reasonCodes.push('GREEN_CROSS_OVERSTOCK');
+    if (flagged.has(flagKey)) reasonCodes.push('FLAGGED_REVIEW');
+    if (killed[flagKey]) reasonCodes.push('KILL_LIST');
+
+    const needed = p.vel14 > 0 ? Math.max(0, p.vel14 * targetDays - p.qty) : 0;
+    let recommendedOrderQty = needed > 0 ? Math.max(minOrderQty, roundToMultiple_(needed, orderMultiple)) : 0;
+    let recommendedTransferQty = 0;
+    let donorStore = '';
+    const primaryVel = p.vel14 || p.vel30 || p.vel7 || 0;
+    const lostSales = estimateLostSales_(p, oosLastSeen, primaryVel);
+    if (lostSales.lostUnits > 0) reasonCodes.push('LOST_SALES_RISK');
+
+    const needsReplenishment = recommendedOrderQty > 0 || p.status === 'oos' || p.status === 'critical' || p.status === 'low';
+    if (needsReplenishment) {
+      const minTransferQty = rule.transferMinQty || 1;
+      const recipientVel = p.vel14 || p.vel30 || p.vel7 || 0;
+      const productKey = productKey_(p);
+      const bridgeDays = Math.min(targetDays, 7);
+      const bridgeNeed = Math.max(0, Math.ceil(recipientVel * bridgeDays) - (p.qty || 0));
+      const cycleNeed = Math.max(recommendedOrderQty || 0, Math.ceil(recipientVel * targetDays) || 0);
+      const recipientNeed = Math.max(minTransferQty, bridgeNeed > 0 ? Math.min(cycleNeed || bridgeNeed, bridgeNeed) : cycleNeed);
+      const donors = (byKey[productKey] || [])
+        .filter(d => d.store !== p.store && (d.qty || 0) >= minTransferQty)
+        .map(d => {
+          const days = transferDays_(d.store, p.store);
+          const donorVel = d.vel14 || d.vel30 || d.vel7 || 0;
+          const reserveDays = days + safetyStockDays + targetDays;
+          const reserveQty = donorVel > 0 ? Math.ceil(donorVel * reserveDays) : minTransferQty;
+          const remainingQty = donorRemainingFor_(productKey, d);
+          const safeQty = Math.floor(remainingQty - reserveQty);
+          const postDoh = donorVel > 0 ? (remainingQty - Math.min(safeQty, recipientNeed)) / donorVel : 999;
+          return { ...d, days, donorVel, safeQty, postDoh };
+        })
+        .filter(d => d.safeQty >= minTransferQty)
+        .sort((a, b) =>
+          a.days - b.days ||
+          b.safeQty - a.safeQty ||
+          (b.doh || 0) - (a.doh || 0) ||
+          (b.qty || 0) - (a.qty || 0)
+        );
+      const donor = donors[0];
+      if (donor) {
+        donorStore = donor.store;
+        recommendedTransferQty = Math.min(donor.safeQty, recipientNeed);
+        if (recommendedTransferQty > 0) {
+          reasonCodes.push('TRANSFER_AVAILABLE');
+          donorRemainingByKey[productKey + '|' + donor.store] = Math.max(0, donorRemainingFor_(productKey, donor) - recommendedTransferQty);
+          recommendedOrderQty = Math.max(0, recommendedOrderQty - recommendedTransferQty);
+        }
+      }
+    }
+
+    const confidence = reasonCodes.includes('KILL_LIST') ? 20
+      : reasonCodes.includes('TRANSFER_AVAILABLE') ? 80
+      : recommendedOrderQty > 0 ? 70
+      : reasonCodes.length ? 60
+      : 40;
+    const openOrderQty = 0;
+    const whyChips = buildWhyChips_(p, {
+      leadTimeDays,
+      safetyStockDays,
+      minOrderQty,
+      orderMultiple,
+      recommendedOrderQty,
+      recommendedTransferQty,
+      donorStore,
+      openOrderQty,
+      lostUnits: lostSales.lostUnits,
+      missedRevenue: lostSales.missedRevenue,
+    });
+
+    return [
+      generatedAt,
+      p.store,
+      p.name,
+      sku,
+      p.brand || '',
+      p.category || '',
+      p.qty || 0,
+      p.sold7 || 0,
+      p.sold14 || 0,
+      p.sold28 || 0,
+      p.vel14 || 0,
+      p.doh == null ? '' : p.doh,
+      p.status,
+      recommendedOrderQty,
+      recommendedTransferQty,
+      donorStore,
+      reasonCodes.join(','),
+      whyChips,
+      confidence,
+      openOrderQty,
+      lostSales.oosDays,
+      lostSales.lostUnits,
+      lostSales.missedRevenue,
+      p.img || '',
+      p.lastMod || '',
+      (override && override.notes) || (vendorLead && vendorLead.buyerNotes) || rule.notes || '',
+    ];
+  }).sort((a, b) => (b[18] - a[18]) || String(a[1]).localeCompare(String(b[1])) || String(a[2]).localeCompare(String(b[2])));
+}
+
+function generateBetaDecisionFeed(params) {
+  if (getDataMode() !== 'beta' && params.force !== '1') {
+    return { ok: false, error: 'Set GC_DATA_MODE=beta or pass force=1 to generate beta decision feed.' };
+  }
+  const requestedStore = params.store || '';
+  const targetStores = requestedStore && requestedStore !== 'all' ? [requestedStore] : betaStoreKeys_();
+  const rows = buildDecisionFeedRows(targetStores);
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(DECISION_FEED_SHEET_NAME);
+  if (!params.append || sheet.getLastRow() === 0) {
+    sheet.clearContents();
+    sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
+  } else if (requestedStore) {
+    const existingCols = sheet.getLastColumn();
+    const headers = existingCols > 0 ? sheet.getRange(1, 1, 1, existingCols).getValues()[0].map(h => String(h || '')) : [];
+    if (headers.join('|') !== DECISION_FEED_COLS.join('|')) {
+      sheet.getRange(1, 1, 1, DECISION_FEED_COLS.length).setValues([DECISION_FEED_COLS]);
+    }
+    removeDecisionFeedStoreRows_(sheet, requestedStore);
+  }
+  if (rows.length) sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DECISION_FEED_COLS.length).setValues(rows);
+  sheet.setFrozenRows(1);
+  return { ok: true, store: requestedStore || 'all', rows: rows.length, spreadsheetId: BETA_SPREADSHEET_ID, generatedAt: rows[0] ? rows[0][0] : new Date().toISOString() };
+}
+
+function removeDecisionFeedStoreRows_(sheet, store) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const values = sheet.getDataRange().getValues();
+  const header = values.shift();
+  const kept = values.filter(r => String(r[1] || '') !== store);
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  if (kept.length) sheet.getRange(2, 1, kept.length, header.length).setValues(kept);
+  sheet.setFrozenRows(1);
+}
+
+function readBetaDecisionFeed(params) {
+  if (getDataMode() !== 'beta' && params.beta !== '1') {
+    return { ok: false, error: 'Beta decision feed requires beta=1 or GC_DATA_MODE=beta.' };
+  }
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { ok: true, rows: [], total: 0, spreadsheetId: BETA_SPREADSHEET_ID };
+  }
+
+  const values = sheet.getDataRange().getValues();
+  const headers = values.shift().map(h => String(h || ''));
+  const idx = {};
+  headers.forEach((h, i) => { idx[h] = i; });
+  const missingCols = DECISION_FEED_COLS.filter(col => idx[col] == null);
+  const schemaStale = missingCols.length > 0 || headers.join('|') !== DECISION_FEED_COLS.join('|');
+  const store = String(params.store || '').trim();
+  const status = String(params.status || '').trim().toLowerCase();
+  const reason = String(params.reason || '').trim().toUpperCase();
+  const search = String(params.q || '').trim().toLowerCase();
+  const limit = Math.min(Math.max(parseInt(params.limit || '300', 10) || 300, 1), 10000);
+
+  const rows = [];
+  const summary = { orderLines: 0, transferLines: 0, killList: 0, orderUnits: 0, transferUnits: 0 };
+  summary.lostUnits = 0;
+  summary.missedRevenue = 0;
+  let total = 0;
+  for (const raw of values) {
+    const rowStore = String(raw[idx.store] || '');
+    const rowStatus = String(raw[idx.status] || '').toLowerCase();
+    const rowReason = String(raw[idx.reasonCodes] || '').toUpperCase();
+    const haystack = [
+      raw[idx.productName], raw[idx.sku], raw[idx.brand], raw[idx.category], rowStore, rowReason,
+    ].join(' ').toLowerCase();
+    if (store && store !== 'All' && rowStore !== store) continue;
+    if (status && rowStatus !== status) continue;
+    if (reason && rowReason.indexOf(reason) === -1) continue;
+    if (search && haystack.indexOf(search) === -1) continue;
+    total++;
+    const orderQty = Number(raw[idx.recommendedOrderQty] || 0);
+    const transferQty = Number(raw[idx.recommendedTransferQty] || 0);
+    if (orderQty > 0) { summary.orderLines++; summary.orderUnits += orderQty; }
+    if (transferQty > 0) { summary.transferLines++; summary.transferUnits += transferQty; }
+    if (rowReason.indexOf('KILL_LIST') !== -1) summary.killList++;
+    summary.lostUnits += Number(idx.lostUnits == null ? 0 : raw[idx.lostUnits] || 0);
+    summary.missedRevenue += Number(idx.missedRevenue == null ? 0 : raw[idx.missedRevenue] || 0);
+    if (rows.length >= limit) continue;
+    rows.push({
+      generatedAt: raw[idx.generatedAt] || '',
+      store: rowStore,
+      productName: raw[idx.productName] || '',
+      sku: raw[idx.sku] || '',
+      brand: raw[idx.brand] || '',
+      category: raw[idx.category] || '',
+      qty: Number(raw[idx.qty] || 0),
+      sold7: Number(raw[idx.sold7] || 0),
+      sold14: Number(raw[idx.sold14] || 0),
+      sold28: Number(raw[idx.sold28] || 0),
+      vel14: Number(raw[idx.vel14] || 0),
+      doh: raw[idx.doh] === '' ? null : Number(raw[idx.doh] || 0),
+      status: raw[idx.status] || '',
+      recommendedOrderQty: orderQty,
+      recommendedTransferQty: transferQty,
+      donorStore: raw[idx.donorStore] || '',
+      reasonCodes: raw[idx.reasonCodes] || '',
+      whyChips: idx.whyChips == null ? '' : (raw[idx.whyChips] || ''),
+      confidence: Number(raw[idx.confidence] || 0),
+      oosDays: idx.oosDays == null ? 0 : Number(raw[idx.oosDays] || 0),
+      lostUnits: idx.lostUnits == null ? 0 : Number(raw[idx.lostUnits] || 0),
+      missedRevenue: idx.missedRevenue == null ? 0 : Number(raw[idx.missedRevenue] || 0),
+      imageUrl: raw[idx.imageUrl] || '',
+      notes: raw[idx.notes] || '',
+    });
+  }
+
+  return {
+    ok: true,
+    rows,
+    total,
+    summary,
+    schemaStale,
+    missingCols,
+    expectedCols: DECISION_FEED_COLS,
+    limited: total > rows.length,
+    spreadsheetId: BETA_SPREADSHEET_ID,
+    generatedAt: rows[0] ? rows[0].generatedAt : '',
+  };
+}
+
+function decisionFeedRowObj_(raw, idx) {
+  return {
+    generatedAt: raw[idx.generatedAt] || '',
+    store: String(raw[idx.store] || ''),
+    productName: raw[idx.productName] || '',
+    sku: raw[idx.sku] || '',
+    brand: raw[idx.brand] || '',
+    category: raw[idx.category] || '',
+    qty: Number(raw[idx.qty] || 0),
+    sold7: Number(raw[idx.sold7] || 0),
+    sold14: Number(raw[idx.sold14] || 0),
+    sold28: Number(raw[idx.sold28] || 0),
+    vel14: Number(raw[idx.vel14] || 0),
+    doh: raw[idx.doh] === '' ? null : Number(raw[idx.doh] || 0),
+    status: raw[idx.status] || '',
+    recommendedOrderQty: Number(raw[idx.recommendedOrderQty] || 0),
+    recommendedTransferQty: Number(raw[idx.recommendedTransferQty] || 0),
+    donorStore: raw[idx.donorStore] || '',
+    reasonCodes: raw[idx.reasonCodes] || '',
+    whyChips: idx.whyChips == null ? '' : (raw[idx.whyChips] || ''),
+    confidence: Number(raw[idx.confidence] || 0),
+    oosDays: idx.oosDays == null ? 0 : Number(raw[idx.oosDays] || 0),
+    lostUnits: idx.lostUnits == null ? 0 : Number(raw[idx.lostUnits] || 0),
+    missedRevenue: idx.missedRevenue == null ? 0 : Number(raw[idx.missedRevenue] || 0),
+    imageUrl: idx.imageUrl == null ? '' : (raw[idx.imageUrl] || ''),
+    notes: idx.notes == null ? '' : (raw[idx.notes] || ''),
+  };
+}
+
+function decisionQueueIssues_(r) {
+  const issues = [];
+  const reasonText = String(r.reasonCodes || '');
+  const whyText = String(r.whyChips || '');
+  const cat = String(r.category || '').trim();
+  const sku = String(r.sku || '').trim();
+
+  if (!sku) issues.push({ type: 'Data', text: 'missing SKU' });
+  if (!cat || /^other$/i.test(cat)) issues.push({ type: 'Data', text: 'generic category' });
+  if (/\b(?:moq|mult)\s*227\b/i.test(whyText) && !/bulk cannabis flower/i.test(cat)) {
+    issues.push({ type: 'Data', text: 'flower rule but category is not flower' });
+  }
+  if (Number(r.lostUnits || 0) > 0 && !(Number(r.missedRevenue || 0) > 0)) {
+    issues.push({ type: 'Revenue', text: 'lost units missing price' });
+  }
+  if (/TRANSFER_FIRST/.test(reasonText) && !(Number(r.recommendedTransferQty || 0) > 0)) {
+    issues.push({ type: 'Logic', text: 'transfer-first without transfer' });
+  }
+  if ((/OOS|LOW_DOH/.test(reasonText) || String(r.status || '').toLowerCase() === 'oos') &&
+      !(Number(r.recommendedOrderQty || 0) > 0) &&
+      !(Number(r.recommendedTransferQty || 0) > 0) &&
+      !/KILL_LIST/.test(reasonText)) {
+    issues.push({ type: 'Logic', text: 'needs action but no order/transfer' });
+  }
+  return issues;
+}
+
+function decisionQueueScore_(r, issues) {
+  const status = String(r.status || '').toLowerCase();
+  const statusScore = status === 'oos' ? 500
+    : status === 'critical' ? 350
+    : status === 'low' ? 160
+    : status === 'watch' ? 60
+    : status === 'slow' ? -30 : 0;
+  return statusScore +
+    Number(r.missedRevenue || 0) * 5 +
+    Number(r.lostUnits || 0) * 35 +
+    Number(r.recommendedOrderQty || 0) * 2 +
+    Number(r.recommendedTransferQty || 0) * 2 +
+    Number(r.confidence || 0) +
+    (issues || []).length * 45;
+}
+
+function decisionQueueAction_(bucket, r, issues) {
+  if (bucket === 'order') return 'Buy ' + Number(r.recommendedOrderQty || 0).toLocaleString('en-US') + ' · ' + String(r.status || '').toUpperCase();
+  if (bucket === 'transfer') return 'Move ' + Number(r.recommendedTransferQty || 0).toLocaleString('en-US') + (r.donorStore ? ' from ' + r.donorStore : '');
+  if (bucket === 'investigate') return ((issues && issues[0] && issues[0].type) || 'Review') + ' check';
+  return String(r.reasonCodes || 'Slow mover').split(',')[0] || 'Review';
+}
+
+function readBetaDecisionQueue(params) {
+  if (getDataMode() !== 'beta' && params.beta !== '1') {
+    return { ok: false, error: 'Beta decision queue requires beta=1 or GC_DATA_MODE=beta.' };
+  }
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(DECISION_FEED_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { ok: true, buckets: {}, counts: {}, total: 0, spreadsheetId: BETA_SPREADSHEET_ID };
+  }
+
+  const values = sheet.getDataRange().getValues();
+  const headers = values.shift().map(function(h) { return String(h || ''); });
+  const idx = {};
+  headers.forEach(function(h, i) { idx[h] = i; });
+  const missingCols = DECISION_FEED_COLS.filter(function(col) { return idx[col] == null; });
+  const schemaStale = missingCols.length > 0 || headers.join('|') !== DECISION_FEED_COLS.join('|');
+  const store = String(params.store || '').trim();
+  const status = String(params.status || '').trim().toLowerCase();
+  const reason = String(params.reason || '').trim().toUpperCase();
+  const search = String(params.q || '').trim().toLowerCase();
+  const limit = Math.min(Math.max(parseInt(params.limit || '10', 10) || 10, 1), 30);
+
+  const buckets = {
+    order: { label: 'Order Today', count: 0, items: [] },
+    transfer: { label: 'Transfer Today', count: 0, items: [] },
+    investigate: { label: 'Investigate', count: 0, items: [] },
+    dead: { label: 'Dead / Kill Review', count: 0, items: [] },
+  };
+  const allItems = { order: [], transfer: [], investigate: [], dead: [] };
+  const summary = { orderLines: 0, transferLines: 0, killList: 0, orderUnits: 0, transferUnits: 0, missedRevenue: 0, lostUnits: 0 };
+  let total = 0;
+  let generatedAt = '';
+
+  for (let i = 0; i < values.length; i++) {
+    const raw = values[i];
+    const rowStore = String(raw[idx.store] || '');
+    const rowStatus = String(raw[idx.status] || '').toLowerCase();
+    const rowReason = String(raw[idx.reasonCodes] || '').toUpperCase();
+    const haystack = [
+      raw[idx.productName], raw[idx.sku], raw[idx.brand], raw[idx.category], rowStore, rowReason,
+    ].join(' ').toLowerCase();
+    if (store && store !== 'All' && rowStore !== store) continue;
+    if (status && rowStatus !== status) continue;
+    if (reason && rowReason.indexOf(reason) === -1) continue;
+    if (search && haystack.indexOf(search) === -1) continue;
+
+    const r = decisionFeedRowObj_(raw, idx);
+    if (!generatedAt && r.generatedAt) generatedAt = r.generatedAt;
+    total++;
+    summary.missedRevenue += Number(r.missedRevenue || 0);
+    summary.lostUnits += Number(r.lostUnits || 0);
+    if (r.recommendedOrderQty > 0) { summary.orderLines++; summary.orderUnits += r.recommendedOrderQty; }
+    if (r.recommendedTransferQty > 0) { summary.transferLines++; summary.transferUnits += r.recommendedTransferQty; }
+    if (rowReason.indexOf('KILL_LIST') !== -1) summary.killList++;
+
+    const issues = decisionQueueIssues_(r);
+    const score = decisionQueueScore_(r, issues);
+    const base = {
+      productName: r.productName,
+      store: r.store,
+      sku: r.sku,
+      brand: r.brand,
+      category: r.category,
+      status: r.status,
+      recommendedOrderQty: r.recommendedOrderQty,
+      recommendedTransferQty: r.recommendedTransferQty,
+      donorStore: r.donorStore,
+      missedRevenue: r.missedRevenue,
+      lostUnits: r.lostUnits,
+      reasonCodes: r.reasonCodes,
+      confidence: r.confidence,
+      issues: issues,
+      score: score,
+    };
+    if (issues.length) allItems.investigate.push(Object.assign({}, base, { action: decisionQueueAction_('investigate', r, issues) }));
+    if (/KILL_LIST|DEAD|SLOW/.test(rowReason) || rowStatus === 'slow') allItems.dead.push(Object.assign({}, base, { action: decisionQueueAction_('dead', r, issues) }));
+    if (r.recommendedTransferQty > 0 && rowReason.indexOf('KILL_LIST') === -1) allItems.transfer.push(Object.assign({}, base, { action: decisionQueueAction_('transfer', r, issues) }));
+    if (r.recommendedOrderQty > 0 && rowReason.indexOf('KILL_LIST') === -1) allItems.order.push(Object.assign({}, base, { action: decisionQueueAction_('order', r, issues) }));
+  }
+
+  Object.keys(allItems).forEach(function(key) {
+    allItems[key].sort(function(a, b) { return b.score - a.score; });
+    buckets[key].count = allItems[key].length;
+    buckets[key].items = allItems[key].slice(0, limit);
+  });
+
+  return {
+    ok: true,
+    buckets: buckets,
+    counts: {
+      order: buckets.order.count,
+      transfer: buckets.transfer.count,
+      investigate: buckets.investigate.count,
+      dead: buckets.dead.count,
+    },
+    total: total,
+    summary: summary,
+    schemaStale: schemaStale,
+    missingCols: missingCols,
+    expectedCols: DECISION_FEED_COLS,
+    spreadsheetId: BETA_SPREADSHEET_ID,
+    generatedAt: generatedAt,
+    limit: limit,
+  };
 }
 
 // ─── VELOCITY — ROLLING WINDOW (180-day, incremental) ────────────────────────
@@ -500,8 +1352,21 @@ const VEL_WINDOW_DAYS = 180;
 // Sheet columns: date(0) store(1) productId(2) productName(3) brand(4) category(5) sku(6) qty(7)
 const VEL_COLS = ['date','store','productId','productName','brand','category','sku','qty'];
 
+// Convert a Vel Cache date cell to a canonical "YYYY-MM-DD" string.
+// Google Sheets auto-converts "2026-05-20" strings to Date objects when stored,
+// so getValues() returns Date objects, not strings. Using String(dateObj) gives
+// "Wed May 20 2026..." which breaks string comparisons and key lookups.
+function _velDateToYMD(v) {
+  if (!v) return '';
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '' : Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
 function getVelSheet() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   let sheet = ss.getSheetByName(VEL_SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(VEL_SHEET_NAME);
@@ -607,6 +1472,49 @@ function _readProductCatalogCache(scriptCache, cacheKey) {
   try { return JSON.parse(v); } catch(e) { return null; }
 }
 
+function _putChunkedJsonCache(cache, key, obj, ttl) {
+  try {
+    const json = JSON.stringify(obj);
+    const chunkSize = 90000;
+    const chunks = [];
+    for (let i = 0; i < json.length; i += chunkSize) chunks.push(json.slice(i, i + chunkSize));
+    cache.remove(key);
+    cache.remove(key + '_meta');
+    for (let i = 0; i < 20; i++) cache.remove(key + '_' + i);
+    if (chunks.length === 1) {
+      cache.put(key, json, ttl);
+    } else {
+      const put = {};
+      chunks.forEach((chunk, i) => { put[key + '_' + i] = chunk; });
+      put[key + '_meta'] = JSON.stringify({ chunks: chunks.length });
+      cache.putAll(put, ttl);
+    }
+  } catch(e) {
+    Logger.log('Cache write failed for ' + key + ': ' + e.message);
+  }
+}
+
+function _readChunkedJsonCache(cache, key) {
+  const direct = cache.get(key);
+  if (direct) {
+    try { return JSON.parse(direct); } catch(e) { return null; }
+  }
+  const metaRaw = cache.get(key + '_meta');
+  if (!metaRaw) return null;
+  try {
+    const meta = JSON.parse(metaRaw);
+    const parts = [];
+    for (let i = 0; i < meta.chunks; i++) {
+      const part = cache.get(key + '_' + i);
+      if (!part) return null;
+      parts.push(part);
+    }
+    return JSON.parse(parts.join(''));
+  } catch(e) {
+    return null;
+  }
+}
+
 // Main sync — call from trigger or manually. Fetches delta, writes to sheet.
 // For large date ranges (initial backfill), chunks into 14-day windows to stay
 // within Apps Script URL fetch response size limits.
@@ -614,17 +1522,66 @@ function syncVelocityCache() {
   const props      = PropertiesService.getScriptProperties();
   const lastSync   = props.getProperty('velSyncDate');
   const now        = new Date();
-  const cutoff90   = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000);
-  const fromDate   = lastSync ? new Date(lastSync) : cutoff90;
-  const fetchFrom  = fromDate < cutoff90 ? cutoff90 : fromDate;
+  const cutoff180  = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000); // renamed from cutoff90 (was misleading)
+  const fromDate   = lastSync ? new Date(lastSync) : cutoff180;
+  const fetchFrom  = fromDate < cutoff180 ? cutoff180 : fromDate;
+
+  // Self-heal: if backfill was running but no trigger is active, restart it.
+  const backfillStatus = props.getProperty('backfillStatus') || '';
+  if (backfillStatus.startsWith('running:') || backfillStatus === 'pending') {
+    const hasBackfillTrigger = ScriptApp.getProjectTriggers()
+      .some(t => t.getHandlerFunction() === '_runBackfillTrigger');
+    if (!hasBackfillTrigger) {
+      Logger.log('syncVelocityCache: stalled backfill detected (' + backfillStatus + '), restarting');
+      _installBackfillTrigger();
+    }
+  }
 
   const CHUNK_DAYS = 14;
   const chunkMs    = CHUNK_DAYS * 86400000;
-  const chunkEnd   = new Date(Math.min(fetchFrom.getTime() + chunkMs, now.getTime()));
-  const remaining  = Math.max(0, Math.ceil((now.getTime() - chunkEnd.getTime()) / 86400000));
+  // GAS time limit is 6 min. Each _syncChunk call makes 6 Dutchie fetches (~20-30s).
+  // We can safely run up to ~8 chunks (3.5 min) per trigger invocation, which means
+  // a full 180-day backfill completes in 2 hourly trigger calls instead of 13.
+  const MAX_CHUNKS  = 8;
+  const DEADLINE_MS = 200 * 1000; // 3m20s safety margin
+  const callStart   = Date.now();
 
-  const result = _syncChunk(props, fetchFrom, chunkEnd, true);
-  return { ...result, remaining, backfillComplete: remaining === 0 };
+  let totalSynced = 0;
+  let chunkStart  = fetchFrom;
+  let lastResult  = { synced: 0, upTo: fetchFrom.toISOString() };
+  let chunksRun   = 0;
+
+  while (chunksRun < MAX_CHUNKS && Date.now() - callStart < DEADLINE_MS) {
+    const chunkEnd = new Date(Math.min(chunkStart.getTime() + chunkMs, now.getTime()));
+    if (chunkEnd <= chunkStart) break; // caught up
+    lastResult = _syncChunk(props, chunkStart, chunkEnd, true);
+    totalSynced += lastResult.synced || 0;
+    chunksRun++;
+    chunkStart = chunkEnd;
+    if (chunkEnd >= now) break; // fully caught up
+  }
+
+  const remaining = Math.max(0, Math.ceil((now.getTime() - chunkStart.getTime()) / 86400000));
+
+  // Gap self-heal: if velLastWriteDate is more than 2 chunks (28 days) behind now,
+  // the vel cache silently lost data during a rewrite (GAS timeout mid-setValues).
+  // Roll velSyncDate back to the last confirmed write date so the next trigger re-fills the gap.
+  // A 4-hour cooldown prevents thrashing if the API genuinely has no recent data.
+  const velLastWriteDate = props.getProperty('velLastWriteDate');
+  if (velLastWriteDate && remaining === 0) {
+    const gapDays = (now.getTime() - new Date(velLastWriteDate + 'T12:00:00').getTime()) / 86400000;
+    const healedAt = props.getProperty('velGapHealedAt') || '';
+    const cooldownOk = !healedAt || (now.getTime() - new Date(healedAt).getTime()) > 4 * 3600000;
+    if (gapDays > CHUNK_DAYS * 2 && cooldownOk) {
+      Logger.log('syncVelocityCache: GAP DETECTED — velLastWriteDate=' + velLastWriteDate
+        + ' is ' + Math.round(gapDays) + ' days behind now. Rolling velSyncDate back to re-sync.');
+      props.setProperty('velSyncDate', new Date(velLastWriteDate + 'T00:00:00Z').toISOString());
+      props.setProperty('velGapHealedAt', now.toISOString());
+      return { synced: totalSynced, upTo: lastResult.upTo, chunksRun, remaining, backfillComplete: false, gapHealed: true, gapFrom: velLastWriteDate };
+    }
+  }
+
+  return { synced: totalSynced, upTo: lastResult.upTo, chunksRun, remaining, backfillComplete: remaining === 0 };
 }
 
 // Internal: fetch one time window for all stores, upsert into sheet.
@@ -633,7 +1590,7 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
   const fromISO = fromDate.toISOString();
   const toISO   = toDate.toISOString();
   const now     = Date.now();
-  const cutoff90Str = new Date(now - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const cutoff180Str = new Date(now - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10); // 180-day retention cutoff
 
   const productDict = buildProductIdDict();
 
@@ -663,7 +1620,7 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
       if (tx.isVoid || tx.isReturn) continue;
       if (!Array.isArray(tx.items)) continue;
       const dateStr = (tx.transactionDateLocalTime || tx.transactionDate || '').slice(0, 10);
-      if (!dateStr || dateStr < cutoff90Str) continue; // skip rows outside the retention window
+      if (!dateStr || dateStr < cutoff180Str) continue; // skip rows outside the retention window
 
       for (const item of tx.items) {
         if (item.isReturned) continue;
@@ -684,19 +1641,43 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
   const newRows = Object.values(agg);
 
   if (newRows.length > 0) {
-    const existingData = sheet.getLastRow() > 1
-      ? sheet.getRange(2, 1, sheet.getLastRow() - 1, VEL_COLS.length).getValues() : [];
+    const lastRow      = sheet.getLastRow();
+    const existingData = lastRow > 1
+      ? sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues() : [];
     const newKeys = new Set(newRows.map(r => r.store + '|' + r.date + '|' + r.productId));
-    const kept = existingData.filter(row => !newKeys.has(row[1] + '|' + row[0] + '|' + row[2]));
-    const pruned = kept.filter(row => String(row[0]) >= cutoff90Str);
-    const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
-    sheet.clearContents();
-    sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
-    if (allRows.length > 0) sheet.getRange(2, 1, allRows.length, VEL_COLS.length).setValues(allRows);
+
+    // Check whether any existing row collides with the new batch (common case for
+    // backfill of a never-synced period: zero collisions → append-only, no rewrite).
+    // row[0] may be a Date object — use _velDateToYMD so keys are comparable strings.
+    let hasCollision = false;
+    for (const row of existingData) {
+      if (newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2])) { hasCollision = true; break; }
+    }
+
+    if (!hasCollision) {
+      // Fast path: just append — no full-sheet rewrite needed.
+      const appendData = newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]);
+      sheet.getRange(lastRow + 1, 1, appendData.length, VEL_COLS.length).setValues(appendData);
+    } else {
+      // Slow path: dedup, prune, and rewrite the full sheet.
+      const kept   = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
+      const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
+      const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
+      sheet.clearContents();
+      sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+      if (allRows.length > 0) sheet.getRange(2, 1, allRows.length, VEL_COLS.length).setValues(allRows);
+    }
   }
 
   if (updateProp) {
     props.setProperty('velSyncDate', toISO);
+    // Track the most recent date for which rows were actually written to the sheet.
+    // Used by syncVelocityCache gap self-heal to detect silent data loss.
+    if (newRows.length > 0) {
+      const maxWritten = newRows.map(r => r.date).sort().pop();
+      const prevLast   = props.getProperty('velLastWriteDate') || '';
+      if (maxWritten > prevLast) props.setProperty('velLastWriteDate', maxWritten);
+    }
   }
   Logger.log('_syncChunk ' + fromISO.slice(0,10) + ' → ' + toISO.slice(0,10) + ': ' + newRows.length + ' rows');
   return { synced: newRows.length, upTo: toISO };
@@ -721,9 +1702,9 @@ function buildVelocityMap() {
 
   const velMap = {};
   for (const row of data) {
-    const dateStr = String(row[0] || '');
+    const dateStr = _velDateToYMD(row[0]);
     if (!dateStr) continue;
-    const ts = new Date(dateStr).getTime();
+    const ts = new Date(dateStr + 'T12:00:00').getTime(); // noon local avoids midnight DST edge cases
 
     const store   = String(row[1] || '');
     const name    = String(row[3] || '').trim();
@@ -776,7 +1757,7 @@ function velBackfillChunk(params) {
   const props   = PropertiesService.getScriptProperties();
   const now     = new Date();
   const cutoff  = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000);
-  const fromStr = params.from || cutoff.toISOString().slice(0, 10);
+  const fromStr = (params && params.from) || cutoff.toISOString().slice(0, 10);
   const fromDate = new Date(fromStr + 'T00:00:00Z');
   if (fromDate > now) return { ok: false, message: 'from date is in the future' };
   props.setProperty('backfillFrom', fromStr);
@@ -794,20 +1775,41 @@ function _runBackfillTrigger() {
 
   const props    = PropertiesService.getScriptProperties();
   const fromStr  = props.getProperty('backfillFrom');
-  if (!fromStr) return;
+  if (!fromStr) {
+    Logger.log('_runBackfillTrigger: backfillFrom missing, aborting');
+    return;
+  }
 
   const now      = new Date();
   const fromDate = new Date(fromStr + 'T00:00:00Z');
   const CHUNK    = 7 * 86400000;
   const toDate   = new Date(Math.min(fromDate.getTime() + CHUNK, now.getTime()));
 
-  _syncChunk(props, fromDate, toDate, false); // don't touch velSyncDate
+  try {
+    const result = _syncChunk(props, fromDate, toDate, false); // don't touch velSyncDate
+    Logger.log('_runBackfillTrigger: synced ' + fromStr + ' → ' + toDate.toISOString().slice(0,10) + ' (' + (result.synced || 0) + ' rows)');
+    // Update velLastWriteDate so the gap self-heal in syncVelocityCache can see backfill progress.
+    // We can't use updateProp=true (that would clobber velSyncDate), so update it explicitly here.
+    if (result.synced > 0) {
+      const prevLast = props.getProperty('velLastWriteDate') || '';
+      const chunkMax = toDate.toISOString().slice(0, 10);
+      if (chunkMax > prevLast) props.setProperty('velLastWriteDate', chunkMax);
+    }
+  } catch(e) {
+    // Log the error and stamp it into status so velbackfillstatus exposes it;
+    // do NOT reschedule — a broken trigger loop wastes quota silently.
+    const errMsg = 'error:' + fromStr + ':' + e.message;
+    props.setProperty('backfillStatus', errMsg);
+    Logger.log('_runBackfillTrigger ERROR at ' + fromStr + ': ' + e.message + '\n' + e.stack);
+    return;
+  }
 
   const nextFrom = toDate.toISOString().slice(0, 10);
   const done = toDate >= now;
   if (done) {
     props.deleteProperty('backfillFrom');
     props.setProperty('backfillStatus', 'complete:' + nextFrom);
+    Logger.log('_runBackfillTrigger: COMPLETE at ' + nextFrom);
   } else {
     props.setProperty('backfillFrom', nextFrom);
     props.setProperty('backfillStatus', 'running:' + nextFrom);
@@ -829,6 +1831,100 @@ function velBackfillStatus() {
   const status = props.getProperty('backfillStatus') || 'idle';
   const from   = props.getProperty('backfillFrom')   || null;
   return { status, from };
+}
+
+// Alias for diagnostics — delegates to the canonical helper above.
+function _toYMD(v) { return _velDateToYMD(v); }
+
+// Diagnostic: look up all Vel Cache rows for a given productId or name fragment.
+// Usage: ?action=velproduct&id=B665EB4F73  OR  ?action=velproduct&name=SomeProduct
+function velProductDiagnostic(params) {
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { error: 'Vel Cache is empty', rows: [] };
+
+  const data    = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  const searchId   = String(params.id   || '').toLowerCase().trim();
+  const searchName = String(params.name || '').toLowerCase().trim();
+
+  if (!searchId && !searchName) return { error: 'Provide id or name param', rows: [] };
+
+  const matches = data.filter(r => {
+    const pid  = String(r[2] || '').toLowerCase();
+    const pname = String(r[3] || '').toLowerCase();
+    if (searchId   && pid.includes(searchId))   return true;
+    if (searchName && pname.includes(searchName)) return true;
+    return false;
+  });
+
+  if (!matches.length) return { found: false, searchId, searchName, totalRows: data.length };
+
+  // Summarise by store: earliest date, latest date, total qty, row count
+  const byStore = {};
+  for (const r of matches) {
+    const store = String(r[1]);
+    const ymd = _toYMD(r[0]);
+    const qty = parseFloat(r[7]) || 0;
+    if (!byStore[store]) byStore[store] = { store, minDate: ymd, maxDate: ymd, totalQty: 0, rows: 0 };
+    const s = byStore[store];
+    if (ymd < s.minDate) s.minDate = ymd;
+    if (ymd > s.maxDate) s.maxDate = ymd;
+    s.totalQty += qty;
+    s.rows++;
+  }
+
+  const name     = String(matches[0][3]);
+  const brand    = String(matches[0][4]);
+  const category = String(matches[0][5]);
+  const sku      = String(matches[0][6]);
+  const velSyncDate = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
+
+  return {
+    found: true, name, brand, category, sku,
+    productId: String(matches[0][2]),
+    totalMatchRows: matches.length,
+    velSyncDate,
+    byStore: Object.values(byStore)
+  };
+}
+
+// Diagnostic: check which dates have ANY Vel Cache rows for a given store,
+// and identify gaps in a date range.
+// ?action=velgapcheck&store=Bend&from=2026-05-04&to=2026-05-18
+function velGapCheck(params) {
+  const store   = params.store || 'Bend';
+  const fromStr = params.from  || new Date(Date.now() - 28 * 86400000).toISOString().slice(0, 10);
+  const toStr   = params.to    || new Date().toISOString().slice(0, 10);
+
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { error: 'Vel Cache is empty' };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+
+  // Build set of YYYY-MM-DD dates that have at least one row for this store
+  const datesWithData = new Set();
+  let totalRowsForStore = 0;
+  for (const r of data) {
+    if (String(r[1]) !== store) continue;
+    const d = _toYMD(r[0]);
+    if (!d) continue;
+    if (d >= fromStr && d <= toStr) { datesWithData.add(d); totalRowsForStore++; }
+  }
+
+  // Generate expected dates and find gaps
+  const gaps = [];
+  const present = [];
+  const cur = new Date(fromStr + 'T12:00:00Z');
+  const end = new Date(toStr   + 'T12:00:00Z');
+  while (cur <= end) {
+    const d = cur.toISOString().slice(0, 10);
+    if (datesWithData.has(d)) present.push(d); else gaps.push(d);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+
+  const velSyncDate = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
+  return { store, from: fromStr, to: toStr, totalRowsForStore, datesPresent: present.length, gaps, velSyncDate };
 }
 
 function clearRoomCache() {
@@ -860,9 +1956,67 @@ function clearProductCatalogCache() {
   return { ok: true, message: 'Product catalog cache cleared. Next velsync will re-fetch /products.' };
 }
 
+// Remove duplicate rows from the Vel Cache sheet. A row is a duplicate if another row
+// has the same (date, store, productId) key — keeps the last occurrence (most recent write).
+// Also prunes rows older than 180 days. Run this once after the broken-dedup period.
+function velDedup() {
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: true, message: 'Sheet empty', removed: 0 };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  const cutoff = new Date(Date.now() - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+
+  // Walk in reverse so the LAST written row wins (most recent sync data kept).
+  const seen    = new Set();
+  const deduped = [];
+  for (let i = data.length - 1; i >= 0; i--) {
+    const row  = data[i];
+    const ymd  = _velDateToYMD(row[0]);
+    if (!ymd || ymd < cutoff) continue; // prune old + invalid
+    const key  = row[1] + '|' + ymd + '|' + row[2];
+    if (seen.has(key)) continue; // duplicate — skip
+    seen.add(key);
+    deduped.push(row);
+  }
+  deduped.reverse(); // restore chronological order
+
+  const removed = data.length - deduped.length;
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+  if (deduped.length > 0) sheet.getRange(2, 1, deduped.length, VEL_COLS.length).setValues(deduped);
+
+  Logger.log('velDedup: ' + data.length + ' → ' + deduped.length + ' rows (' + removed + ' removed)');
+  return { ok: true, before: data.length, after: deduped.length, removed };
+}
+
 function resetVelSyncDate() {
   PropertiesService.getScriptProperties().deleteProperty('velSyncDate');
   return { ok: true, message: 'velSyncDate cleared — next velsync will backfill 90 days.' };
+}
+
+// Targeted re-sync: temporarily sets velSyncDate to `from`, runs syncVelocityCache
+// (up to 8×14-day chunks), then returns. Reliable alternative to the trigger chain
+// for filling specific date-range gaps. velSyncDate ends up at wherever the sync reached.
+// Usage: ?action=velresyncfrom&from=2026-04-17
+function velResyncFrom(params) {
+  const from = params.from;
+  if (!from || !/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    return { ok: false, error: 'Provide from=YYYY-MM-DD' };
+  }
+  const props = PropertiesService.getScriptProperties();
+  const prevSyncDate = props.getProperty('velSyncDate');
+  // Temporarily set velSyncDate to the requested start date
+  props.setProperty('velSyncDate', new Date(from + 'T00:00:00Z').toISOString());
+  try {
+    const result = syncVelocityCache();
+    return { ok: true, from, prevSyncDate, newSyncDate: props.getProperty('velSyncDate'), ...result };
+  } catch(e) {
+    // Restore previous sync date on error so we don't lose progress
+    if (prevSyncDate) props.setProperty('velSyncDate', prevSyncDate);
+    else props.deleteProperty('velSyncDate');
+    return { ok: false, error: e.message, from };
+  }
 }
 
 // ─── TRIGGER SETUP ────────────────────────────────────────────────────────────
@@ -904,7 +2058,7 @@ function getQuarantine(params) {
   const results = [];
 
   for (const store of targetStores) {
-    if (!STORE_KEYS[store]) continue;
+    if (!isKnownStore(store)) continue;
     const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
     const invRoomMap = buildInventoryRoomMap(store);
 
@@ -943,7 +2097,7 @@ function getQuarantine(params) {
 function buildNameSkuFromSnapshot() {
   const nameToSku = {};
   try {
-    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
     const sheet = ss.getSheetByName(SKU_DICT_SHEET_NAME);
     if (!sheet) return nameToSku;
     const lastRow = sheet.getLastRow();
@@ -993,21 +2147,31 @@ function updateSkuDict(ss, products) {
 
 // Velocity API endpoint — returns velocity map (or filtered to one store)
 function getVelocityEndpoint(params) {
-  const velMap    = buildVelocityMap();
-  const nameToSku = buildNameSkuFromSnapshot();
   const lastSynced = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
-  // Attach snapshot-sourced SKUs to velocity entries
-  for (const store of Object.keys(velMap)) {
-    for (const name of Object.keys(velMap[store])) {
-      if (!velMap[store][name].sku && nameToSku[name]) {
-        velMap[store][name].sku = nameToSku[name];
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'velmap_v2';
+  const cached = params.force === '1' ? null : _readChunkedJsonCache(cache, cacheKey);
+  let payload = cached && cached.lastSynced === lastSynced ? cached : null;
+
+  if (!payload) {
+    const velMap    = buildVelocityMap();
+    const nameToSku = buildNameSkuFromSnapshot();
+    // Attach snapshot-sourced SKUs to velocity entries
+    for (const store of Object.keys(velMap)) {
+      for (const name of Object.keys(velMap[store])) {
+        if (!velMap[store][name].sku && nameToSku[name]) {
+          velMap[store][name].sku = nameToSku[name];
+        }
       }
     }
+    payload = { stores: velMap, lastSynced };
+    _putChunkedJsonCache(cache, cacheKey, payload, OPERATIONAL_CACHE_TTL);
   }
+
   if (params.store && params.store !== 'all') {
-    return { store: params.store, products: velMap[params.store] || {}, lastSynced };
+    return { store: params.store, products: payload.stores[params.store] || {}, lastSynced };
   }
-  return { stores: velMap, lastSynced };
+  return payload;
 }
 
 // Diagnostic: scan the sales history sheet for date coverage and gaps
@@ -1554,7 +2718,7 @@ function getLiveInventory(params) {
   const allProducts = [];
 
   for (const store of targetStores) {
-    if (!STORE_KEYS[store]) continue;
+    if (!isKnownStore(store)) continue;
 
     let invResult;
     try {
@@ -1646,7 +2810,7 @@ function getOOSMap() {
   const cached = cache.get(cacheKey);
   if (cached) { try { return JSON.parse(cached); } catch(e) {} }
 
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!sheet || sheet.getLastRow() < 2) return {};
 
@@ -1756,7 +2920,7 @@ function getLeafLinkOrders() {
 // Called by time-based trigger. Appends one row per product per store to the
 // Inv Snapshot sheet, then purges entries older than 90 days.
 function snapshotInventory() {
-  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
   const sheet = getOrCreateSnapshotSheet(ss);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -1825,9 +2989,269 @@ function setupSnapshotTrigger() {
   Logger.log('Snapshot trigger created — will run nightly at 2 AM.');
 }
 
+function getOrCreateOperationalSnapshotSheet_() {
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  let sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(OPERATIONAL_SNAPSHOT_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 4).setValues([['key', 'generatedAt', 'chunkIndex', 'jsonChunk']]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function writeOperationalSnapshot_(key, payload) {
+  const sheet = getOrCreateOperationalSnapshotSheet_();
+  const json = JSON.stringify(payload);
+  const chunkSize = 45000; // keep safely under Google Sheets cell limits
+  const generatedAt = payload.generatedAt || new Date().toISOString();
+  const rows = [];
+  for (let i = 0; i < json.length; i += chunkSize) {
+    rows.push([key, generatedAt, rows.length, json.slice(i, i + chunkSize)]);
+  }
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, 4).setValues([['key', 'generatedAt', 'chunkIndex', 'jsonChunk']]);
+  if (rows.length) sheet.getRange(2, 1, rows.length, 4).setValues(rows);
+}
+
+function readOperationalSnapshot_(key) {
+  const sheet = getOrCreateOperationalSnapshotSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  const rows = sheet.getRange(2, 1, lastRow - 1, 4).getValues()
+    .filter(r => String(r[0] || '') === key)
+    .sort((a, b) => Number(a[2] || 0) - Number(b[2] || 0));
+  if (!rows.length) return null;
+  try {
+    const payload = JSON.parse(rows.map(r => String(r[3] || '')).join(''));
+    payload.source = 'snapshot';
+    return payload;
+  } catch(e) {
+    return null;
+  }
+}
+
+function getOperationalSnapshotStatus() {
+  const key = 'inventory_bundle_v1';
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
+  const triggers = ScriptApp.getProjectTriggers();
+  const warmTriggerInstalled = triggers.some(t => t.getHandlerFunction() === 'warmOperationalCaches');
+
+  if (!sheet || sheet.getLastRow() < 2) {
+    return {
+      ok: true,
+      ready: false,
+      source: 'missing',
+      generatedAt: '',
+      chunkCount: 0,
+      bytes: 0,
+      warmTriggerInstalled,
+      warmStatus: getOperationalWarmStatus_(),
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues()
+    .filter(r => String(r[0] || '') === key);
+  const bytes = rows.reduce((sum, r) => sum + String(r[3] || '').length, 0);
+  return {
+    ok: true,
+    ready: rows.length > 0 && bytes > 0,
+    source: rows.length ? 'snapshot' : 'missing',
+    generatedAt: rows.length ? String(rows[0][1] || '') : '',
+    chunkCount: rows.length,
+    bytes,
+    warmTriggerInstalled,
+    warmStatus: getOperationalWarmStatus_(),
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function getOperationalWarmStatus_() {
+  try {
+    return JSON.parse(PropertiesService.getScriptProperties().getProperty(OPERATIONAL_WARM_STATUS_KEY) || '{}');
+  } catch(e) {
+    return {};
+  }
+}
+
+function setOperationalWarmStatus_(status) {
+  PropertiesService.getScriptProperties().setProperty(
+    OPERATIONAL_WARM_STATUS_KEY,
+    JSON.stringify(Object.assign({ updatedAt: new Date().toISOString() }, status || {}))
+  );
+}
+
+function scheduleOperationalWarmRun() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === '_runOperationalWarmTrigger')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+
+  ScriptApp.newTrigger('_runOperationalWarmTrigger')
+    .timeBased()
+    .after(60 * 1000)
+    .create();
+
+  setOperationalWarmStatus_({
+    state: 'scheduled',
+    scheduledAt: new Date().toISOString(),
+    message: 'Operational snapshot build scheduled.',
+  });
+  return { ok: true, scheduled: true, message: 'Operational snapshot build scheduled.' };
+}
+
+function _runOperationalWarmTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === '_runOperationalWarmTrigger')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  warmOperationalCaches();
+}
+
+function buildOperationalBundle_(force) {
+  const generatedAt = new Date().toISOString();
+  const velocity = getVelocityEndpoint({ force: force ? '1' : '' });
+  const inventory = [];
+  const errors = [];
+  for (const store of STORES) {
+    try {
+      const inv = getInventory({ store, force: force ? '1' : '' });
+      inventory.push({ store, products: inv.products || [], error: inv.error || '' });
+      if (inv.error) errors.push(store + ': ' + inv.error);
+    } catch (err) {
+      inventory.push({ store, products: [], error: err.message });
+      errors.push(store + ': ' + err.message);
+    }
+  }
+  return { ok: true, generatedAt, source: 'generated', velocity, inventory, errors };
+}
+
+function getOperationalBundle(params) {
+  const key = 'inventory_bundle_v1';
+  const snapshot = readOperationalSnapshot_(key);
+
+  if (params.force === '1') {
+    // Caller wants fresh data, but a synchronous rebuild costs 36+ Dutchie URL fetches
+    // and may exhaust the daily quota. Instead, schedule an async background rebuild
+    // (runs in ~60s via GAS trigger) and return the current snapshot for now.
+    try { scheduleOperationalWarmRun(); } catch (e) { Logger.log('scheduleOperationalWarmRun failed: ' + e.message); }
+    if (snapshot) {
+      return Object.assign({}, snapshot, { refreshScheduled: true,
+        message: 'Snapshot refresh has been scheduled (runs in ~60s). This response is the previous snapshot.' });
+    }
+    // No snapshot exists — schedule the build and tell the caller to try again
+    return {
+      ok: false,
+      error: 'operational_snapshot_missing',
+      source: 'missing',
+      refreshScheduled: true,
+      generatedAt: '',
+      velocity: null,
+      inventory: [],
+      errors: ['Operational snapshot is being built now (scheduled). Try again in ~2 minutes.'],
+    };
+  }
+
+  if (snapshot) return snapshot;
+
+  // Snapshot missing — auto-schedule a rebuild once (self-healing). Uses a throttle key so
+  // we don't pile up triggers if many users hit this simultaneously.
+  const props = PropertiesService.getScriptProperties();
+  const throttleKey = 'gc_snapshot_autoschedule_day';
+  const today = new Date().toISOString().slice(0, 10);
+  if (props.getProperty(throttleKey) !== today) {
+    props.setProperty(throttleKey, today);
+    try { scheduleOperationalWarmRun(); } catch (e) { Logger.log('Auto-schedule snapshot failed: ' + e.message); }
+  }
+
+  return {
+    ok: false,
+    error: 'operational_snapshot_missing',
+    source: 'missing',
+    generatedAt: '',
+    velocity: null,
+    inventory: [],
+    errors: ['Operational snapshot is not ready yet — a rebuild has been scheduled automatically (~2 min). Please refresh after waiting.'],
+  };
+}
+
+function warmOperationalCaches() {
+  const started = new Date();
+  setOperationalWarmStatus_({
+    state: 'running',
+    startedAt: started.toISOString(),
+    message: 'Operational snapshot build running.',
+  });
+  const result = {
+    ok: true,
+    startedAt: started.toISOString(),
+    velocity: null,
+    inventory: [],
+    decisionFeed: null,
+    errors: [],
+  };
+
+  try {
+    result.velocity = syncVelocityCache();
+    getVelocityEndpoint({ force: '1' });
+  } catch (err) {
+    result.errors.push('velocity: ' + err.message);
+  }
+
+  try {
+    const bundle = buildOperationalBundle_(true);
+    writeOperationalSnapshot_('inventory_bundle_v1', bundle);
+    result.inventory = bundle.inventory.map(inv => ({
+      store: inv.store,
+      products: (inv.products || []).length,
+      error: inv.error || '',
+    }));
+    result.operationalBundle = {
+      generatedAt: bundle.generatedAt,
+      stores: bundle.inventory.length,
+      errors: bundle.errors || [],
+    };
+  } catch (err) {
+    result.errors.push('operational bundle: ' + err.message);
+  }
+
+  try {
+    result.decisionFeed = generateBetaDecisionFeed({ beta: '1', force: '1' });
+  } catch (err) {
+    result.errors.push('decision feed: ' + err.message);
+  }
+
+  result.finishedAt = new Date().toISOString();
+  result.durationSeconds = Math.round((new Date().getTime() - started.getTime()) / 1000);
+  setOperationalWarmStatus_({
+    state: result.errors.length ? 'completed_with_warnings' : 'completed',
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    durationSeconds: result.durationSeconds,
+    errors: result.errors,
+    operationalBundle: result.operationalBundle || null,
+  });
+  return result;
+}
+
+function setupOperationalCacheTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'warmOperationalCaches')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+
+  ScriptApp.newTrigger('warmOperationalCaches')
+    .timeBased()
+    .everyDays(1)
+    .atHour(0)
+    .create();
+
+  Logger.log('Operational cache trigger created — will run nightly at midnight.');
+  return { ok: true, message: 'Operational cache trigger created — will run nightly at midnight.' };
+}
+
 // ─── SHEET HELPERS ────────────────────────────────────────────────────────────
 function getSheetByGid(gid) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
   for (const s of ss.getSheets()) {
     if (s.getSheetId() === gid) return s;
   }
@@ -1932,7 +3356,7 @@ function getSchema() {
 // ─── ONE-TIME BACKFILL ─────────────────────────────────────────────────────────
 // Run once from the Apps Script editor to seed the SKU Dict from existing snapshot data.
 function backfillSkuDict() {
-  const ss       = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss       = SpreadsheetApp.openById(getDataSpreadsheetId());
   const snapshot = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!snapshot) { Logger.log('No snapshot sheet found'); return; }
   const lastRow = snapshot.getLastRow();
@@ -1951,7 +3375,74 @@ function backfillSkuDict() {
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
 
-function getSharedState() {
+function isBetaRequest_(params) {
+  return params && (params.beta === '1' || params.mode === 'beta' || getDataMode() === 'beta');
+}
+
+function getOrCreateSharedStateSheet_() {
+  const ss = SpreadsheetApp.openById(BETA_SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(SHARED_STATE_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(SHARED_STATE_SHEET_NAME);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, 6).setValues([[
+      'stateType', 'stateKey', 'valueJson', 'updatedAt', 'updatedBy', 'notes'
+    ]]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function readBetaSharedState_() {
+  const sheet = getOrCreateSharedStateSheet_();
+  if (sheet.getLastRow() < 2) return { killed: {}, flagged: [] };
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
+  const killed = {};
+  const flagged = [];
+  for (const row of values) {
+    const type = String(row[0] || '').trim();
+    const key = String(row[1] || '').trim();
+    const valueJson = String(row[2] || '').trim();
+    if (!type || !key) continue;
+    if (type === 'killed') {
+      let ts = 0;
+      try { ts = Number(JSON.parse(valueJson).ts || 0); } catch(e) { ts = Number(valueJson || 0); }
+      killed[key] = ts || 0;
+    } else if (type === 'flagged') {
+      flagged.push(key);
+    }
+  }
+  return { killed, flagged };
+}
+
+function upsertBetaSharedState_(type, key, valueObj, notes) {
+  const sheet = getOrCreateSharedStateSheet_();
+  const now = new Date().toISOString();
+  const valueJson = JSON.stringify(valueObj || {});
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i][0]) === type && String(rows[i][1]) === key) {
+        sheet.getRange(i + 2, 3, 1, 4).setValues([[valueJson, now, 'app', notes || '']]);
+        return;
+      }
+    }
+  }
+  sheet.appendRow([type, key, valueJson, now, 'app', notes || '']);
+}
+
+function deleteBetaSharedState_(type, key) {
+  const sheet = getOrCreateSharedStateSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (String(rows[i][0]) === type && String(rows[i][1]) === key) sheet.deleteRow(i + 2);
+  }
+}
+
+function getSharedState(params) {
+  if (isBetaRequest_(params)) return readBetaSharedState_();
   const props = PropertiesService.getScriptProperties();
   return {
     killed:  JSON.parse(props.getProperty(SHARED_KILLED_KEY)  || '{}'),
@@ -1959,8 +3450,14 @@ function getSharedState() {
   };
 }
 
-function sharedKill(key, ts) {
+function sharedKill(params) {
+  const key = params.key;
+  const ts = params.ts;
   if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    upsertBetaSharedState_('killed', key, { ts: parseInt(ts) || Date.now() }, 'hidden from beta inventory');
+    return { ok: true, mode: 'beta' };
+  }
   const props = PropertiesService.getScriptProperties();
   const obj = JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}');
   obj[key] = parseInt(ts) || Date.now();
@@ -1968,8 +3465,13 @@ function sharedKill(key, ts) {
   return { ok: true, killed: Object.keys(obj).length };
 }
 
-function sharedUnkill(key) {
+function sharedUnkill(params) {
+  const key = params.key;
   if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    deleteBetaSharedState_('killed', key);
+    return { ok: true, mode: 'beta' };
+  }
   const props = PropertiesService.getScriptProperties();
   const obj = JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}');
   delete obj[key];
@@ -1977,8 +3479,15 @@ function sharedUnkill(key) {
   return { ok: true, killed: Object.keys(obj).length };
 }
 
-function sharedFlag(key) {
+function sharedFlag(params) {
+  const key = params.key;
   if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    const state = readBetaSharedState_();
+    if (state.flagged.includes(key)) deleteBetaSharedState_('flagged', key);
+    else upsertBetaSharedState_('flagged', key, { active: true }, 'flagged for beta buyer review');
+    return { ok: true, mode: 'beta' };
+  }
   const props = PropertiesService.getScriptProperties();
   const arr = JSON.parse(props.getProperty(SHARED_FLAGGED_KEY) || '[]');
   const s = new Set(arr);
@@ -2051,11 +3560,46 @@ function setUpcEntry(params) {
 }
 
 // ── User Authentication ────────────────────────────────────────────────────────
-const GC_USERS_KEY = 'gc_users';
-
 function hashPass(pass) {
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(pass));
   return bytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+}
+
+function sessionSecret_() {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty(GC_SESSION_SECRET_KEY);
+  if (!secret) {
+    secret = Utilities.getUuid() + ':' + Utilities.getUuid();
+    props.setProperty(GC_SESSION_SECRET_KEY, secret);
+  }
+  return secret;
+}
+
+function signSession_(payload) {
+  const sig = Utilities.computeHmacSha256Signature(payload, sessionSecret_());
+  return Utilities.base64EncodeWebSafe(sig);
+}
+
+function issueSessionToken_(user) {
+  const exp = Date.now() + GC_SESSION_TTL_MS;
+  const payload = [String(user).toLowerCase().trim(), exp].join(':');
+  return payload + ':' + signSession_(payload);
+}
+
+function validateSessionToken_(token) {
+  if (!token) return { ok: false, error: 'Auth required' };
+  const parts = String(token).split(':');
+  if (parts.length !== 3) return { ok: false, error: 'Invalid session' };
+  const user = parts[0];
+  const exp = Number(parts[1] || 0);
+  const payload = user + ':' + exp;
+  if (!user || !exp || Date.now() > exp) return { ok: false, error: 'Session expired' };
+  if (parts[2] !== signSession_(payload)) return { ok: false, error: 'Invalid session' };
+  return { ok: true, user: user };
+}
+
+function requireAuth_(params) {
+  return validateSessionToken_(params.token || params.session || params.auth || '');
 }
 
 function loginUser(params) {
@@ -2065,7 +3609,7 @@ function loginUser(params) {
   const key   = String(params.user).toLowerCase().trim();
   const hash  = hashPass(String(params.pass));
   if (users[key] && users[key] === hash) {
-    return { ok: true, user: key };
+    return { ok: true, user: key, token: issueSessionToken_(key), expiresAt: new Date(Date.now() + GC_SESSION_TTL_MS).toISOString() };
   }
   return { ok: false, error: 'Invalid username or password' };
 }
@@ -2079,7 +3623,7 @@ function getStoreTxHistory(params) {
   const name  = (params.name || params.sku || '').trim();
   const days  = Math.min(parseInt(params.days || '30'), 60);
   if (!store || !name) return { error: 'store and name params required' };
-  if (!STORE_KEYS[store]) return { error: 'Unknown store: ' + store };
+  if (!isKnownStore(store)) return { error: 'Unknown store: ' + store };
 
   // Step 1: find productId from the cached product catalog
   const prodDict  = buildProductIdDict();
@@ -2140,8 +3684,19 @@ function setupUsers_() {
   const props = PropertiesService.getScriptProperties();
   const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
   // Add users here — run from the GAS script editor, not via HTTP
-  // users['sky']   = hashPass('kahuna');
-  // users['tawny'] = hashPass('...');
+  // users['username'] = hashPass('temporary-password');
   props.setProperty(GC_USERS_KEY, JSON.stringify(users));
   Logger.log('Users: ' + JSON.stringify(Object.keys(users)));
+}
+
+// Run from clasp/GAS editor only. This is intentionally not routed through doGet.
+function setUserPassword_(user, pass) {
+  if (!user || !pass) throw new Error('Usage: setUserPassword_(user, pass)');
+  const props = PropertiesService.getScriptProperties();
+  const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
+  const key = String(user).toLowerCase().trim();
+  users[key] = hashPass(String(pass));
+  props.setProperty(GC_USERS_KEY, JSON.stringify(users));
+  Logger.log('Saved user: ' + key);
+  return { ok: true, user: key };
 }
