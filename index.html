@@ -1673,7 +1673,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.48</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped UPC barcodes now decode reliably. The photo decoder was cropping barcode regions from an already-shrunk 1800px copy, then nearest-neighbor upscaling — which destroys the sharp bar edges 1D barcodes need (fine for QR, fatal for UPC/EAN). Crops now come from the full-resolution camera photo and downscale cleanly, giving ZXing readable bars. Diag now shows the hi-res source size too.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.49</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: hid the diagnostic overlay (sw/iw/frames/foc/decode trail) that was used to debug the camera — the Scan tab is clean now. The diagnostics aren't gone, just gated: append ?scandebug=1 to the URL to bring them back for troubleshooting, ?scandebug=0 to hide again.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.48</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped UPC barcodes now decode reliably. The photo decoder was cropping barcode regions from an already-shrunk 1800px copy, then nearest-neighbor upscaling — which destroys the sharp bar edges 1D barcodes need (fine for QR, fatal for UPC/EAN). Crops now come from the full-resolution camera photo and downscale cleanly, giving ZXing readable bars. Diag now shows the hi-res source size too.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.47</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops).</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.46</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
@@ -2158,6 +2159,7 @@ const LS = {
   WN_SEEN:             'gc_wn_seen',            // what's-new modal last-seen version
   EXCL_ROWS:           'gc_inv5_excluded',       // excluded-row map (includes cache prefix)
   SCANNER_FIX_V:       'gc_scanner_fix_v',       // one-time self-heal version for stale camera-denied flags
+  SCAN_DEBUG:          'gc_scan_debug',          // show scanner diagnostic overlay (toggle via ?scandebug=1)
 };
 
 // ── Days-on-Hand threshold constants ─────────────────────
@@ -6237,9 +6239,21 @@ function scanDiagText() {
   return `scan frames:${SCAN_DIAG.frames} vars:${SCAN_DIAG.variants} jsQR:${SCAN_DIAG.jq} BD:${SCAN_DIAG.bd} foc:${SCAN_DIAG.focus} ${SCAN_DIAG.last}`;
 }
 
+// Scanner diagnostic overlay is hidden by default. Re-enable for troubleshooting
+// with ?scandebug=1 (persists); ?scandebug=0 turns it back off.
+function scannerDebugOn() {
+  try {
+    const q = location.search || '';
+    if (/[?&]scandebug=1/.test(q)) { localStorage.setItem(LS.SCAN_DEBUG, '1'); return true; }
+    if (/[?&]scandebug=0/.test(q)) { localStorage.removeItem(LS.SCAN_DEBUG); return false; }
+    return localStorage.getItem(LS.SCAN_DEBUG) === '1';
+  } catch(e) { return false; }
+}
+
 function renderScannerDebugBase() {
   const result = document.getElementById('scannerResult');
   if (!result) return;
+  if (!scannerDebugOn()) { result.innerHTML = ''; return; }
   const isMob = document.documentElement.classList.contains('is-mobile') || document.body?.classList.contains('is-mobile');
   result.innerHTML = `<div id="scannerDiagLine" style="font-size:10px;color:var(--muted);font-family:monospace;padding:8px 0;line-height:1.6">` +
     `sw:${screen.width} iw:${window.innerWidth} mob:${isMob} inv:${(state.inventoryData||[]).length}<br>` +
@@ -6252,7 +6266,7 @@ function updateScannerDiagLine() {
 }
 
 function startScannerDiagnostics() {
-  if (_scanDiagTimer) return;
+  if (_scanDiagTimer || !scannerDebugOn()) return; // nothing to update when overlay is hidden
   _scanDiagTimer = setInterval(updateScannerDiagLine, 1000);
 }
 
@@ -7143,14 +7157,17 @@ function renderScanNoResult(code, isMETRC, dbg) {
   const rawCode = (code && !code.startsWith('(')) ? code : '';
   const codeHint = rawCode ? `<div class="scan-code-display">${rawCode}</div>` : '';
   const codeAttr = rawCode ? ` data-scan-code="${rawCode.replace(/"/g,'&quot;')}"` : '';
-  // Always show debug — whether decode failed (no dbg) or lookup failed (has dbg)
-  const isMob = document.documentElement.classList.contains('is-mobile');
-  const dbgDetail = (typeof dbg === 'string')
-    ? `decode-failed [${dbg.trim()||'no-log'}]`
-    : dbg
-      ? `inv:${dbg.invLen} hits:${dbg.nameHits} q:${JSON.stringify(dbg.queries)}`
-      : `inv:${(state.inventoryData||[]).length} decode-failed`;
-  const dbgLine = `<div style="font-size:10px;color:var(--muted);margin:4px 0;font-family:monospace">sw:${screen.width} iw:${window.innerWidth} mob:${isMob} ${dbgDetail}</div>`;
+  // Debug decoder trail — hidden unless the scanner debug overlay is enabled.
+  let dbgLine = '';
+  if (scannerDebugOn()) {
+    const isMob = document.documentElement.classList.contains('is-mobile');
+    const dbgDetail = (typeof dbg === 'string')
+      ? `decode-failed [${dbg.trim()||'no-log'}]`
+      : dbg
+        ? `inv:${dbg.invLen} hits:${dbg.nameHits} q:${JSON.stringify(dbg.queries)}`
+        : `inv:${(state.inventoryData||[]).length} decode-failed`;
+    dbgLine = `<div style="font-size:10px;color:var(--muted);margin:4px 0;font-family:monospace">sw:${screen.width} iw:${window.innerWidth} mob:${isMob} ${dbgDetail}</div>`;
+  }
   document.getElementById('scannerResult').innerHTML = `
     <div class="scan-no-result">
       <div style="font-size:32px;margin-bottom:8px">🔍</div>
