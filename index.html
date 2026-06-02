@@ -1673,7 +1673,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.47</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops).</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.48</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped UPC barcodes now decode reliably. The photo decoder was cropping barcode regions from an already-shrunk 1800px copy, then nearest-neighbor upscaling — which destroys the sharp bar edges 1D barcodes need (fine for QR, fatal for UPC/EAN). Crops now come from the full-resolution camera photo and downscale cleanly, giving ZXing readable bars. Diag now shows the hi-res source size too.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.47</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops).</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.46</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: return-to-scan camera restore + autofocus/tap-to-focus (superseded by v2.45 hotfix)</span></div>
@@ -6672,32 +6673,42 @@ function handleScannerFile(input) {
     canvas.width  = Math.round(img0.width  * s0);
     canvas.height = Math.round(img0.height * s0);
     canvas.getContext('2d').drawImage(img0, 0, 0, canvas.width, canvas.height);
-    _decoderLog += `src:${canvas.width}x${canvas.height} `;
-    _decodeVariants = buildScannerDecodeVariants(canvas);
+    _decoderLog += `src:${canvas.width}x${canvas.height} hi:${img0.naturalWidth||img0.width}x${img0.naturalHeight||img0.height} `;
+    // Pass the FULL-RES image too — crops come from it, not the downscaled canvas.
+    _decodeVariants = buildScannerDecodeVariants(canvas, img0);
     tryNextVariant();
   };
   img0.src = u0;
 
   function addCropVariant(out, src, label, x, y, w, h, scale = 2) {
+    const sw0 = src.naturalWidth  || src.width;
+    const sh0 = src.naturalHeight || src.height;
     const sx = Math.max(0, Math.round(x));
     const sy = Math.max(0, Math.round(y));
-    const sw = Math.min(src.width - sx, Math.round(w));
-    const sh = Math.min(src.height - sy, Math.round(h));
+    const sw = Math.min(sw0 - sx, Math.round(w));
+    const sh = Math.min(sh0 - sy, Math.round(h));
     if (sw < 80 || sh < 80) return;
-    const maxSide = 1200;
+    const maxSide = 1600;
     const s = Math.min(scale, maxSide / Math.max(sw, sh));
     const c = document.createElement('canvas');
     c.width  = Math.max(1, Math.round(sw * s));
     c.height = Math.max(1, Math.round(sh * s));
     const ctx = c.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
+    // Downscaling a high-res band → smooth for clean anti-aliased 1D bars;
+    // upscaling a small region → nearest-neighbor to keep edges crisp.
+    if (s < 1) { ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'; }
+    else       { ctx.imageSmoothingEnabled = false; }
     ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
     out.push({ label, canvas: c });
   }
 
-  function buildScannerDecodeVariants(src) {
-    const out = [{ label: 'full', canvas: src }];
-    const w = src.width, h = src.height;
+  // fullCanvas: downscaled image for the 'full' variant (QR + speed).
+  // hiRes: original full-resolution photo — crops come from here so 1D (UPC/EAN)
+  // bars keep the edge detail ZXing needs (cropping from the shrunk canvas blurs them).
+  function buildScannerDecodeVariants(fullCanvas, hiRes) {
+    const out = [{ label: 'full', canvas: fullCanvas }];
+    const src = hiRes || fullCanvas;
+    const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
     // UPC/EAN are wide horizontal strips. The snap-photo button is mostly used for 1D
     // product barcodes the live view can't focus on, so try full-width horizontal bands
     // early — these isolate a centered/lower barcode and upscale it for cleaner 1D bars.
