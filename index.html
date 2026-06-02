@@ -1661,7 +1661,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner fixes: (1) returning to the Scan tab after a scan now correctly re-shows the camera — previously the camera restarted inside a hidden container so you'd see only the debug line. (2) Camera now requests continuous autofocus + a sharper 1280px feed and supports tap-to-focus (tap the view to refocus on a close-up) — helps the camera lock onto close barcodes faster. The diag line now shows foc: so we can see exactly what focus control each device supports.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: return-to-scan camera restore + autofocus/tap-to-focus (superseded by v2.45 hotfix)</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.43</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.42</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 3: parallel store inventory fetches cut bundle build from ~9s to ~1.5s; GAS error log with ⚠ badge in Settings if overnight failures occur; Vel Cache date column forced to text format so Sheets stops auto-converting dates; decision feed staleness guard — feed older than 26h shows ⚠ stale and auto-schedules a background refresh</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.41</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code review fixes: restored v2.39 stale-snapshot guard that was dropped by worktree copy; vel cache backfill now updates velLastWriteDate so the gap self-heal can see backfill progress (previously blind to backfill-only write paths)</span></div>
@@ -2132,6 +2133,7 @@ const LS = {
   REORDER_TARGET:      'gc_reorder_target_v2',
   WN_SEEN:             'gc_wn_seen',            // what's-new modal last-seen version
   EXCL_ROWS:           'gc_inv5_excluded',       // excluded-row map (includes cache prefix)
+  SCANNER_FIX_V:       'gc_scanner_fix_v',       // one-time self-heal version for stale camera-denied flags
 };
 
 // ── Days-on-Hand threshold constants ─────────────────────
@@ -6184,7 +6186,10 @@ function catEmoji(cat) {
 
 // Show the static file-input area and hide the camera area.
 // Called whenever camera is unavailable (denied, error, or non-secure context).
-function showFileArea(msg) {
+// persistDenied: only set the sticky CAMERA_DENIED flag for a REAL permission
+// denial. Transient failures (constraints, camera busy, library load) must NOT
+// poison future loads — otherwise one bad start permanently kills live scanning.
+function showFileArea(msg, persistDenied) {
   const camArea  = document.getElementById('scannerCamArea');
   const fileArea = document.getElementById('scannerFileArea');
   if (camArea)  camArea.style.display  = 'none';
@@ -6195,8 +6200,10 @@ function showFileArea(msg) {
     }
     fileArea.style.display = 'flex';
   }
-  // Remember denial so next load skips the camera attempt entirely
-  try { localStorage.setItem(LS.CAMERA_DENIED, '1'); } catch(e) {}
+  // Only remember denial when it's an actual permission denial.
+  if (persistDenied) {
+    try { localStorage.setItem(LS.CAMERA_DENIED, '1'); } catch(e) {}
+  }
   stopNativeLiveScanner();
   _scannerActive = false;
   _scanner = null;
@@ -6461,6 +6468,17 @@ function scannerTapFocus() {
 function initScanner() {
   if (_scannerActive) return;
 
+  // One-time self-heal: v2.44 shipped over-constrained camera start that failed on
+  // iOS and got mis-recorded as a permanent "camera denied". Clear that stale flag
+  // once so the camera is retried. If the user genuinely denied access, the retry
+  // re-fails with NotAllowedError and the flag is set again correctly.
+  try {
+    if (localStorage.getItem(LS.SCANNER_FIX_V) !== '245') {
+      localStorage.removeItem(LS.CAMERA_DENIED);
+      localStorage.setItem(LS.SCANNER_FIX_V, '245');
+    }
+  } catch(e) {}
+
   // Restore scanner areas. A prior successful scan (handleScannerCode) hides the
   // camera + manual areas; the tab-switch return path calls initScanner directly
   // (not resumeScanner), so without this the camera restarts inside a hidden
@@ -6492,7 +6510,7 @@ function initScanner() {
 
   // Non-secure context (HTTP on non-localhost): getUserMedia is blocked.
   if (!window.isSecureContext) {
-    showFileArea('Tap below to open your camera.<br>Take a photo of the barcode or QR label.');
+    showFileArea('Tap below to open your camera.<br>Take a photo of the barcode or QR label.', false);
     return;
   }
 
@@ -6500,7 +6518,7 @@ function initScanner() {
   let prevDenied = false;
   try { prevDenied = !!localStorage.getItem(LS.CAMERA_DENIED); } catch(e) {}
   if (prevDenied) {
-    showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.');
+    showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.', true);
     return;
   }
 
@@ -6528,18 +6546,12 @@ function initScanner() {
         aspectRatio: 1.6,
         ...(formatsToSupport.length ? { formatsToSupport } : {})
       };
-      // Request continuous autofocus + a sharper feed at the source. `advanced` and
-      // `ideal` constraints are best-effort by spec — never cause start() to reject —
-      // so this is safe on iOS (which mostly ignores focusMode) and a real win on
-      // Android/Chrome. Tap-to-focus and post-start applyConstraints back this up.
-      const videoConstraints = {
-        facingMode: 'environment',
-        width:  { ideal: 1280 },
-        height: { ideal: 720 },
-        advanced: [{ focusMode: 'continuous' }],
-      };
+      // Use the bare, proven-working camera selector. Richer constraints (resolution,
+      // focusMode) passed here broke start() on iOS Safari via html5-qrcode — so focus
+      // is applied POST-start via applyConstraints/tap-to-focus instead, which can never
+      // kill the stream (a rejected applyConstraints is harmless).
       _scanner.start(
-        videoConstraints,
+        { facingMode: 'environment' },
         scannerConfig,
         (code) => {
           handleScannerCode(code);
@@ -6559,14 +6571,24 @@ function initScanner() {
           camArea._tapFocusBound = true;
         }
       }).catch(err => {
-        // Permission denied or camera unavailable
+        // Distinguish a real permission denial (sticky — skip camera next load)
+        // from a transient failure (constraints, camera busy, etc. — must NOT
+        // poison future loads, or one bad start permanently disables live scanning).
         console.warn('Camera start failed:', err);
-        showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.');
+        const name = (err && err.name) || '';
+        SCAN_DIAG.last = 'start-err:' + (name || String(err && err.message || err)).slice(0, 24);
+        const realDenial = name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
+        if (realDenial) {
+          showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.', true);
+        } else {
+          showFileArea('Camera couldn\'t start. Tap "Try live camera again", or pick a photo below.', false);
+        }
       });
     } catch(e) {
-      // Synchronous error (e.g. Html5Qrcode constructor fails)
+      // Synchronous error (e.g. Html5Qrcode constructor fails) — transient, don't persist.
       console.error('startCamera error:', e);
-      showFileArea('Camera unavailable.<br>Tap below to pick a photo instead.');
+      SCAN_DIAG.last = 'start-throw:' + String(e && e.message || e).slice(0, 24);
+      showFileArea('Camera unavailable.<br>Tap below to pick a photo instead.', false);
     }
   }
 
@@ -6578,7 +6600,7 @@ function initScanner() {
   s.onload = startCamera;
   s.onerror = () => {
     hint.textContent = '';
-    showFileArea('Scanner library failed to load.<br>Tap below to pick a photo instead.');
+    showFileArea('Scanner library failed to load.<br>Tap below to pick a photo instead.', false);
   };
   document.head.appendChild(s);
 }
