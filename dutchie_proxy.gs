@@ -314,9 +314,8 @@ function getStoreRooms(store) {
 //   3. invRoomMap (latest Move transaction, last resort)
 //   4. default 'back'
 const ROOM_DATA_CACHE_PREFIX = 'roomdata4_';
-const ROOM_DATA_REQ_COUNT    = 5; // requests per store (must match _roomDataRequests_ length)
 
-// Build the 5 parallel requests for one store's room data.
+// Build the parallel requests for one store's room data.
 // Order is significant — _processRoomData_ destructures responses in this exact order.
 function _roomDataRequests_(store) {
   const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
@@ -400,43 +399,40 @@ function _processRoomData_(responses) {
 
 // Single-store room data with 1h-ish cache. Unchanged contract for existing callers
 // (getQuarantine, the roomdata diagnostic action, single-store getInventory).
+// Delegates to the batch path so cache get/put + parse-resilience live in one place.
 function buildRoomData(store) {
-  const cache    = CacheService.getScriptCache();
-  const cacheKey = ROOM_DATA_CACHE_PREFIX + store;
-  const cached   = cache.get(cacheKey);
-  if (cached) return JSON.parse(cached);
-
-  const result = _processRoomData_(UrlFetchApp.fetchAll(_roomDataRequests_(store)));
-  try { cache.put(cacheKey, JSON.stringify(result), INV_CACHE_TTL); } catch(e) {}
-  return result;
+  return buildRoomDataBatch_([store])[store];
 }
 
 // Batch room data for many stores in ONE fetchAll round. Cache-hit stores are served
-// from cache (no fetch); cold stores' requests (5 each) are fired together. Because each
-// store uses its own Dutchie API key, per-key concurrency stays at 5 — identical burst
-// to the single-store path — while wall-clock collapses from N sequential rounds to 1.
+// from cache (no fetch); cold stores' requests are fired together. Because each store
+// uses its own Dutchie API key, per-key concurrency is unchanged from the single-store
+// path — while wall-clock collapses from N sequential rounds to 1.
 // Returns { store → roomData }. Every requested store gets an entry.
+//
+// Slicing is self-describing: each cold store records the start index and length of its
+// own response block, so the per-store split stays correct regardless of how many
+// requests _roomDataRequests_ returns (no hand-synced count constant to drift out of date).
 function buildRoomDataBatch_(stores) {
-  const cache  = CacheService.getScriptCache();
-  const result = {};
-  const cold   = [];
+  const cache    = CacheService.getScriptCache();
+  const result   = {};
+  const cold     = []; // { store, start, count }
   const requests = [];
 
   for (const store of stores) {
     const cached = cache.get(ROOM_DATA_CACHE_PREFIX + store);
     if (cached) {
-      try { result[store] = JSON.parse(cached); continue; } catch(e) { /* fall through to refetch */ }
+      try { result[store] = JSON.parse(cached); continue; } catch(e) { /* corrupt entry → refetch */ }
     }
-    cold.push(store);
-    requests.push(..._roomDataRequests_(store)); // exactly ROOM_DATA_REQ_COUNT per store
+    const reqs = _roomDataRequests_(store);
+    cold.push({ store, start: requests.length, count: reqs.length });
+    requests.push(...reqs);
   }
 
   if (cold.length) {
     const responses = UrlFetchApp.fetchAll(requests);
-    for (let i = 0; i < cold.length; i++) {
-      const store = cold[i];
-      const slice = responses.slice(i * ROOM_DATA_REQ_COUNT, (i + 1) * ROOM_DATA_REQ_COUNT);
-      const data  = _processRoomData_(slice);
+    for (const { store, start, count } of cold) {
+      const data = _processRoomData_(responses.slice(start, start + count));
       result[store] = data;
       try { cache.put(ROOM_DATA_CACHE_PREFIX + store, JSON.stringify(data), INV_CACHE_TTL); } catch(e) {}
     }
