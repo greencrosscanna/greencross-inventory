@@ -50,7 +50,7 @@ function _logGasError(fn, msg) {
     const raw   = props.getProperty(GAS_ERROR_LOG_KEY);
     const log   = raw ? JSON.parse(raw) : [];
     log.push({ ts: new Date().toISOString(), fn: String(fn), msg: String(msg).slice(0, 300) });
-    if (log.length > GAS_ERROR_LOG_MAX) log.splice(0, log.length - GAS_ERROR_LOG_MAX);
+    if (log.length >= GAS_ERROR_LOG_MAX) log.splice(0, log.length - GAS_ERROR_LOG_MAX + 1);
     props.setProperty(GAS_ERROR_LOG_KEY, JSON.stringify(log));
   } catch(e) { /* never let error logging itself crash anything */ }
 }
@@ -1205,6 +1205,12 @@ function _isFeedStale_(generatedAt) {
       const lastScheduled = props.getProperty('feedRefreshScheduledAt') || '';
       const cooldownOk = !lastScheduled || (Date.now() - new Date(lastScheduled).getTime()) > 30 * 60 * 1000;
       if (cooldownOk) {
+        // Delete any existing warmDecisionFeedOnly triggers before creating a new one
+        // — mirrors the pattern in _installBackfillTrigger and scheduleOperationalWarmRun
+        // to prevent orphaned triggers from accumulating and hitting the 20-trigger limit.
+        ScriptApp.getProjectTriggers()
+          .filter(t => t.getHandlerFunction() === 'warmDecisionFeedOnly')
+          .forEach(t => ScriptApp.deleteTrigger(t));
         ScriptApp.newTrigger('warmDecisionFeedOnly').timeBased().after(60000).create();
         props.setProperty('feedRefreshScheduledAt', new Date().toISOString());
         Logger.log('_isFeedStale_: feed is ' + Math.round(age / 3600000) + 'h old — scheduled refresh.');
@@ -1427,6 +1433,10 @@ function _velDateToYMD(v) {
   return isNaN(d.getTime()) ? '' : Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
+// Module-level cache for the velSheetFormatted flag — avoids a PropertiesService
+// round-trip on every getVelSheet() call (hot path: called inside every _syncChunk).
+let _velSheetFormatted = false;
+
 function getVelSheet() {
   const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
   let sheet   = ss.getSheetByName(VEL_SHEET_NAME);
@@ -1437,13 +1447,19 @@ function getVelSheet() {
     sheet.setFrozenRows(1);
   }
   // Force column A (date) to plain-text format so Sheets stops auto-converting
-  // "2026-05-01" strings to Date objects on write. One-time migration tracked
-  // via a ScriptProperties flag — no-op on every subsequent call.
-  const props     = PropertiesService.getScriptProperties();
-  const formatted = props.getProperty('velSheetFormatted');
-  if (isNew || !formatted) {
-    sheet.getRange(1, 1, sheet.getMaxRows(), 1).setNumberFormat('@STRING@');
-    props.setProperty('velSheetFormatted', 'true');
+  // "2026-05-01" strings to Date objects on write. One-time migration per GAS
+  // execution tracked via a module-level flag (no-op after first call) and a
+  // ScriptProperties flag (persists across executions).
+  if (!_velSheetFormatted) {
+    const props     = PropertiesService.getScriptProperties();
+    const formatted = props.getProperty('velSheetFormatted');
+    if (isNew || !formatted) {
+      // scope the range to actual data rows + header to avoid a 70K-row API call
+      const lastRow = Math.max(sheet.getLastRow(), 1);
+      sheet.getRange(1, 1, lastRow, 1).setNumberFormat('@STRING@');
+      props.setProperty('velSheetFormatted', 'true');
+    }
+    _velSheetFormatted = true; // skip PropertiesService on all subsequent calls this execution
   }
   return sheet;
 }
