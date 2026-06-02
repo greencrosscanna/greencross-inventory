@@ -40,7 +40,7 @@ const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const OPERATIONAL_WARM_STATUS_KEY = 'gc_operational_warm_status';
 const GAS_ERROR_LOG_KEY            = 'gc_error_log';          // PropertiesService ring buffer
 const GAS_ERROR_LOG_MAX            = 20;                       // keep last N entries
-const FEED_REFRESH_SCHEDULED_KEY   = FEED_REFRESH_SCHEDULED_KEY; // cooldown for _isFeedStale_
+const FEED_REFRESH_SCHEDULED_KEY   = 'feedRefreshScheduledAt'; // cooldown for _isFeedStale_
 
 // ── GAS error log ─────────────────────────────────────────────────────────────
 // Lightweight ring buffer stored in PropertiesService so overnight failures are
@@ -313,27 +313,31 @@ function getStoreRooms(store) {
 //   2. item.roomName / item.roomId field
 //   3. invRoomMap (latest Move transaction, last resort)
 //   4. default 'back'
-function buildRoomData(store) {
-  const cache    = CacheService.getScriptCache();
-  const cacheKey = 'roomdata4_' + store;
-  const cached   = cache.get(cacheKey);
-  if (cached) return JSON.parse(cached);
+const ROOM_DATA_CACHE_PREFIX = 'roomdata4_';
+const ROOM_DATA_REQ_COUNT    = 5; // requests per store (must match _roomDataRequests_ length)
 
+// Build the 5 parallel requests for one store's room data.
+// Order is significant — _processRoomData_ destructures responses in this exact order.
+function _roomDataRequests_(store) {
   const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
-
-  // Fetch rooms + three inventory transaction windows + recent register transactions in parallel.
-  // Register transactions (last 90 days) are used to detect customer returns → quarantine.
-  const date90  = new Date(Date.now() - 90  * 86400000).toISOString().slice(0, 10);
-  const date150 = new Date(Date.now() - 150 * 86400000).toISOString().slice(0, 10);
-  const now14ISO  = new Date(Date.now() - 14 * 86400000).toISOString();
+  // Register transactions (last 14 days) are used to detect customer returns → quarantine.
+  const date90    = new Date(Date.now() - 90  * 86400000).toISOString().slice(0, 10);
+  const date150   = new Date(Date.now() - 150 * 86400000).toISOString().slice(0, 10);
+  const now14ISO  = new Date(Date.now() - 14  * 86400000).toISOString();
   const nowISO    = new Date().toISOString();
-  const [roomsResp, txBase, txRecent90, txRecent150, regResp] = UrlFetchApp.fetchAll([
+  return [
     { url: DUTCHIE_BASE + '/room/rooms',                                                    headers: hdrs, muteHttpExceptions: true },
     { url: DUTCHIE_BASE + '/inventory/inventorytransaction',                                headers: hdrs, muteHttpExceptions: true },
     { url: DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + date90,            headers: hdrs, muteHttpExceptions: true },
     { url: DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + date150,           headers: hdrs, muteHttpExceptions: true },
     { url: DUTCHIE_BASE + '/reporting/transactions?FromDateUTC=' + encodeURIComponent(now14ISO) + '&ToDateUTC=' + encodeURIComponent(nowISO) + '&IncludeDetail=true', headers: hdrs, muteHttpExceptions: true },
-  ]);
+  ];
+}
+
+// Process the 5 responses (in _roomDataRequests_ order) into the room-data result object.
+// Pure — no fetching, no caching — so it works for both single-store and batch paths.
+function _processRoomData_(responses) {
+  const [roomsResp, txBase, txRecent90, txRecent150, regResp] = responses;
 
   const roomNameType = {};  // name → type
   const roomIdType   = {};  // roomId → type (fallback when roomName absent)
@@ -391,8 +395,52 @@ function buildRoomData(store) {
     }
   }
 
-  const result = { roomNameType, roomIdType, invRoomMap, returnedPackageIds: [...returnedPackageIds] };
+  return { roomNameType, roomIdType, invRoomMap, returnedPackageIds: [...returnedPackageIds] };
+}
+
+// Single-store room data with 1h-ish cache. Unchanged contract for existing callers
+// (getQuarantine, the roomdata diagnostic action, single-store getInventory).
+function buildRoomData(store) {
+  const cache    = CacheService.getScriptCache();
+  const cacheKey = ROOM_DATA_CACHE_PREFIX + store;
+  const cached   = cache.get(cacheKey);
+  if (cached) return JSON.parse(cached);
+
+  const result = _processRoomData_(UrlFetchApp.fetchAll(_roomDataRequests_(store)));
   try { cache.put(cacheKey, JSON.stringify(result), INV_CACHE_TTL); } catch(e) {}
+  return result;
+}
+
+// Batch room data for many stores in ONE fetchAll round. Cache-hit stores are served
+// from cache (no fetch); cold stores' requests (5 each) are fired together. Because each
+// store uses its own Dutchie API key, per-key concurrency stays at 5 — identical burst
+// to the single-store path — while wall-clock collapses from N sequential rounds to 1.
+// Returns { store → roomData }. Every requested store gets an entry.
+function buildRoomDataBatch_(stores) {
+  const cache  = CacheService.getScriptCache();
+  const result = {};
+  const cold   = [];
+  const requests = [];
+
+  for (const store of stores) {
+    const cached = cache.get(ROOM_DATA_CACHE_PREFIX + store);
+    if (cached) {
+      try { result[store] = JSON.parse(cached); continue; } catch(e) { /* fall through to refetch */ }
+    }
+    cold.push(store);
+    requests.push(..._roomDataRequests_(store)); // exactly ROOM_DATA_REQ_COUNT per store
+  }
+
+  if (cold.length) {
+    const responses = UrlFetchApp.fetchAll(requests);
+    for (let i = 0; i < cold.length; i++) {
+      const store = cold[i];
+      const slice = responses.slice(i * ROOM_DATA_REQ_COUNT, (i + 1) * ROOM_DATA_REQ_COUNT);
+      const data  = _processRoomData_(slice);
+      result[store] = data;
+      try { cache.put(ROOM_DATA_CACHE_PREFIX + store, JSON.stringify(data), INV_CACHE_TTL); } catch(e) {}
+    }
+  }
   return result;
 }
 
@@ -409,10 +457,12 @@ function buildInventoryRoomMap(store) {
 const OPERATIONAL_CACHE_TTL = 21600; // seconds — CacheService max, keeps same-day loads fast
 const INV_CACHE_TTL = OPERATIONAL_CACHE_TTL;
 
-// Optional second param: a pre-fetched UrlFetch response for /reporting/inventory.
-// buildOperationalBundle_ fires all 6 store requests in parallel and passes each
-// response here, cutting the sequential ~9s HTTP wait to ~1.5s.
-function getInventory(params, preloadedInvResp) {
+// Optional params for buildOperationalBundle_'s parallel path:
+//  - preloadedInvResp: a pre-fetched /reporting/inventory response
+//  - preloadedRoomData: a pre-built room-data object (from buildRoomDataBatch_)
+// Both let the bundle builder fire all stores' requests in one round instead of
+// serially, cutting the cold-cache nightly build from ~18s to ~3s.
+function getInventory(params, preloadedInvResp, preloadedRoomData) {
   const store = params.store;
   if (!store || !isKnownStore(store)) return { error: 'Unknown store: ' + store };
 
@@ -436,7 +486,7 @@ function getInventory(params, preloadedInvResp) {
 
   const raw      = JSON.parse(invResp.getContentText());
   const items    = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
-  const { roomNameType, roomIdType, invRoomMap, returnedPackageIds: returnedPkgArr } = buildRoomData(store);
+  const { roomNameType, roomIdType, invRoomMap, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store);
   const returnedPackageIds = new Set(returnedPkgArr || []);
 
   const cutoff90   = new Date(Date.now() - 90 * 86400000).toISOString();
@@ -3248,10 +3298,21 @@ function buildOperationalBundle_(force) {
   }));
   const invResponses = UrlFetchApp.fetchAll(invRequests);
 
+  // Batch all stores' room data in one fetchAll round (cold-cache only).
+  // Wrapped so a room-data failure degrades to per-store fetch inside getInventory
+  // rather than aborting the whole bundle.
+  let roomDataByStore = {};
+  try {
+    roomDataByStore = buildRoomDataBatch_(STORES);
+  } catch (err) {
+    errors.push('roomDataBatch: ' + err.message);
+    _logGasError('buildRoomDataBatch_', err.message);
+  }
+
   for (let i = 0; i < STORES.length; i++) {
     const store = STORES[i];
     try {
-      const inv = getInventory({ store, force: force ? '1' : '' }, invResponses[i]);
+      const inv = getInventory({ store, force: force ? '1' : '' }, invResponses[i], roomDataByStore[store]);
       inventory.push({ store, products: inv.products || [], error: inv.error || '' });
       if (inv.error) errors.push(store + ': ' + inv.error);
     } catch (err) {
