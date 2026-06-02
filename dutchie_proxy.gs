@@ -38,6 +38,36 @@ const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
 const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const OPERATIONAL_WARM_STATUS_KEY = 'gc_operational_warm_status';
+const GAS_ERROR_LOG_KEY            = 'gc_error_log';      // PropertiesService ring buffer
+const GAS_ERROR_LOG_MAX            = 20;                   // keep last N entries
+
+// ── GAS error log ─────────────────────────────────────────────────────────────
+// Lightweight ring buffer stored in PropertiesService so overnight failures are
+// visible in the Settings UI rather than dying silently in the GAS execution log.
+function _logGasError(fn, msg) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw   = props.getProperty(GAS_ERROR_LOG_KEY);
+    const log   = raw ? JSON.parse(raw) : [];
+    log.push({ ts: new Date().toISOString(), fn: String(fn), msg: String(msg).slice(0, 300) });
+    if (log.length > GAS_ERROR_LOG_MAX) log.splice(0, log.length - GAS_ERROR_LOG_MAX);
+    props.setProperty(GAS_ERROR_LOG_KEY, JSON.stringify(log));
+  } catch(e) { /* never let error logging itself crash anything */ }
+}
+
+function getGasErrors() {
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty(GAS_ERROR_LOG_KEY);
+    return { ok: true, errors: raw ? JSON.parse(raw) : [] };
+  } catch(e) {
+    return { ok: false, errors: [], error: e.message };
+  }
+}
+
+function clearGasErrors() {
+  PropertiesService.getScriptProperties().deleteProperty(GAS_ERROR_LOG_KEY);
+  return { ok: true, message: 'Error log cleared.' };
+}
 
 function getDataMode() {
   return (PropertiesService.getScriptProperties().getProperty('GC_DATA_MODE') || 'live').toLowerCase();
@@ -83,6 +113,8 @@ function doGet(e) {
     if (params.action === 'warmvelocity')      return jsonOut(warmVelocityOnly());
     if (params.action === 'warmbundle')        return jsonOut(warmBundleOnly());
     if (params.action === 'warmdecision')      return jsonOut(warmDecisionFeedOnly());
+    if (params.action === 'gaserrors')         return jsonOut(getGasErrors());
+    if (params.action === 'clearerrors')       return jsonOut(clearGasErrors());
     if (params.action === 'schedulewarmcaches') return jsonOut(scheduleOperationalWarmRun());
     if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
     if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
@@ -376,24 +408,27 @@ function buildInventoryRoomMap(store) {
 const OPERATIONAL_CACHE_TTL = 21600; // seconds — CacheService max, keeps same-day loads fast
 const INV_CACHE_TTL = OPERATIONAL_CACHE_TTL;
 
-function getInventory(params) {
+// Optional second param: a pre-fetched UrlFetch response for /reporting/inventory.
+// buildOperationalBundle_ fires all 6 store requests in parallel and passes each
+// response here, cutting the sequential ~9s HTTP wait to ~1.5s.
+function getInventory(params, preloadedInvResp) {
   const store = params.store;
   if (!store || !isKnownStore(store)) return { error: 'Unknown store: ' + store };
 
-  // Serve from GAS cache if fresh — prevents redundant Dutchie calls across users
+  // Serve from GAS cache if fresh — skip when caller already has a fresh response.
   const scriptCache = CacheService.getScriptCache();
   const cacheKey    = 'inv5_' + store;
   const cached      = scriptCache.get(cacheKey);
-  if (params.force !== '1' && cached) {
+  if (params.force !== '1' && !preloadedInvResp && cached) {
     try { return JSON.parse(cached); } catch(e) {}
   }
 
   const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
 
-  // Fetch inventory + room map in parallel
-  const [invResp] = UrlFetchApp.fetchAll([
+  // Use pre-fetched response if provided, otherwise fetch now.
+  const invResp = preloadedInvResp || UrlFetchApp.fetchAll([
     { url: DUTCHIE_BASE + '/reporting/inventory', headers: hdrs, muteHttpExceptions: true },
-  ]);
+  ])[0];
   if (invResp.getResponseCode() !== 200) {
     return { error: 'Dutchie HTTP ' + invResp.getResponseCode(), store };
   }
@@ -1152,7 +1187,31 @@ function readBetaDecisionFeed(params) {
     limited: total > rows.length,
     spreadsheetId: BETA_SPREADSHEET_ID,
     generatedAt: rows[0] ? rows[0].generatedAt : '',
+    stale:       _isFeedStale_(rows[0] ? rows[0].generatedAt : ''),
   };
+}
+
+// Returns true if the feed is older than 26h (one nightly cycle + 2h slack).
+// Also schedules a background refresh so the next read will be fresh.
+function _isFeedStale_(generatedAt) {
+  if (!generatedAt) return true;
+  const age = Date.now() - new Date(generatedAt).getTime();
+  const stale = age > 26 * 3600 * 1000;
+  if (stale) {
+    try {
+      // Background-trigger a feed rebuild so the next read will be fresh.
+      // Guard with a PropertiesService flag to avoid scheduling multiple triggers.
+      const props = PropertiesService.getScriptProperties();
+      const lastScheduled = props.getProperty('feedRefreshScheduledAt') || '';
+      const cooldownOk = !lastScheduled || (Date.now() - new Date(lastScheduled).getTime()) > 30 * 60 * 1000;
+      if (cooldownOk) {
+        ScriptApp.newTrigger('warmDecisionFeedOnly').timeBased().after(60000).create();
+        props.setProperty('feedRefreshScheduledAt', new Date().toISOString());
+        Logger.log('_isFeedStale_: feed is ' + Math.round(age / 3600000) + 'h old — scheduled refresh.');
+      }
+    } catch(e) { Logger.log('_isFeedStale_: could not schedule refresh: ' + e.message); }
+  }
+  return stale;
 }
 
 function decisionFeedRowObj_(raw, idx) {
@@ -1369,12 +1428,22 @@ function _velDateToYMD(v) {
 }
 
 function getVelSheet() {
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
-  let sheet = ss.getSheetByName(VEL_SHEET_NAME);
-  if (!sheet) {
+  const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
+  let sheet   = ss.getSheetByName(VEL_SHEET_NAME);
+  const isNew = !sheet;
+  if (isNew) {
     sheet = ss.insertSheet(VEL_SHEET_NAME);
     sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
     sheet.setFrozenRows(1);
+  }
+  // Force column A (date) to plain-text format so Sheets stops auto-converting
+  // "2026-05-01" strings to Date objects on write. One-time migration tracked
+  // via a ScriptProperties flag — no-op on every subsequent call.
+  const props     = PropertiesService.getScriptProperties();
+  const formatted = props.getProperty('velSheetFormatted');
+  if (isNew || !formatted) {
+    sheet.getRange(1, 1, sheet.getMaxRows(), 1).setNumberFormat('@STRING@');
+    props.setProperty('velSheetFormatted', 'true');
   }
   return sheet;
 }
@@ -3149,12 +3218,23 @@ function _runOperationalWarmTrigger() {
 
 function buildOperationalBundle_(force) {
   const generatedAt = new Date().toISOString();
-  const velocity = getVelocityEndpoint({ force: force ? '1' : '' });
-  const inventory = [];
-  const errors = [];
-  for (const store of STORES) {
+  const velocity    = getVelocityEndpoint({ force: force ? '1' : '' });
+  const inventory   = [];
+  const errors      = [];
+
+  // Fire all 6 store inventory requests in parallel — cuts serial ~9s HTTP wait to ~1.5s.
+  // Each store gets its own auth header; responses are returned in the same order as STORES.
+  const invRequests = STORES.map(store => ({
+    url:     DUTCHIE_BASE + '/reporting/inventory',
+    headers: { Authorization: dutchieAuth(store), Accept: 'application/json' },
+    muteHttpExceptions: true,
+  }));
+  const invResponses = UrlFetchApp.fetchAll(invRequests);
+
+  for (let i = 0; i < STORES.length; i++) {
+    const store = STORES[i];
     try {
-      const inv = getInventory({ store, force: force ? '1' : '' });
+      const inv = getInventory({ store, force: force ? '1' : '' }, invResponses[i]);
       inventory.push({ store, products: inv.products || [], error: inv.error || '' });
       if (inv.error) errors.push(store + ': ' + inv.error);
     } catch (err) {
@@ -3227,6 +3307,7 @@ function warmVelocityOnly() {
   } catch (err) {
     result.errors.push('velocity: ' + err.message);
     result.ok = false;
+    _logGasError('warmVelocityOnly', err.message);
   }
   result.finishedAt      = new Date().toISOString();
   result.durationSeconds = Math.round((new Date() - started) / 1000);
@@ -3255,6 +3336,7 @@ function warmBundleOnly() {
   } catch (err) {
     result.errors.push('operational bundle: ' + err.message);
     result.ok = false;
+    _logGasError('warmBundleOnly', err.message);
   }
   result.finishedAt      = new Date().toISOString();
   result.durationSeconds = Math.round((new Date() - started) / 1000);
@@ -3271,6 +3353,7 @@ function warmDecisionFeedOnly() {
   } catch (err) {
     result.errors.push('decision feed: ' + err.message);
     result.ok = false;
+    _logGasError('warmDecisionFeedOnly', err.message);
   }
   result.finishedAt      = new Date().toISOString();
   result.durationSeconds = Math.round((new Date() - started) / 1000);
