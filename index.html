@@ -1661,7 +1661,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.43</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner fixes: (1) returning to the Scan tab after a scan now correctly re-shows the camera — previously the camera restarted inside a hidden container so you'd see only the debug line. (2) Camera now requests continuous autofocus + a sharper 1280px feed and supports tap-to-focus (tap the view to refocus on a close-up) — helps the camera lock onto close barcodes faster. The diag line now shows foc: so we can see exactly what focus control each device supports.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.43</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.42</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 3: parallel store inventory fetches cut bundle build from ~9s to ~1.5s; GAS error log with ⚠ badge in Settings if overnight failures occur; Vel Cache date column forced to text format so Sheets stops auto-converting dates; decision feed staleness guard — feed older than 26h shows ⚠ stale and auto-schedules a background refresh</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.41</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code review fixes: restored v2.39 stale-snapshot guard that was dropped by worktree copy; vel cache backfill now updates velLastWriteDate so the gap self-heal can see backfill progress (previously blind to backfill-only write paths)</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.40</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code quality: centralized localStorage key registry (LS.*), named DOH threshold constants (DOH_CRITICAL/LOW/WATCH/WARN), and cache version guard (bump CACHE_VERSION to force-evict all caches on schema change)</span></div>
@@ -6163,7 +6164,7 @@ let _nativeScanTimer = null;
 let _nativeScanBusy = false;
 let _jsQrLoading = false;
 let _scanDiagTimer = null;
-const SCAN_DIAG = { frames: 0, variants: 0, jq: 'na', bd: 'na', last: '' };
+const SCAN_DIAG = { frames: 0, variants: 0, jq: 'na', bd: 'na', focus: 'na', last: '' };
 
 const CAT_EMOJI = {
   'Flower': '🌿', 'Pre-Roll': '🚬', '1g Pre-Roll': '🚬', 'Infused Pre-Roll': '🚬',
@@ -6202,7 +6203,7 @@ function showFileArea(msg) {
 }
 
 function scanDiagText() {
-  return `scan frames:${SCAN_DIAG.frames} vars:${SCAN_DIAG.variants} jsQR:${SCAN_DIAG.jq} BD:${SCAN_DIAG.bd} ${SCAN_DIAG.last}`;
+  return `scan frames:${SCAN_DIAG.frames} vars:${SCAN_DIAG.variants} jsQR:${SCAN_DIAG.jq} BD:${SCAN_DIAG.bd} foc:${SCAN_DIAG.focus} ${SCAN_DIAG.last}`;
 }
 
 function renderScannerDebugBase() {
@@ -6394,8 +6395,86 @@ function startNativeLiveScanner() {
   }, 350);
 }
 
+// Best-effort camera focus control. iOS Safari historically does NOT expose
+// focusMode via MediaTrack capabilities, so this is a no-op there (logged as
+// foc:unsupported) but meaningfully helps Android/Chrome where continuous AF
+// can be requested. We also log the real capability to the scan diag line so we
+// can see, per-device, exactly what focus control is available.
+function _getScannerVideoTrack() {
+  const video  = document.querySelector('#scannerCamInner video');
+  const stream = video && video.srcObject;
+  const tracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : null;
+  return (tracks && tracks[0]) || null;
+}
+
+function applyScannerFocus_() {
+  let track;
+  try { track = _getScannerVideoTrack(); } catch(e) { SCAN_DIAG.focus = 'err'; return true; }
+  if (!track) return false; // no track yet — caller may retry
+  if (!track.getCapabilities) { SCAN_DIAG.focus = 'no-caps'; return true; }
+  let caps = {};
+  try { caps = track.getCapabilities() || {}; } catch(e) { SCAN_DIAG.focus = 'caps-err'; return true; }
+  const modes = caps.focusMode || [];
+  if (modes.includes('continuous')) {
+    track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] })
+      .then(() => { SCAN_DIAG.focus = 'continuous'; })
+      .catch(() => { SCAN_DIAG.focus = 'apply-fail'; });
+  } else {
+    SCAN_DIAG.focus = modes.length ? modes.join('/') : 'unsupported';
+  }
+  return true;
+}
+
+// Retry applying focus until the video track exists (html5-qrcode creates it
+// asynchronously after start). Gives up after ~3s.
+function _scannerFocusRetry(attempt) {
+  if (!_scannerActive) return;
+  if (applyScannerFocus_()) return;       // track found (or definitively unavailable)
+  if (attempt >= 8) { SCAN_DIAG.focus = 'no-track'; return; }
+  setTimeout(() => _scannerFocusRetry(attempt + 1), 350);
+}
+
+// Tap-to-focus: pulse single-shot AF (then back to continuous) to force a refocus
+// on the spot the user tapped. Best-effort — silently does nothing where unsupported.
+function scannerTapFocus() {
+  let track;
+  try { track = _getScannerVideoTrack(); } catch(e) { return; }
+  if (!track || !track.getCapabilities) return;
+  let caps = {};
+  try { caps = track.getCapabilities() || {}; } catch(e) { return; }
+  const modes = caps.focusMode || [];
+  if (modes.includes('single-shot')) {
+    track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] })
+      .then(() => {
+        if (modes.includes('continuous')) {
+          setTimeout(() => track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}), 900);
+        }
+      })
+      .catch(() => {});
+  } else if (modes.includes('manual') && caps.focusDistance) {
+    // Some devices support manual focus distance but not single-shot — nudge near.
+    const near = caps.focusDistance.min;
+    track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: near }] }).catch(() => {});
+  }
+}
+
 function initScanner() {
   if (_scannerActive) return;
+
+  // Restore scanner areas. A prior successful scan (handleScannerCode) hides the
+  // camera + manual areas; the tab-switch return path calls initScanner directly
+  // (not resumeScanner), so without this the camera restarts inside a hidden
+  // container and the user sees only the debug text. Reset per-session diag too.
+  let _camDenied = false;
+  try { _camDenied = !!localStorage.getItem(LS.CAMERA_DENIED); } catch(e) {}
+  const _camArea  = document.getElementById('scannerCamArea');
+  const _manArea  = document.getElementById('scannerManualArea');
+  const _fileArea = document.getElementById('scannerFileArea');
+  if (_camArea)  _camArea.style.display  = _camDenied ? 'none' : '';
+  if (_manArea)  _manArea.style.display  = '';
+  if (_fileArea) _fileArea.style.display = _camDenied ? 'flex' : 'none';
+  SCAN_DIAG.frames = 0; SCAN_DIAG.variants = 0; SCAN_DIAG.jq = 'na'; SCAN_DIAG.focus = 'na'; SCAN_DIAG.last = '';
+
   const hint = document.getElementById('scannerHint');
 
   // Debug info — always overwrite result area so we can see current state.
@@ -6449,8 +6528,18 @@ function initScanner() {
         aspectRatio: 1.6,
         ...(formatsToSupport.length ? { formatsToSupport } : {})
       };
+      // Request continuous autofocus + a sharper feed at the source. `advanced` and
+      // `ideal` constraints are best-effort by spec — never cause start() to reject —
+      // so this is safe on iOS (which mostly ignores focusMode) and a real win on
+      // Android/Chrome. Tap-to-focus and post-start applyConstraints back this up.
+      const videoConstraints = {
+        facingMode: 'environment',
+        width:  { ideal: 1280 },
+        height: { ideal: 720 },
+        advanced: [{ focusMode: 'continuous' }],
+      };
       _scanner.start(
-        { facingMode: 'environment' },
+        videoConstraints,
         scannerConfig,
         (code) => {
           handleScannerCode(code);
@@ -6458,10 +6547,17 @@ function initScanner() {
         () => {}
       ).then(() => {
         _scannerActive = true;
-        hint.textContent = 'Point at a product barcode or QR label';
+        hint.textContent = 'Tap the view to refocus · point at a barcode or QR label';
         SCAN_DIAG.last = 'cam:env';
         startScannerDiagnostics();
         startNativeLiveScanner();
+        _scannerFocusRetry(0);
+        // Tap-to-focus on the camera view (bind once per start).
+        const camArea = document.getElementById('scannerCamArea');
+        if (camArea && !camArea._tapFocusBound) {
+          camArea.addEventListener('click', scannerTapFocus);
+          camArea._tapFocusBound = true;
+        }
       }).catch(err => {
         // Permission denied or camera unavailable
         console.warn('Camera start failed:', err);
