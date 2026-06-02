@@ -1,0 +1,7 @@
+**/*.html
+**/*.json
+!appsscript.json
+!index.html
+.claude/
+.claude/**
+clasp.sh

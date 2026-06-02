@@ -1655,6 +1655,10 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.41</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code review fixes: restored v2.39 stale-snapshot guard that was dropped by worktree copy; vel cache backfill now updates velLastWriteDate so the gap self-heal can see backfill progress (previously blind to backfill-only write paths)</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.40</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code quality: centralized localStorage key registry (LS.*), named DOH threshold constants (DOH_CRITICAL/LOW/WATCH/WARN), and cache version guard (bump CACHE_VERSION to force-evict all caches on schema change)</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.39</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Stale snapshot guard: page now silently checks the server snapshot version on every load and evicts the local cache if a newer build exists — no more reloading against 12-hour-old data after a manual "Build Snapshot Now". GAS: vel cache gap self-heal — if the hourly sync detects that the last write date is 28+ days behind today (data lost during a sheet rewrite timeout), it automatically rolls the sync date back so the next run re-fills the gap</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.38</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Settings Admin: added "Trigger Velocity Backfill" button to manually kick off a vel cache backfill without opening the GAS editor</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.37</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Velocity history fix: sync now processes up to 8 × 14-day chunks per hourly call (was 1), so the full 180-day backfill completes in 2 runs instead of 13 — bars 3 and 4 of the velocity sparkline will populate after the next sync</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.36</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Inventory summary bar now shows a Lost Revenue pill: total estimated revenue lost while OOS products have been out of stock — click it to filter straight to the OOS list</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.35</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Transfer suggestion buttons disappear once added to the transfer cart, matching order button behaviour — no more lingering amber buttons after a transfer is queued</span></div>
@@ -2092,14 +2096,49 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// ── Persistent localStorage key registry ─────────────────
+// All raw (non-cached) localStorage keys in one place. Change a key name here
+// and it propagates everywhere — no more hunting for magic strings.
+const LS = {
+  AUTH:                 'gc_inv_auth',
+  BETA_TOOLS:          'gc_beta_tools',
+  CAT_ALIASES:         'gc_cat_aliases',
+  DENSITY:             'gc_density',
+  EXCL_CAT:            'gc_inv_excl_cat',
+  CAT_EXPANDED:        'gc_inv_cat_expanded',
+  HIDE_BACKSTOCK:      'gc_inv_hide_backstock',
+  ORDER_CART:          'gc_order_cart',
+  TRANSFER_CART:       'gc_transfer_cart',
+  PINNED_TRANSFERS:    'gc_pinned_transfer_suggestions',
+  SAVED_ORDERS:        'gc_saved_orders',
+  SAVED_TRANSFERS:     'gc_saved_transfers',
+  FLAGS:               'gc_flags',
+  RESTOCK_SKIP_PFX:    'gc_restock_skip_',   // prefix — append product key
+  KILLED:              'gc_killed',
+  CAMERA_DENIED:       'gc_camera_denied',
+  TRANSFER_MIN_QTY:    'gc_transfer_min_qty',
+  FATTY_MIN_QTY:       'gc_fatty_min_qty',
+  BULK_FLOWER_MIN_QTY: 'gc_bulk_flower_min_qty',
+  REORDER_BUFFER:      'gc_reorder_buffer',
+  REORDER_TARGET:      'gc_reorder_target_v2',
+};
+
+// ── Days-on-Hand threshold constants ─────────────────────
+const DOH_CRITICAL = 3;   // < 3 days → red  critical
+const DOH_LOW      = 7;   // < 7 days → amber low
+const DOH_WATCH    = 14;  // < 14 days → yellow watch
+const DOH_WARN     = 21;  // < 21 days → warn class (kiosk DOH badge)
+
 // ── Cache ────────────────────────────────────────────────
 const CACHE_PREFIX = 'gc_inv5_';
+const CACHE_VERSION = 1; // bump to force-evict all localStorage caches on schema change
 const OPERATIONAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // same-day data is fine for buyer decisions
 function cacheGet(key) {
   const raw = localStorage.getItem(CACHE_PREFIX + key);
   if (!raw) return null;
   try {
-    const { ts, ttl, data } = JSON.parse(raw);
+    const { ts, ttl, v, data } = JSON.parse(raw);
+    if (v !== CACHE_VERSION) { localStorage.removeItem(CACHE_PREFIX + key); return null; }
     if (Date.now() - ts < ttl) return data;
     localStorage.removeItem(CACHE_PREFIX + key);
   } catch {}
@@ -2135,7 +2174,7 @@ function cacheSet(key, data, ttlMs) {
     toStore = slim;
   }
   try {
-    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), ttl: ttlMs, data: toStore }));
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), ttl: ttlMs, v: CACHE_VERSION, data: toStore }));
   } catch(e) {
     // QuotaExceededError — evict the oldest cache entry and retry once
     if (e.name === 'QuotaExceededError' || e.code === 22 || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
@@ -2145,7 +2184,7 @@ function cacheSet(key, data, ttlMs) {
         try { const item = JSON.parse(localStorage.getItem(k)); if (item?.ts < oldestTs) { oldest = k; oldestTs = item.ts; } } catch {}
       }
       if (oldest) localStorage.removeItem(oldest);
-      try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), ttl: ttlMs, data: toStore })); } catch {}
+      try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), ttl: ttlMs, v: CACHE_VERSION, data: toStore })); } catch {}
       // If it still fails, we simply skip caching — app works fine without it
     }
   }
@@ -2157,7 +2196,7 @@ function cacheClear() {
 
 // ── Fetch from proxy ─────────────────────────────────────
 function getAuthSession() {
-  try { return JSON.parse(localStorage.getItem('gc_inv_auth') || 'null') || null; } catch { return null; }
+  try { return JSON.parse(localStorage.getItem(LS.AUTH) || 'null') || null; } catch { return null; }
 }
 function getAuthToken() {
   const session = getAuthSession();
@@ -2190,7 +2229,7 @@ async function proxyFetch(params, cacheKey = null, ttlMs = 0) {
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const json = await res.json();
   if (json && (json.error === 'Auth required' || json.error === 'Session expired' || json.error === 'Invalid session')) {
-    try { localStorage.removeItem('gc_inv_auth'); } catch {}
+    try { localStorage.removeItem(LS.AUTH); } catch {}
     location.reload();
     throw new Error(json.error);
   }
@@ -2980,10 +3019,10 @@ function renderAll() {
 // ════════════════════════════════════════════════════════
 function betaOptInFromUrl() {
   const params = new URLSearchParams(location.search || '');
-  if (params.get('beta') === '1') localStorage.setItem('gc_beta_tools', '1');
-  if (params.get('beta') === '0') localStorage.removeItem('gc_beta_tools');
+  if (params.get('beta') === '1') localStorage.setItem(LS.BETA_TOOLS, '1');
+  if (params.get('beta') === '0') localStorage.removeItem(LS.BETA_TOOLS);
   const isLocalDev = location.protocol === 'file:' || /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(location.href);
-  return isLocalDev || localStorage.getItem('gc_beta_tools') === '1';
+  return isLocalDev || localStorage.getItem(LS.BETA_TOOLS) === '1';
 }
 
 function initBetaTools() {
@@ -3826,7 +3865,7 @@ function scheduleBetaDecisionsForInventory(delayMs = 900) {
 // ════════════════════════════════════════════════════════
 function init() {
   // Restore density preference
-  const savedDensity = localStorage.getItem('gc_density');
+  const savedDensity = localStorage.getItem(LS.DENSITY);
   if (savedDensity === 'compact') document.body.classList.add('density-compact');
   initBetaTools();
 
@@ -3838,7 +3877,7 @@ function init() {
     for (const [k, v] of Object.entries(CAT_SHORT)) {
       if (!(k in stored)) { stored[k] = v; changed = true; }
     }
-    if (changed) localStorage.setItem('gc_cat_aliases', JSON.stringify(stored));
+    if (changed) localStorage.setItem(LS.CAT_ALIASES, JSON.stringify(stored));
     Object.assign(CAT_SHORT, stored);
   }
 
@@ -3991,17 +4030,17 @@ state.forceServerRefresh = false;
 state.invSort       = { col: 'status', dir: 1 };
 state.invPage       = 0;
 state.invFilters    = { status: 'all', category: '', brand: '', vendor: '', search: '', tags: { dead: false, hot: false, new: false, distro: false, transfer: false } };
-state.excludedCats      = new Set(JSON.parse(localStorage.getItem('gc_inv_excl_cat') || '[]'));
-state.catRowExpanded    = localStorage.getItem('gc_inv_cat_expanded') === 'true';
-state.hideBackstock     = localStorage.getItem('gc_inv_hide_backstock') === 'true';
+state.excludedCats      = new Set(JSON.parse(localStorage.getItem(LS.EXCL_CAT) || '[]'));
+state.catRowExpanded    = localStorage.getItem(LS.CAT_EXPANDED) === 'true';
+state.hideBackstock     = localStorage.getItem(LS.HIDE_BACKSTOCK) === 'true';
 state.expandedGroups    = new Set();
 state.expandedPoGroups  = new Set();
 state.expandedTxGroups  = new Set();
-state.orderCart         = JSON.parse(localStorage.getItem('gc_order_cart') || '[]');
-state.transferCart      = JSON.parse(localStorage.getItem('gc_transfer_cart') || '[]');
-state.pinnedTransferSuggestions = JSON.parse(localStorage.getItem('gc_pinned_transfer_suggestions') || '{}');
-state.savedOrderPlans   = JSON.parse(localStorage.getItem('gc_saved_orders') || '[]');
-state.savedTransferPlans = JSON.parse(localStorage.getItem('gc_saved_transfers') || '[]');
+state.orderCart         = JSON.parse(localStorage.getItem(LS.ORDER_CART) || '[]');
+state.transferCart      = JSON.parse(localStorage.getItem(LS.TRANSFER_CART) || '[]');
+state.pinnedTransferSuggestions = JSON.parse(localStorage.getItem(LS.PINNED_TRANSFERS) || '{}');
+state.savedOrderPlans   = JSON.parse(localStorage.getItem(LS.SAVED_ORDERS) || '[]');
+state.savedTransferPlans = JSON.parse(localStorage.getItem(LS.SAVED_TRANSFERS) || '[]');
 
 // Reorder target is dynamic locally, but defaults to the beta model's 7d lead + 7d safety target.
 const DEFAULT_REORDER_TARGET_DAYS = 14;
@@ -4093,7 +4132,7 @@ function enrichProduct(p, storeName, velMap) {
   } else if (p.qty === 0) { doh = 0; status = 'oos'; }
   else if (pVel > 0) {
     doh    = Math.round(p.qty / pVel * 10) / 10;
-    status = doh < 3 ? 'critical' : doh < 7 ? 'low' : doh < 14 ? 'watch' : 'ok';
+    status = doh < DOH_CRITICAL ? 'critical' : doh < DOH_LOW ? 'low' : doh < DOH_WATCH ? 'watch' : 'ok';
   } else { status = isNew ? 'ok' : 'slow'; }
 
   const REORDER_BUFFER = getReorderBuffer();
@@ -4227,6 +4266,20 @@ async function loadInventoryData() {
     // single-store views too. The 12h localStorage cache means switching "All"↔"Bend" costs
     // zero extra network calls once the first fetch lands.
     const bundle = await proxyFetch({ action: 'operationalbundle' }, 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
+
+    // Background version check: if the server has a newer snapshot than what we just served
+    // from the 12h localStorage cache, silently evict so the next load gets fresh data.
+    // Fire-and-forget — never blocks the current render.
+    if (bundle && bundle.generatedAt && !forceServerRefresh) {
+      const cachedGeneratedAt = bundle.generatedAt;
+      proxyFetch({ action: 'operationalstatus' }).then(status => {
+        if (status && status.generatedAt && status.generatedAt !== cachedGeneratedAt) {
+          console.log('[GC] Bundle stale — cached:', cachedGeneratedAt, '/ server:', status.generatedAt, '— evicting cache');
+          cacheDelete('operational_bundle_all');
+          cacheDelete('vel_all');
+        }
+      }).catch(() => {}); // best-effort, never throws
+    }
 
     if (bundle && bundle.source === 'missing') {
       if (state.store === 'All') {
@@ -4529,7 +4582,7 @@ function toggleExcludeCat(btn, cat) {
   if (state.excludedCats.has(cat)) state.excludedCats.delete(cat);
   else state.excludedCats.add(cat);
   btn.classList.toggle('excluded', state.excludedCats.has(cat));
-  localStorage.setItem('gc_inv_excl_cat', JSON.stringify([...state.excludedCats]));
+  localStorage.setItem(LS.EXCL_CAT, JSON.stringify([...state.excludedCats]));
   updateCatToggleBtn();
   updateClearFiltersBtn();
   renderInventory();
@@ -4537,7 +4590,7 @@ function toggleExcludeCat(btn, cat) {
 
 function toggleCatExcludeRow() {
   state.catRowExpanded = !state.catRowExpanded;
-  localStorage.setItem('gc_inv_cat_expanded', state.catRowExpanded);
+  localStorage.setItem(LS.CAT_EXPANDED, state.catRowExpanded);
   document.getElementById('catExcludeRow').classList.toggle('expanded', state.catRowExpanded);
   updateCatToggleBtn();
 }
@@ -4557,22 +4610,22 @@ function updateCatToggleBtn() {
 // ── Manual flags ─────────────────────────────────────────
 function flagKey(p) { return (p.sku || p.name) + '|' + p.store; }
 function getFlaggedSet() {
-  try { return new Set(JSON.parse(localStorage.getItem('gc_flags') || '[]')); } catch { return new Set(); }
+  try { return new Set(JSON.parse(localStorage.getItem(LS.FLAGS) || '[]')); } catch { return new Set(); }
 }
-function saveFlaggedSet(s) { localStorage.setItem('gc_flags', JSON.stringify([...s])); }
+function saveFlaggedSet(s) { localStorage.setItem(LS.FLAGS, JSON.stringify([...s])); }
 
 // ── Restock dismiss (per-store, persisted in localStorage) ───────────────────
 function getRestockDismissed(store) {
-  try { return new Set(JSON.parse(localStorage.getItem('gc_restock_skip_' + store) || '[]')); } catch { return new Set(); }
+  try { return new Set(JSON.parse(localStorage.getItem(LS.RESTOCK_SKIP_PFX + store) || '[]')); } catch { return new Set(); }
 }
 function dismissRestock(store, name) {
   const s = getRestockDismissed(store);
   s.add(name);
-  localStorage.setItem('gc_restock_skip_' + store, JSON.stringify([...s]));
+  localStorage.setItem(LS.RESTOCK_SKIP_PFX + store, JSON.stringify([...s]));
   renderInventory();
 }
 function resetRestockDismissed(store) {
-  localStorage.removeItem('gc_restock_skip_' + store);
+  localStorage.removeItem(LS.RESTOCK_SKIP_PFX + store);
   renderInventory();
 }
 
@@ -4591,14 +4644,14 @@ async function syncSharedState() {
     const data = await res.json();
     let changed = false;
     if (data.killed) {
-      const prev = localStorage.getItem('gc_killed');
+      const prev = localStorage.getItem(LS.KILLED);
       const next = JSON.stringify(data.killed);
-      if (prev !== next) { localStorage.setItem('gc_killed', next); changed = true; }
+      if (prev !== next) { localStorage.setItem(LS.KILLED, next); changed = true; }
     }
     if (data.flagged) {
-      const prev = localStorage.getItem('gc_flags');
+      const prev = localStorage.getItem(LS.FLAGS);
       const next = JSON.stringify(data.flagged);
-      if (prev !== next) { localStorage.setItem('gc_flags', next); changed = true; }
+      if (prev !== next) { localStorage.setItem(LS.FLAGS, next); changed = true; }
     }
     if (changed && state.inventoryData) {
       renderInventory();
@@ -4610,16 +4663,16 @@ async function syncSharedState() {
 function getKilledObj() {
   // gc_killed is stored as {key: killedAtTimestamp}; support old flat-array format
   try {
-    const raw = JSON.parse(localStorage.getItem('gc_killed') || '{}');
+    const raw = JSON.parse(localStorage.getItem(LS.KILLED) || '{}');
     if (Array.isArray(raw)) {
       const obj = {}; raw.forEach(k => { obj[k] = 0; });
-      localStorage.setItem('gc_killed', JSON.stringify(obj));
+      localStorage.setItem(LS.KILLED, JSON.stringify(obj));
       return obj;
     }
     return raw;
   } catch { return {}; }
 }
-function saveKilledSet(obj) { localStorage.setItem('gc_killed', JSON.stringify(obj)); }
+function saveKilledSet(obj) { localStorage.setItem(LS.KILLED, JSON.stringify(obj)); }
 function isKilled(killedObj, key, product) {
   if (!(key in killedObj)) return false;
   // Auto-resurrect: if product has qty > 0 and lastMod is after kill timestamp
@@ -5901,7 +5954,7 @@ function clearInvSearch() {
 
 function toggleHideBackstock() {
   state.hideBackstock = !state.hideBackstock;
-  localStorage.setItem('gc_inv_hide_backstock', state.hideBackstock);
+  localStorage.setItem(LS.HIDE_BACKSTOCK, state.hideBackstock);
   document.getElementById('tagBackstock')?.classList.toggle('excluded', state.hideBackstock);
   updateCatToggleBtn();
   updateClearFiltersBtn();
@@ -5945,9 +5998,9 @@ function clearAllInvFilters() {
   Object.entries(idMap).forEach(([tag, id]) => document.getElementById(id)?.classList.remove(clsMap[tag]));
   // Reset eyeball filters (excluded categories + hide backstock)
   state.excludedCats.clear();
-  localStorage.setItem('gc_inv_excl_cat', '[]');
+  localStorage.setItem(LS.EXCL_CAT, '[]');
   state.hideBackstock = false;
-  localStorage.setItem('gc_inv_hide_backstock', 'false');
+  localStorage.setItem(LS.HIDE_BACKSTOCK, 'false');
   buildInvFilterOptions(state.inventoryData || []);
   updateCatToggleBtn();
   state.invPage = 0;
@@ -5997,8 +6050,8 @@ function openQueueDecisionInInventory(store, sku, productName) {
   state.invFilters = { status: 'all', category: '', brand: '', vendor: '', search, tags: { dead: false, hot: false, new: false, distro: false, transfer: false } };
   state.excludedCats.clear();
   state.hideBackstock = false;
-  localStorage.setItem('gc_inv_excl_cat', '[]');
-  localStorage.setItem('gc_inv_hide_backstock', 'false');
+  localStorage.setItem(LS.EXCL_CAT, '[]');
+  localStorage.setItem(LS.HIDE_BACKSTOCK, 'false');
   state.invPage = 0;
   state.restockShowAll = false;
   if (groupKey) state.expandedGroups.add(groupKey);
@@ -6113,7 +6166,7 @@ function showFileArea(msg) {
     fileArea.style.display = 'flex';
   }
   // Remember denial so next load skips the camera attempt entirely
-  try { localStorage.setItem('gc_camera_denied', '1'); } catch(e) {}
+  try { localStorage.setItem(LS.CAMERA_DENIED, '1'); } catch(e) {}
   stopNativeLiveScanner();
   _scannerActive = false;
   _scanner = null;
@@ -6337,7 +6390,7 @@ function initScanner() {
 
   // Camera was previously denied — skip straight to file input
   let prevDenied = false;
-  try { prevDenied = !!localStorage.getItem('gc_camera_denied'); } catch(e) {}
+  try { prevDenied = !!localStorage.getItem(LS.CAMERA_DENIED); } catch(e) {}
   if (prevDenied) {
     showFileArea('Camera access was denied.<br>Tap below to pick a photo instead.');
     return;
@@ -6570,7 +6623,7 @@ function handleScannerFile(input) {
 
 // Clear the camera-denied flag and retry camera initialization
 function tryCameraAgain() {
-  try { localStorage.removeItem('gc_camera_denied'); } catch(e) {}
+  try { localStorage.removeItem(LS.CAMERA_DENIED); } catch(e) {}
   const fileArea = document.getElementById('scannerFileArea');
   const camArea  = document.getElementById('scannerCamArea');
   if (fileArea) fileArea.style.display = 'none';
@@ -6594,7 +6647,7 @@ function resumeScanner() {
   const camArea  = document.getElementById('scannerCamArea');
   const fileArea = document.getElementById('scannerFileArea');
   const manArea  = document.getElementById('scannerManualArea');
-  const prevDenied = (() => { try { return !!localStorage.getItem('gc_camera_denied'); } catch(e) { return false; } })();
+  const prevDenied = (() => { try { return !!localStorage.getItem(LS.CAMERA_DENIED); } catch(e) { return false; } })();
   if (camArea)  camArea.style.display  = prevDenied ? 'none' : '';
   if (fileArea) fileArea.style.display = prevDenied ? 'flex' : 'none';
   if (manArea)  manArea.style.display  = '';
@@ -6803,7 +6856,7 @@ function renderScanResult(products, code, vel) {
   const inStock = products.find(p => p.qty > 0 && p.doh != null);
   const doh = inStock ? inStock.doh : null;
   const dohTxt = doh != null ? (doh >= 100 ? '100+' : doh.toFixed(1)) : '—';
-  const dohCls = doh == null ? '' : doh < 7 ? 'bad' : doh < 21 ? 'warn' : 'good';
+  const dohCls = doh == null ? '' : doh < DOH_LOW ? 'bad' : doh < DOH_WARN ? 'warn' : 'good';
   const sold7Cls  = sold7  > 14 ? 'good' : sold7  > 0 ? 'warn' : '';
   const sold28Cls = sold28 > 40 ? 'good' : sold28 > 0 ? 'warn' : '';
 
@@ -7716,10 +7769,10 @@ async function triggerVelBackfillNow() {
 
 // ── Category aliases ─────────────────────────────────────
 function getCatAliases() {
-  try { return JSON.parse(localStorage.getItem('gc_cat_aliases') || '{}'); } catch { return {}; }
+  try { return JSON.parse(localStorage.getItem(LS.CAT_ALIASES) || '{}'); } catch { return {}; }
 }
 function saveCatAliasesStore(obj) {
-  localStorage.setItem('gc_cat_aliases', JSON.stringify(obj));
+  localStorage.setItem(LS.CAT_ALIASES, JSON.stringify(obj));
   // Rebuild CAT_SHORT so the live table reflects it
   Object.keys(CAT_SHORT).forEach(k => delete CAT_SHORT[k]);
   Object.assign(CAT_SHORT, obj);
@@ -7761,33 +7814,33 @@ function deleteCatAlias(full) {
 
 // ── Transfer min qty ────────────────────────────────────
 function getTransferMinQty() {
-  const v = parseInt(localStorage.getItem('gc_transfer_min_qty') || '3', 10);
+  const v = parseInt(localStorage.getItem(LS.TRANSFER_MIN_QTY) || '3', 10);
   return isNaN(v) || v < 1 ? 3 : v;
 }
 function saveTransferMinQty() {
   const v = parseInt(document.getElementById('transferMinQtyInput').value, 10);
   if (isNaN(v) || v < 1) return;
-  localStorage.setItem('gc_transfer_min_qty', String(v));
+  localStorage.setItem(LS.TRANSFER_MIN_QTY, String(v));
   if (state.inventoryData) renderInventory();
 }
 function getFattyMinQty() {
-  const v = parseInt(localStorage.getItem('gc_fatty_min_qty') || '6', 10);
+  const v = parseInt(localStorage.getItem(LS.FATTY_MIN_QTY) || '6', 10);
   return isNaN(v) || v < 1 ? 6 : v;
 }
 function saveFattyMinQty() {
   const v = parseInt(document.getElementById('fattyMinQtyInput').value, 10);
   if (isNaN(v) || v < 1) return;
-  localStorage.setItem('gc_fatty_min_qty', String(v));
+  localStorage.setItem(LS.FATTY_MIN_QTY, String(v));
   if (state.inventoryData) renderInventory();
 }
 function getBulkFlowerMinQty() {
-  const v = parseInt(localStorage.getItem('gc_bulk_flower_min_qty') || '227', 10);
+  const v = parseInt(localStorage.getItem(LS.BULK_FLOWER_MIN_QTY) || '227', 10);
   return isNaN(v) || v < 1 ? 227 : v;
 }
 function saveBulkFlowerMinQty() {
   const v = parseInt(document.getElementById('bulkFlowerMinQtyInput').value, 10);
   if (isNaN(v) || v < 1) return;
-  localStorage.setItem('gc_bulk_flower_min_qty', String(v));
+  localStorage.setItem(LS.BULK_FLOWER_MIN_QTY, String(v));
   if (state.inventoryData) renderInventory();
 }
 
@@ -7817,7 +7870,7 @@ function transferKey(s) {
 }
 
 function savePinnedTransferSuggestions() {
-  localStorage.setItem('gc_pinned_transfer_suggestions', JSON.stringify(state.pinnedTransferSuggestions || {}));
+  localStorage.setItem(LS.PINNED_TRANSFERS, JSON.stringify(state.pinnedTransferSuggestions || {}));
 }
 
 function sameTransferProduct(a, b) {
@@ -7916,7 +7969,7 @@ function addToTransfer(s) {
 }
 
 function saveTransferCart() {
-  localStorage.setItem('gc_transfer_cart', JSON.stringify(state.transferCart));
+  localStorage.setItem(LS.TRANSFER_CART, JSON.stringify(state.transferCart));
   updateTransferBadge();
 }
 
@@ -7954,7 +8007,7 @@ function clearTransferCart() {
 }
 
 function saveOrderCart() {
-  localStorage.setItem('gc_order_cart', JSON.stringify(state.orderCart));
+  localStorage.setItem(LS.ORDER_CART, JSON.stringify(state.orderCart));
   updateOrderBadge();
 }
 
@@ -8040,11 +8093,11 @@ function clearOrderCart() {
 
 // ── Reorder target coverage ──────────────────────────────
 function getReorderBuffer() {
-  const raw = localStorage.getItem('gc_reorder_buffer');
-  const migrated = localStorage.getItem('gc_reorder_target_v2') === '1';
+  const raw = localStorage.getItem(LS.REORDER_BUFFER);
+  const migrated = localStorage.getItem(LS.REORDER_TARGET) === '1';
   if (!raw || (raw === '12' && !migrated)) {
-    localStorage.setItem('gc_reorder_buffer', String(DEFAULT_REORDER_TARGET_DAYS));
-    localStorage.setItem('gc_reorder_target_v2', '1');
+    localStorage.setItem(LS.REORDER_BUFFER, String(DEFAULT_REORDER_TARGET_DAYS));
+    localStorage.setItem(LS.REORDER_TARGET, '1');
     return DEFAULT_REORDER_TARGET_DAYS;
   }
   const v = parseInt(raw, 10);
@@ -8053,15 +8106,15 @@ function getReorderBuffer() {
 function saveReorderBuffer() {
   const v = parseInt(document.getElementById('reorderBufferInput').value, 10);
   if (isNaN(v) || v < 1) return;
-  localStorage.setItem('gc_reorder_buffer', String(v));
-  localStorage.setItem('gc_reorder_target_v2', '1');
+  localStorage.setItem(LS.REORDER_BUFFER, String(v));
+  localStorage.setItem(LS.REORDER_TARGET, '1');
   if (state.inventoryData) renderInventory();
 }
 
 // ── Density ──────────────────────────────────────────────
 function setDensity(mode) {
   document.body.classList.toggle('density-compact', mode === 'compact');
-  localStorage.setItem('gc_density', mode);
+  localStorage.setItem(LS.DENSITY, mode);
   document.getElementById('densityComfort').classList.toggle('active', mode === 'comfortable');
   document.getElementById('densityCompact').classList.toggle('active', mode === 'compact');
 }
@@ -8582,7 +8635,7 @@ function undoOrderForKey(pk) {
   state.orderCart = state.orderCart.filter(i =>
     !((i.store || '') === store && (i.sku || i.name) === skuOrName)
   );
-  localStorage.setItem('gc_order_cart', JSON.stringify(state.orderCart));
+  localStorage.setItem(LS.ORDER_CART, JSON.stringify(state.orderCart));
   renderOrders();
   updateOrderBadge();
   renderInventory();
@@ -8596,7 +8649,7 @@ function undoTransferForKey(pk) {
   state.transferCart = state.transferCart.filter(i =>
     !(i.toStore === toStore && (i.recipientSku || i.sku || i.recipientName || i.name) === skuOrName)
   );
-  localStorage.setItem('gc_transfer_cart', JSON.stringify(state.transferCart));
+  localStorage.setItem(LS.TRANSFER_CART, JSON.stringify(state.transferCart));
   renderTransfers();
   updateTransferBadge();
   renderInventory();
@@ -8610,7 +8663,7 @@ function undoTransferOutKey(pk) {
   state.transferCart = state.transferCart.filter(i =>
     !(i.fromStore === fromStore && (i.sku || i.name) === skuOrName)
   );
-  localStorage.setItem('gc_transfer_cart', JSON.stringify(state.transferCart));
+  localStorage.setItem(LS.TRANSFER_CART, JSON.stringify(state.transferCart));
   renderTransfers();
   updateTransferBadge();
   renderInventory();
@@ -8650,9 +8703,9 @@ function saveOrderPlan() {
   if (!state.orderCart.length) return;
   const plan = { id: Date.now(), savedAt: new Date().toISOString(), items: [...state.orderCart] };
   state.savedOrderPlans.push(plan);
-  localStorage.setItem('gc_saved_orders', JSON.stringify(state.savedOrderPlans));
+  localStorage.setItem(LS.SAVED_ORDERS, JSON.stringify(state.savedOrderPlans));
   state.orderCart = [];
-  localStorage.setItem('gc_order_cart', '[]');
+  localStorage.setItem(LS.ORDER_CART, '[]');
   renderOrders();
   renderInventory();
 }
@@ -8661,23 +8714,23 @@ function saveTransferPlan() {
   if (!state.transferCart.length) return;
   const plan = { id: Date.now(), savedAt: new Date().toISOString(), items: [...state.transferCart] };
   state.savedTransferPlans.push(plan);
-  localStorage.setItem('gc_saved_transfers', JSON.stringify(state.savedTransferPlans));
+  localStorage.setItem(LS.SAVED_TRANSFERS, JSON.stringify(state.savedTransferPlans));
   state.transferCart = [];
-  localStorage.setItem('gc_transfer_cart', '[]');
+  localStorage.setItem(LS.TRANSFER_CART, '[]');
   renderTransfers();
   renderInventory();
 }
 
 function completeOrderPlan(id) {
   state.savedOrderPlans = state.savedOrderPlans.filter(p => p.id !== id);
-  localStorage.setItem('gc_saved_orders', JSON.stringify(state.savedOrderPlans));
+  localStorage.setItem(LS.SAVED_ORDERS, JSON.stringify(state.savedOrderPlans));
   renderOrders();
   renderInventory();
 }
 
 function completeTransferPlan(id) {
   state.savedTransferPlans = state.savedTransferPlans.filter(p => p.id !== id);
-  localStorage.setItem('gc_saved_transfers', JSON.stringify(state.savedTransferPlans));
+  localStorage.setItem(LS.SAVED_TRANSFERS, JSON.stringify(state.savedTransferPlans));
   renderTransfers();
   renderInventory();
 }
@@ -8690,8 +8743,8 @@ function restoreOrderPlan(id) {
     if (!existing) state.orderCart.push({ ...item });
   }
   state.savedOrderPlans = state.savedOrderPlans.filter(p => p.id !== id);
-  localStorage.setItem('gc_order_cart', JSON.stringify(state.orderCart));
-  localStorage.setItem('gc_saved_orders', JSON.stringify(state.savedOrderPlans));
+  localStorage.setItem(LS.ORDER_CART, JSON.stringify(state.orderCart));
+  localStorage.setItem(LS.SAVED_ORDERS, JSON.stringify(state.savedOrderPlans));
   renderOrders();
   renderInventory();
 }
@@ -8704,8 +8757,8 @@ function restoreTransferPlan(id) {
     if (!existing) state.transferCart.push({ ...item });
   }
   state.savedTransferPlans = state.savedTransferPlans.filter(p => p.id !== id);
-  localStorage.setItem('gc_transfer_cart', JSON.stringify(state.transferCart));
-  localStorage.setItem('gc_saved_transfers', JSON.stringify(state.savedTransferPlans));
+  localStorage.setItem(LS.TRANSFER_CART, JSON.stringify(state.transferCart));
+  localStorage.setItem(LS.SAVED_TRANSFERS, JSON.stringify(state.savedTransferPlans));
   renderTransfers();
   renderInventory();
 }
@@ -8991,7 +9044,7 @@ function toggleFinancials() {
 const _origUpdateInvSummaryBar = updateInvSummaryBar;
 
 // ── Login ─────────────────────────────────────────────────
-const GC_AUTH_KEY = 'gc_inv_auth';
+const GC_AUTH_KEY = LS.AUTH;
 const GC_AUTH_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function _isLocalDevAuthBypass() {

@@ -85,6 +85,8 @@ function doGet(e) {
     if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
     if (params.action === 'triggerstatus')  return jsonOut(getTriggerStatus());
     if (params.action === 'velreset')       return jsonOut(resetVelSyncDate());
+    if (params.action === 'velresyncfrom')  return jsonOut(velResyncFrom(params));
+    if (params.action === 'veldedup')       return jsonOut(velDedup());
     if (params.action === 'velclear')       return jsonOut(clearVelCache());
     if (params.action === 'velbackfill')       return jsonOut(velBackfillChunk(params));
     if (params.action === 'velbackfillstatus') return jsonOut(velBackfillStatus());
@@ -1560,6 +1562,25 @@ function syncVelocityCache() {
   }
 
   const remaining = Math.max(0, Math.ceil((now.getTime() - chunkStart.getTime()) / 86400000));
+
+  // Gap self-heal: if velLastWriteDate is more than 2 chunks (28 days) behind now,
+  // the vel cache silently lost data during a rewrite (GAS timeout mid-setValues).
+  // Roll velSyncDate back to the last confirmed write date so the next trigger re-fills the gap.
+  // A 4-hour cooldown prevents thrashing if the API genuinely has no recent data.
+  const velLastWriteDate = props.getProperty('velLastWriteDate');
+  if (velLastWriteDate && remaining === 0) {
+    const gapDays = (now.getTime() - new Date(velLastWriteDate + 'T12:00:00').getTime()) / 86400000;
+    const healedAt = props.getProperty('velGapHealedAt') || '';
+    const cooldownOk = !healedAt || (now.getTime() - new Date(healedAt).getTime()) > 4 * 3600000;
+    if (gapDays > CHUNK_DAYS * 2 && cooldownOk) {
+      Logger.log('syncVelocityCache: GAP DETECTED — velLastWriteDate=' + velLastWriteDate
+        + ' is ' + Math.round(gapDays) + ' days behind now. Rolling velSyncDate back to re-sync.');
+      props.setProperty('velSyncDate', new Date(velLastWriteDate + 'T00:00:00Z').toISOString());
+      props.setProperty('velGapHealedAt', now.toISOString());
+      return { synced: totalSynced, upTo: lastResult.upTo, chunksRun, remaining, backfillComplete: false, gapHealed: true, gapFrom: velLastWriteDate };
+    }
+  }
+
   return { synced: totalSynced, upTo: lastResult.upTo, chunksRun, remaining, backfillComplete: remaining === 0 };
 }
 
@@ -1620,21 +1641,43 @@ function _syncChunk(props, fromDate, toDate, updateProp) {
   const newRows = Object.values(agg);
 
   if (newRows.length > 0) {
-    const existingData = sheet.getLastRow() > 1
-      ? sheet.getRange(2, 1, sheet.getLastRow() - 1, VEL_COLS.length).getValues() : [];
+    const lastRow      = sheet.getLastRow();
+    const existingData = lastRow > 1
+      ? sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues() : [];
     const newKeys = new Set(newRows.map(r => r.store + '|' + r.date + '|' + r.productId));
-    // row[0] may be a Date object (Google Sheets auto-converts date strings); use _velDateToYMD
-    // so the key matches the plain-string keys built from newRows above.
-    const kept = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
-    const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
-    const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
-    sheet.clearContents();
-    sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
-    if (allRows.length > 0) sheet.getRange(2, 1, allRows.length, VEL_COLS.length).setValues(allRows);
+
+    // Check whether any existing row collides with the new batch (common case for
+    // backfill of a never-synced period: zero collisions → append-only, no rewrite).
+    // row[0] may be a Date object — use _velDateToYMD so keys are comparable strings.
+    let hasCollision = false;
+    for (const row of existingData) {
+      if (newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2])) { hasCollision = true; break; }
+    }
+
+    if (!hasCollision) {
+      // Fast path: just append — no full-sheet rewrite needed.
+      const appendData = newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]);
+      sheet.getRange(lastRow + 1, 1, appendData.length, VEL_COLS.length).setValues(appendData);
+    } else {
+      // Slow path: dedup, prune, and rewrite the full sheet.
+      const kept   = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
+      const pruned = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
+      const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
+      sheet.clearContents();
+      sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+      if (allRows.length > 0) sheet.getRange(2, 1, allRows.length, VEL_COLS.length).setValues(allRows);
+    }
   }
 
   if (updateProp) {
     props.setProperty('velSyncDate', toISO);
+    // Track the most recent date for which rows were actually written to the sheet.
+    // Used by syncVelocityCache gap self-heal to detect silent data loss.
+    if (newRows.length > 0) {
+      const maxWritten = newRows.map(r => r.date).sort().pop();
+      const prevLast   = props.getProperty('velLastWriteDate') || '';
+      if (maxWritten > prevLast) props.setProperty('velLastWriteDate', maxWritten);
+    }
   }
   Logger.log('_syncChunk ' + fromISO.slice(0,10) + ' → ' + toISO.slice(0,10) + ': ' + newRows.length + ' rows');
   return { synced: newRows.length, upTo: toISO };
@@ -1745,6 +1788,13 @@ function _runBackfillTrigger() {
   try {
     const result = _syncChunk(props, fromDate, toDate, false); // don't touch velSyncDate
     Logger.log('_runBackfillTrigger: synced ' + fromStr + ' → ' + toDate.toISOString().slice(0,10) + ' (' + (result.synced || 0) + ' rows)');
+    // Update velLastWriteDate so the gap self-heal in syncVelocityCache can see backfill progress.
+    // We can't use updateProp=true (that would clobber velSyncDate), so update it explicitly here.
+    if (result.synced > 0) {
+      const prevLast = props.getProperty('velLastWriteDate') || '';
+      const chunkMax = toDate.toISOString().slice(0, 10);
+      if (chunkMax > prevLast) props.setProperty('velLastWriteDate', chunkMax);
+    }
   } catch(e) {
     // Log the error and stamp it into status so velbackfillstatus exposes it;
     // do NOT reschedule — a broken trigger loop wastes quota silently.
@@ -1906,9 +1956,67 @@ function clearProductCatalogCache() {
   return { ok: true, message: 'Product catalog cache cleared. Next velsync will re-fetch /products.' };
 }
 
+// Remove duplicate rows from the Vel Cache sheet. A row is a duplicate if another row
+// has the same (date, store, productId) key — keeps the last occurrence (most recent write).
+// Also prunes rows older than 180 days. Run this once after the broken-dedup period.
+function velDedup() {
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: true, message: 'Sheet empty', removed: 0 };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  const cutoff = new Date(Date.now() - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+
+  // Walk in reverse so the LAST written row wins (most recent sync data kept).
+  const seen    = new Set();
+  const deduped = [];
+  for (let i = data.length - 1; i >= 0; i--) {
+    const row  = data[i];
+    const ymd  = _velDateToYMD(row[0]);
+    if (!ymd || ymd < cutoff) continue; // prune old + invalid
+    const key  = row[1] + '|' + ymd + '|' + row[2];
+    if (seen.has(key)) continue; // duplicate — skip
+    seen.add(key);
+    deduped.push(row);
+  }
+  deduped.reverse(); // restore chronological order
+
+  const removed = data.length - deduped.length;
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+  if (deduped.length > 0) sheet.getRange(2, 1, deduped.length, VEL_COLS.length).setValues(deduped);
+
+  Logger.log('velDedup: ' + data.length + ' → ' + deduped.length + ' rows (' + removed + ' removed)');
+  return { ok: true, before: data.length, after: deduped.length, removed };
+}
+
 function resetVelSyncDate() {
   PropertiesService.getScriptProperties().deleteProperty('velSyncDate');
   return { ok: true, message: 'velSyncDate cleared — next velsync will backfill 90 days.' };
+}
+
+// Targeted re-sync: temporarily sets velSyncDate to `from`, runs syncVelocityCache
+// (up to 8×14-day chunks), then returns. Reliable alternative to the trigger chain
+// for filling specific date-range gaps. velSyncDate ends up at wherever the sync reached.
+// Usage: ?action=velresyncfrom&from=2026-04-17
+function velResyncFrom(params) {
+  const from = params.from;
+  if (!from || !/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    return { ok: false, error: 'Provide from=YYYY-MM-DD' };
+  }
+  const props = PropertiesService.getScriptProperties();
+  const prevSyncDate = props.getProperty('velSyncDate');
+  // Temporarily set velSyncDate to the requested start date
+  props.setProperty('velSyncDate', new Date(from + 'T00:00:00Z').toISOString());
+  try {
+    const result = syncVelocityCache();
+    return { ok: true, from, prevSyncDate, newSyncDate: props.getProperty('velSyncDate'), ...result };
+  } catch(e) {
+    // Restore previous sync date on error so we don't lose progress
+    if (prevSyncDate) props.setProperty('velSyncDate', prevSyncDate);
+    else props.deleteProperty('velSyncDate');
+    return { ok: false, error: e.message, from };
+  }
 }
 
 // ─── TRIGGER SETUP ────────────────────────────────────────────────────────────
