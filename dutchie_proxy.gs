@@ -1546,6 +1546,11 @@ function syncVelocityCache() {
   const DEADLINE_MS = 200 * 1000; // 3m20s safety margin
   const callStart   = Date.now();
 
+  // Build product dict once — shared across all chunks to avoid a 6-store /products
+  // blast on every iteration (buildProductIdDict is cached for 1h but a cold-cache hit
+  // would fire 6 API calls × 8 chunks = 48 redundant requests per trigger invocation).
+  const productDict = buildProductIdDict();
+
   let totalSynced = 0;
   let chunkStart  = fetchFrom;
   let lastResult  = { synced: 0, upTo: fetchFrom.toISOString() };
@@ -1554,7 +1559,7 @@ function syncVelocityCache() {
   while (chunksRun < MAX_CHUNKS && Date.now() - callStart < DEADLINE_MS) {
     const chunkEnd = new Date(Math.min(chunkStart.getTime() + chunkMs, now.getTime()));
     if (chunkEnd <= chunkStart) break; // caught up
-    lastResult = _syncChunk(props, chunkStart, chunkEnd, true);
+    lastResult = _syncChunk(props, chunkStart, chunkEnd, true, productDict);
     totalSynced += lastResult.synced || 0;
     chunksRun++;
     chunkStart = chunkEnd;
@@ -1586,13 +1591,15 @@ function syncVelocityCache() {
 
 // Internal: fetch one time window for all stores, upsert into sheet.
 // If `updateProp` is true, also saves velSyncDate to PropertiesService.
-function _syncChunk(props, fromDate, toDate, updateProp) {
+// Pass a pre-built `productDict` to avoid re-fetching /products on every chunk
+// in a multi-chunk loop — callers that run multiple chunks should hoist the call.
+function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
   const fromISO = fromDate.toISOString();
   const toISO   = toDate.toISOString();
   const now     = Date.now();
   const cutoff180Str = new Date(now - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10); // 180-day retention cutoff
 
-  const productDict = buildProductIdDict();
+  if (!productDict) productDict = buildProductIdDict(); // fallback for single-call sites
 
   const requests = STORES.map(store => ({
     url: DUTCHIE_BASE + '/reporting/transactions'
@@ -1780,13 +1787,14 @@ function _runBackfillTrigger() {
     return;
   }
 
-  const now      = new Date();
-  const fromDate = new Date(fromStr + 'T00:00:00Z');
-  const CHUNK    = 7 * 86400000;
-  const toDate   = new Date(Math.min(fromDate.getTime() + CHUNK, now.getTime()));
+  const now        = new Date();
+  const fromDate   = new Date(fromStr + 'T00:00:00Z');
+  const CHUNK      = 7 * 86400000;
+  const toDate     = new Date(Math.min(fromDate.getTime() + CHUNK, now.getTime()));
+  const productDict = buildProductIdDict(); // hoist — avoids re-fetch inside _syncChunk
 
   try {
-    const result = _syncChunk(props, fromDate, toDate, false); // don't touch velSyncDate
+    const result = _syncChunk(props, fromDate, toDate, false, productDict); // don't touch velSyncDate
     Logger.log('_runBackfillTrigger: synced ' + fromStr + ' → ' + toDate.toISOString().slice(0,10) + ' (' + (result.synced || 0) + ' rows)');
     // Update velLastWriteDate so the gap self-heal in syncVelocityCache can see backfill progress.
     // We can't use updateProp=true (that would clobber velSyncDate), so update it explicitly here.
@@ -1833,9 +1841,6 @@ function velBackfillStatus() {
   return { status, from };
 }
 
-// Alias for diagnostics — delegates to the canonical helper above.
-function _toYMD(v) { return _velDateToYMD(v); }
-
 // Diagnostic: look up all Vel Cache rows for a given productId or name fragment.
 // Usage: ?action=velproduct&id=B665EB4F73  OR  ?action=velproduct&name=SomeProduct
 function velProductDiagnostic(params) {
@@ -1863,7 +1868,7 @@ function velProductDiagnostic(params) {
   const byStore = {};
   for (const r of matches) {
     const store = String(r[1]);
-    const ymd = _toYMD(r[0]);
+    const ymd = _velDateToYMD(r[0]);
     const qty = parseFloat(r[7]) || 0;
     if (!byStore[store]) byStore[store] = { store, minDate: ymd, maxDate: ymd, totalQty: 0, rows: 0 };
     const s = byStore[store];
@@ -1907,7 +1912,7 @@ function velGapCheck(params) {
   let totalRowsForStore = 0;
   for (const r of data) {
     if (String(r[1]) !== store) continue;
-    const d = _toYMD(r[0]);
+    const d = _velDateToYMD(r[0]);
     if (!d) continue;
     if (d >= fromStr && d <= toStr) { datesWithData.add(d); totalRowsForStore++; }
   }

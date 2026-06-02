@@ -2121,6 +2121,8 @@ const LS = {
   BULK_FLOWER_MIN_QTY: 'gc_bulk_flower_min_qty',
   REORDER_BUFFER:      'gc_reorder_buffer',
   REORDER_TARGET:      'gc_reorder_target_v2',
+  WN_SEEN:             'gc_wn_seen',            // what's-new modal last-seen version
+  EXCL_ROWS:           'gc_inv5_excluded',       // excluded-row map (includes cache prefix)
 };
 
 // ── Days-on-Hand threshold constants ─────────────────────
@@ -2287,12 +2289,12 @@ let state = {
   betaDecisionFeedMeta: null,
   betaDecisionLoading: false,
   operationalHealth: null,
-  excludedRows: JSON.parse(localStorage.getItem(CACHE_PREFIX + 'excluded') || '{}'),
+  excludedRows: JSON.parse(localStorage.getItem(LS.EXCL_ROWS) || '{}'),
   restockShowAll: false,
 };
 
 function saveExcluded() {
-  localStorage.setItem(CACHE_PREFIX + 'excluded', JSON.stringify(state.excludedRows));
+  localStorage.setItem(LS.EXCL_ROWS, JSON.stringify(state.excludedRows));
 }
 
 function isUnconfigured() {
@@ -7399,8 +7401,6 @@ const CHANGELOG = [
   },
 ];
 
-const WN_SEEN_KEY = 'gc_wn_seen';
-
 function versionParts(v) {
   return String(v || '').replace(/^v/i, '').split('.').map(n => Number(n) || 0);
 }
@@ -7417,7 +7417,7 @@ function compareVersions(a, b) {
 }
 
 function checkWhatsNew() {
-  const seen = localStorage.getItem(WN_SEEN_KEY) || '';
+  const seen = localStorage.getItem(LS.WN_SEEN) || '';
   // Find entries newer than what was last seen
   const unseen = CHANGELOG.filter(c => compareVersions(c.v, seen) > 0);
   if (!unseen.length) return;
@@ -7456,7 +7456,7 @@ function showWhatsNew(entries) {
 
 function closeWhatsNew() {
   document.getElementById('wnOverlay').classList.remove('open');
-  localStorage.setItem(WN_SEEN_KEY, CHANGELOG[0].v);
+  localStorage.setItem(LS.WN_SEEN, CHANGELOG[0].v);
 }
 
 // ── LL Order Sheet modal ──────────────────────────────────────────────────────
