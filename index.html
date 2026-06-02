@@ -1673,7 +1673,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.46</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.47</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops).</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.46</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: return-to-scan camera restore + autofocus/tap-to-focus (superseded by v2.45 hotfix)</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.43</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot.</span></div>
@@ -6697,6 +6698,12 @@ function handleScannerFile(input) {
   function buildScannerDecodeVariants(src) {
     const out = [{ label: 'full', canvas: src }];
     const w = src.width, h = src.height;
+    // UPC/EAN are wide horizontal strips. The snap-photo button is mostly used for 1D
+    // product barcodes the live view can't focus on, so try full-width horizontal bands
+    // early — these isolate a centered/lower barcode and upscale it for cleaner 1D bars.
+    addCropVariant(out, src, 'upc-center', w * 0.03, h * 0.34, w * 0.94, h * 0.32, 2.2);
+    addCropVariant(out, src, 'upc-lower',  w * 0.03, h * 0.56, w * 0.94, h * 0.38, 2.2);
+    addCropVariant(out, src, 'upc-upper',  w * 0.03, h * 0.08, w * 0.94, h * 0.32, 2.2);
     // Dutchie labels often put a tiny QR near the left edge of the price/product band.
     // Try tight square-ish QR crops before the broader barcode crops.
     addCropVariant(out, src, 'qr-left-mid', 0, h * 0.34, w * 0.34, h * 0.26, 3.0);
@@ -6768,13 +6775,33 @@ function handleScannerFile(input) {
     document.head.appendChild(s);
   }
 
-  // Decoder 3 — ZXing BrowserMultiFormatReader (last resort)
+  // Decoder 3 — ZXing BrowserMultiFormatReader (the 1D workhorse on iOS, where
+  // BarcodeDetector is missing and jsQR only does QR). TRY_HARDER + explicit 1D
+  // format hints are essential for reading UPC/EAN from a STILL photo — without
+  // them ZXing routinely misses 1D barcodes that the live streaming path catches.
   function tryZXing(canvas) {
+    function buildZXingReader() {
+      try {
+        const hints = new Map();
+        if (ZXing.DecodeHintType && ZXing.BarcodeFormat) {
+          hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+          hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+            ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E,
+            ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+            ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+            ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX,
+          ]);
+        }
+        return new ZXing.BrowserMultiFormatReader(hints);
+      } catch(e) {
+        return new ZXing.BrowserMultiFormatReader();
+      }
+    }
     function doScan() {
       try {
         _decoderLog += 'ZX:try ';
-        const dataURL = canvas.toDataURL('image/jpeg', 0.9);
-        new ZXing.BrowserMultiFormatReader()
+        const dataURL = canvas.toDataURL('image/jpeg', 0.92);
+        buildZXingReader()
           .decodeFromImageUrl(dataURL)
           .then(r => { _decoderLog += 'ZX:hit '; finishSuccess(r.getText()); })
           .catch(() => { _decoderLog += 'ZX:0 '; tryNextVariant(); });
