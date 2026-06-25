@@ -1914,11 +1914,20 @@ function buildVelocityMap() {
 
 function clearVelCache() {
   const sheet = getVelSheet();
-  if (sheet.getLastRow() > 1) {
-    sheet.deleteRows(2, sheet.getLastRow() - 1);
-  }
-  PropertiesService.getScriptProperties().deleteProperty('velSyncDate');
-  return { ok: true, message: 'Vel Cache sheet cleared and sync date reset. Run velsync to backfill.' };
+  // Use clearContents() + rewrite header, NOT deleteRows(): Sheets throws
+  // "it is not possible to delete all non-frozen rows" when the header is frozen
+  // and we'd remove every data row. clearContents has no such restriction.
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+  sheet.setFrozenRows(1);
+  // Full sync-state reset so the next velsync rebuilds cleanly from scratch and the
+  // gap self-heal doesn't fire mid-rebuild on stale flags.
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('velSyncDate');
+  props.deleteProperty('velLastWriteDate');
+  props.deleteProperty('velSheetCorrupted');
+  props.deleteProperty('velGapHealedAt');
+  return { ok: true, message: 'Vel Cache sheet cleared and sync state reset. Run velsync to backfill.' };
 }
 
 // velBackfillChunk: HTTP entry point — just schedules the trigger and returns immediately.
