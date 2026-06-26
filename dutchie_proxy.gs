@@ -128,6 +128,7 @@ function doGet(e) {
     if (params.action === 'velbackfillstatus') return jsonOut(velBackfillStatus());
     if (params.action === 'velproduct')        return jsonOut(velProductDiagnostic(params));
     if (params.action === 'velgapcheck')       return jsonOut(velGapCheck(params));
+    if (params.action === 'velgapaudit')       return jsonOut(velGapAudit());
     if (params.action === 'getstate')          return jsonOut(getSharedState(params));
     if (params.action === 'sharedkill')        return jsonOut(sharedKill(params));
     if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params));
@@ -3396,6 +3397,64 @@ function getOperationalBundle(params) {
 
 // Phase 1: sync velocity cache + refresh the cached velocity endpoint.
 // Can run hourly. Fast when already caught up (~2s); up to 3 min for a full backfill.
+// Audit the Vel Cache for multi-day holes anywhere in the 180-day window and
+// backfill the OLDEST one (capped per run). Why this is safe to auto-fill: all 6
+// stores sell every day, so a contiguous block of days with ZERO rows across the
+// whole cache is a sync gap, never legitimate "no-sale" days. The forward-only
+// sync advances velSyncDate past holes and never revisits them, so without this a
+// gap (like the Apr–Jun one we just repaired) persists silently until someone
+// notices the velocity looks wrong. Runs nightly; large gaps fill over several nights.
+const VEL_GAP_MIN_DAYS  = 3;   // ignore scattered 1-2 day holes (could be real low-volume days)
+const VEL_GAP_FILL_CAP  = 28;  // max days to backfill per run (keeps within the 6-min budget)
+
+function auditAndFillVelGaps_(props, productDict) {
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { gapFilled: false, reason: 'empty' };
+
+  // Cheap: read only the date column.
+  const dateCol = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  const present = new Set();
+  for (let i = 0; i < dateCol.length; i++) {
+    const ymd = _velDateToYMD(dateCol[i][0]);
+    if (ymd) present.add(ymd);
+  }
+
+  const MS = 86400000, now = Date.now();
+  // Calendar days from 179 days ago up to yesterday (skip today — may be partial),
+  // oldest first, so the first qualifying run found is the OLDEST gap.
+  const days = [];
+  for (let d = 179; d >= 1; d--) days.push(_dateToYMDFast_(new Date(now - d * MS)));
+
+  let runStart = -1, runLen = 0, gapStart = -1, gapLen = 0;
+  for (let i = 0; i < days.length; i++) {
+    if (!present.has(days[i])) {
+      if (runLen === 0) runStart = i;
+      runLen++;
+    } else {
+      if (runLen >= VEL_GAP_MIN_DAYS) { gapStart = runStart; gapLen = runLen; break; }
+      runLen = 0;
+    }
+  }
+  if (gapStart === -1 && runLen >= VEL_GAP_MIN_DAYS) { gapStart = runStart; gapLen = runLen; }
+  if (gapStart === -1) return { gapFilled: false };
+
+  // Backfill the oldest gap (capped). updateProp=false so velSyncDate (the forward
+  // cursor) is untouched — we're patching history, not advancing the frontier.
+  const fillLen  = Math.min(gapLen, VEL_GAP_FILL_CAP);
+  const fromYMD  = days[gapStart];
+  const fromDate = new Date(fromYMD + 'T00:00:00Z');
+  const toDate   = new Date(fromDate.getTime() + fillLen * MS);
+  _syncChunk(props, fromDate, toDate, false, productDict);
+  Logger.log('auditAndFillVelGaps_: backfilled gap from ' + fromYMD + ' (' + gapLen + '-day gap, filled ' + fillLen + ')');
+  return { gapFilled: true, from: fromYMD, gapDays: gapLen, filledDays: fillLen };
+}
+
+// Manual HTTP entry point for the gap audit (?action=velgapaudit) — fills one gap per call.
+function velGapAudit() {
+  return auditAndFillVelGaps_(PropertiesService.getScriptProperties(), buildProductIdDict());
+}
+
 function warmVelocityOnly() {
   const started = new Date();
   const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
@@ -3406,6 +3465,14 @@ function warmVelocityOnly() {
     result.errors.push('velocity: ' + err.message);
     result.ok = false;
     _logGasError('warmVelocityOnly', err.message);
+  }
+  // Self-heal any multi-day hole in the window (non-fatal; runs after the forward sync).
+  try {
+    const props = PropertiesService.getScriptProperties();
+    result.gapAudit = auditAndFillVelGaps_(props, buildProductIdDict());
+  } catch (err) {
+    result.errors.push('gap audit: ' + err.message);
+    _logGasError('auditAndFillVelGaps_', err.message);
   }
   result.finishedAt      = new Date().toISOString();
   result.durationSeconds = Math.round((new Date() - started) / 1000);
