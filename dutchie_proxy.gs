@@ -1470,13 +1470,23 @@ const VEL_COLS = ['date','store','productId','productName','brand','category','s
 // Google Sheets auto-converts "2026-05-20" strings to Date objects when stored,
 // so getValues() returns Date objects, not strings. Using String(dateObj) gives
 // "Wed May 20 2026..." which breaks string comparisons and key lookups.
+// Fast Date → "YYYY-MM-DD" with NO GAS service calls. Utilities.formatDate and
+// Session.getScriptTimeZone() are each a service round-trip; calling them per row
+// over a 150K+ row sheet (buildVelocityMap) blows past the 6-min execution limit.
+// GAS V8 Date getters already report in the script timezone, so this matches
+// Utilities.formatDate(d, scriptTZ, 'yyyy-MM-dd') without the overhead.
+function _dateToYMDFast_(d) {
+  const m = d.getMonth() + 1, day = d.getDate();
+  return d.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (day < 10 ? '0' : '') + day;
+}
+
 function _velDateToYMD(v) {
   if (!v) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (v instanceof Date) return _dateToYMDFast_(v);
   const s = String(v);
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   const d = new Date(s);
-  return isNaN(d.getTime()) ? '' : Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return isNaN(d.getTime()) ? '' : _dateToYMDFast_(d);
 }
 
 // Module-level cache for the velSheetFormatted flag — avoids a PropertiesService
@@ -1920,6 +1930,10 @@ function clearVelCache() {
   sheet.clearContents();
   sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
   sheet.setFrozenRows(1);
+  // Re-apply plain-text format to the date column so the rebuild stores dates as
+  // strings, NOT Date objects (clearContents can drop the format). Date-object rows
+  // force the slow conversion path in buildVelocityMap.
+  sheet.getRange(1, 1, sheet.getMaxRows(), 1).setNumberFormat('@STRING@');
   // Full sync-state reset so the next velsync rebuilds cleanly from scratch and the
   // gap self-heal doesn't fire mid-rebuild on stale flags.
   const props = PropertiesService.getScriptProperties();
@@ -1927,6 +1941,7 @@ function clearVelCache() {
   props.deleteProperty('velLastWriteDate');
   props.deleteProperty('velSheetCorrupted');
   props.deleteProperty('velGapHealedAt');
+  props.setProperty('velSheetFormatted', 'true'); // format just applied; skip re-apply in getVelSheet
   return { ok: true, message: 'Vel Cache sheet cleared and sync state reset. Run velsync to backfill.' };
 }
 
