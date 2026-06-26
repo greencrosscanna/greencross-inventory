@@ -1481,6 +1481,7 @@ if (location.protocol === 'file:') {
         <button class="tab" data-tab="orders" id="tabOrders">Orders <span class="cart-badge" id="cartBadge" style="display:none"></span></button>
         <button class="tab" data-tab="transfers" id="tabTransfers">Transfers <span class="cart-badge" id="transferBadge" style="display:none"></span></button>
         <button class="tab" data-tab="performance">Performance</button>
+        <button class="tab" data-tab="pricetags" id="tabPricetags">Price Tags <span class="cart-badge" id="pricetagsBadge" style="display:none"></span></button>
         <button class="tab" data-tab="flags">Flags</button>
         <button class="tab beta-tab" data-tab="beta" id="betaTabBtn">Beta</button>
         <button class="tab scanner-tab" data-tab="scanner" id="scannerTabBtn" style="display:none;align-items:center;gap:4px">
@@ -1673,7 +1674,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.50</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner search: typing in the search box now shows a list of matching products to pick from (name / brand / SKU), just like the Inventory "Search products" box — it no longer auto-loads the first match. Focusing the search also turns the live camera off and hides it (so it isn't running or firing scans while you type); a "📷 Camera" button returns to live scanning.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.51</span><span class="ver-date">Jun 25, 2026</span><span class="ver-desc">OOS visibility: products that sold at a store but are now out of stock there are surfaced as OOS rows even if the last sale was more than 28 days ago. Previously the "sold here, now empty" detection only counted products that sold in the last 28 days, so slower movers that sold ~a month ago showed nothing at all at that location (misleading — looked like the product was never carried there). Now any product with sales history in the velocity window that's currently out of stock shows as OOS at that store.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.50</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner search: typing in the search box now shows a list of matching products to pick from (name / brand / SKU), just like the Inventory "Search products" box — it no longer auto-loads the first match. Focusing the search also turns the live camera off and hides it (so it isn't running or firing scans while you type); a "📷 Camera" button returns to live scanning.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.49</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: hid the diagnostic overlay (sw/iw/frames/foc/decode trail) that was used to debug the camera — the Scan tab is clean now. The diagnostics aren't gone, just gated: append ?scandebug=1 to the URL to bring them back for troubleshooting, ?scandebug=0 to hide again.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.48</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped UPC barcodes now decode reliably. The photo decoder was cropping barcode regions from an already-shrunk 1800px copy, then nearest-neighbor upscaling — which destroys the sharp bar edges 1D barcodes need (fine for QR, fatal for UPC/EAN). Crops now come from the full-resolution camera photo and downscale cleanly, giving ZXing readable bars. Diag now shows the hi-res source size too.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.47</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops).</span></div>
@@ -1874,6 +1876,14 @@ if (location.protocol === 'file:') {
     <div id="inventoryContent">
       <div class="state-msg"><div class="spinner"></div><br>Loading inventory…</div>
     </div>
+  </div>
+
+  <!-- ══ PRICE TAGS PANEL (embeds the Price Cards app) ══ -->
+  <div class="panel" id="panel-pricetags" style="padding:0">
+    <iframe id="pricetagsFrame" title="Price Tags"
+            src="https://greencrosscanna.github.io/greencross-price-cards/"
+            style="width:100%;height:calc(100vh - 108px);border:0;display:block"
+            allow="clipboard-read; clipboard-write"></iframe>
   </div>
 
   <!-- ══ ORDERS PANEL ══ -->
@@ -3989,11 +3999,15 @@ function init() {
       if (isBeta) loadBetaFeed();
       const isScanner = state.tab === 'scanner';
       const ctrlBar = document.querySelector('.controls-bar');
-      if (ctrlBar) ctrlBar.style.display = isScanner ? 'none' : '';
+      if (ctrlBar) ctrlBar.style.display = (isScanner || state.tab === 'pricetags') ? 'none' : '';
       if (isScanner) initScanner();
       else stopScanner();
     });
   });
+
+  // Price Tags queue badge — initial fetch + keep fresh
+  updatePriceTagsBadge();
+  setInterval(updatePriceTagsBadge, 30000);
 
   // Store filter pills
   document.querySelectorAll('.pill').forEach(btn => {
@@ -4469,7 +4483,11 @@ async function loadInventoryData() {
         if (inInventory.has(name)) continue;                              // exact name match
         if (vel.sku && inInventorySkus.has(vel.sku)) continue;           // SKU match (most reliable)
         if (inInventoryNorm.has(inventoryNormName(name))) continue;      // normalized name (handles 10pack vs 10pk, etc.)
-        if ((vel.vel28 || 0) === 0) continue; // only care about products selling in last 28 days
+        // Surface ANY product with sales history at this store that's now out of stock —
+        // not just last-28-day sellers. A product that sold (even 1 unit) and is now empty
+        // is a real OOS at this location; gating on vel28 hid slower movers that sold
+        // just outside the 28-day window (e.g. ~30 days ago), which was misleading.
+        if (!(vel.qty90 > 0)) continue; // must have actually sold here in the velocity window
         const pVel = vel.vel14 > 0 ? vel.vel14 : (vel.vel28 > 0 ? vel.vel28 : vel.vel7);
         const rawReorder = Math.max(0, pVel * REORDER_BUFFER_VAL);
         const isFlower = isBulkFlowerProduct({ category: vel.category });
@@ -8347,6 +8365,21 @@ function updateOrderBadge() {
   const count = state.orderCart.length;
   badge.textContent = count;
   badge.style.display = count > 0 ? 'inline-flex' : 'none';
+}
+
+// Price Tags badge — count of cards waiting in the shared print queue (price-cards engine).
+const PRICETAGS_ENGINE = 'https://script.google.com/macros/s/AKfycbwKRfDEz5Rugw-NfFZpEMDawoX-nBCB0rocMdt-KBfcyOf13ZO8D2INQGvHqIzKjVFb/exec';
+function updatePriceTagsBadge() {
+  const badge = document.getElementById('pricetagsBadge');
+  if (!badge) return;
+  fetch(PRICETAGS_ENGINE + '?action=getQueue', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(d => {
+      const n = (d && d.ok && d.queue) ? d.queue.length : 0;
+      badge.textContent = n;
+      badge.style.display = n > 0 ? 'inline-flex' : 'none';
+    })
+    .catch(() => {});
 }
 
 function cartKey(p) {
