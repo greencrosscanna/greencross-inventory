@@ -17,6 +17,7 @@ const VENDOR_LEAD_TIMES_SHEET_NAME = 'Config - Vendor Lead Times';
 const DECISION_FEED_SHEET_NAME     = 'Decision Feed';
 const OPERATIONAL_SNAPSHOT_SHEET_NAME = 'Operational Snapshot';
 const SHARED_STATE_SHEET_NAME      = 'Shared State';
+const LOADING_QUOTES_SHEET_NAME    = 'Loading Quotes';
 const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 
 const STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
@@ -68,6 +69,65 @@ function getGasErrors() {
 function clearGasErrors() {
   PropertiesService.getScriptProperties().deleteProperty(GAS_ERROR_LOG_KEY);
   return { ok: true, message: 'Error log cleared.' };
+}
+
+// ── Loading Quotes ────────────────────────────────────────────────────────────
+const DEFAULT_LOADING_QUOTES_ = [
+  ["Marijuana is not a drug…", "but waiting on this inventory is a goddamn addiction."],
+  ["It's giving… loading…", "and this inventory is not giving quickly."],
+  ["It'd be a lot cooler if you did…", "load the inventory faster, dude."],
+  ["This is the dopest inventory I ever waited on…", "if this motherfucker ever shows up."],
+  ["Man, am I driving okay?…", "Nah, I think we're parked. Still waiting on the inventory."],
+  ["I love weed, okay, I LOVE it…", "but not as much as I love this inventory finally dropping."],
+  ["It's almost a shame to check this inventory…", "it's like killing a unicorn with a bomb."],
+  ["Hold up…", "I just forgot what the fuck we were even waiting on."],
+  ["The monkey's out of the bottle, man…", "Pandora doesn't go back in the box with this slow inventory."],
+  ["Say man, you got some inventory?…", "Nah? Then this wait gonna take all day."],
+  ["I can hear my hair growing…", "while this damn inventory spins forever."],
+  ["Fuck it, dude. Let's go bowling…", "after the inventory finally shows up."],
+  ["You ever see the back of a $20 bill…", "on weed? That's how slow this inventory feels."],
+  ["If this takes any longer I'm lighting up in the back…", "fuck it."],
+  ["Puff puff give…", "puff puff give… you're fuckin' up the whole inventory rotation!"],
+  ["I don't do drugs…", "just weed. And waiting on this bullshit inventory."],
+  ["I'll be back.", "Said the inventory. It wasn't."],
+  ["To infinity and beyond!", "That's roughly how long this inventory is taking."],
+  ["Life is like a box of chocolates.", "You never know what inventory you're gonna get."],
+  ["You can't handle the truth!", "Especially not how slow this inventory loads."],
+  ["Say hello to my little friend.", "He also has no idea where the inventory went."],
+  ["I am your father.", "And I am STILL waiting on this inventory."],
+  ["Houston, we have a problem.", "The inventory hasn't landed yet."],
+  ["You talking to me?", "Because this inventory sure as hell isn't."],
+  ["May the Force be with you.", "You're gonna need it waiting on this inventory."],
+  ["Just keep swimming.", "Just keep loading, just keep loading."],
+  ["Why so serious?", "Relax. The inventory is probably almost here."],
+  ["Elementary, my dear Watson.", "The inventory is clearly loading. Slowly."],
+  ["They may take our lives.", "But they'll never take our INVENTORY!"],
+  ["Get busy living, or get busy dying.", "Or just get busy waiting on this inventory."],
+  ["Hasta la vista, baby.", "Said the inventory data. Still hasn't come back."],
+  ["I feel the need… the need for speed.", "This inventory did not get the memo."],
+];
+
+function ensureLoadingQuotesSheet_() {
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  let sheet = ss.getSheetByName(LOADING_QUOTES_SHEET_NAME);
+  if (sheet) return sheet;
+  sheet = ss.insertSheet(LOADING_QUOTES_SHEET_NAME);
+  const rows = [['setup', 'punchline'], ...DEFAULT_LOADING_QUOTES_];
+  sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+  return sheet;
+}
+
+function getLoadingQuotes() {
+  try {
+    ensureLoadingQuotesSheet_();
+    const quotes = sheetToObjects_(LOADING_QUOTES_SHEET_NAME)
+      .filter(r => r.setup && r.punchline)
+      .map(r => [String(r.setup), String(r.punchline)]);
+    return { ok: true, quotes };
+  } catch(e) {
+    _logGasError('getLoadingQuotes', e.message);
+    return { ok: false, quotes: [], error: e.message };
+  }
 }
 
 function getDataMode() {
@@ -168,6 +228,7 @@ function doGet(e) {
     if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
     if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
     if (params.action === 'decisionqueue')  return jsonOut(readBetaDecisionQueue(params));
+    if (params.action === 'loadingquotes')  return jsonOut(getLoadingQuotes());
     return jsonOut({ error: 'Unknown action' }, params.callback);
   } catch (err) {
     return jsonOut({ error: err.message, stack: err.stack }, params.callback);

@@ -2056,7 +2056,7 @@ if (location.protocol === 'file:') {
 // ════════════════════════════════════════════════════════
 const PROXY_URL = 'https://script.google.com/macros/s/AKfycbw2Jg8xlLd4uk4lVVGLu_-BtDjbOdoUWXz3Fyn2k_LfYLo1_L3eReyZLmlARxBePpHtwA/exec';
 
-const LOADING_QUOTES = [
+let LOADING_QUOTES = [
   ["Marijuana is not a drug…", "but waiting on this inventory is a goddamn addiction."],
   ["It's giving… loading…", "and this inventory is not giving quickly."],
   ["It'd be a lot cooler if you did…", "load the inventory faster, dude."],
@@ -3942,6 +3942,12 @@ function init() {
   const savedDensity = localStorage.getItem(LS.DENSITY);
   if (savedDensity === 'compact') document.body.classList.add('density-compact');
   initBetaTools();
+
+  // Pull loading quotes from the sheet (non-blocking; hardcoded array stays as fallback)
+  fetch(proxyUrl({ action: 'loadingquotes' }))
+    .then(r => r.json())
+    .then(d => { if (d.ok && Array.isArray(d.quotes) && d.quotes.length) LOADING_QUOTES = d.quotes; })
+    .catch(() => {});
 
   // Bootstrap: merge hardcoded CAT_SHORT into localStorage so settings drawer shows them,
   // then reload CAT_SHORT from the merged result so localStorage is the single source of truth.
