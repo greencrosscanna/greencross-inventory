@@ -3460,7 +3460,7 @@ function operationalHealthIssues(status) {
   if (!status.warmTriggerInstalled) issues.push({ type: 'Freshness', text: 'nightly snapshot trigger missing' });
   if (ageHours != null && ageHours > 30) issues.push({ type: 'Freshness', text: `snapshot ${fmtHours(ageHours)} old` });
   const warmState = status.warmStatus && status.warmStatus.state;
-  if (warmState === 'scheduled' || warmState === 'running') {
+  if (warmStatusActive_(status.warmStatus)) {
     issues.push({ type: 'Freshness', text: `snapshot build ${warmState}` });
   }
   if (warmState === 'completed_with_warnings') {
@@ -8032,6 +8032,18 @@ async function clearGasErrorsNow() {
   } catch(e) {}
 }
 
+// True only for a GENUINELY in-progress build. A snapshot build finishes in ~2-3 min, so a
+// 'running'/'scheduled' warmStatus older than 15 min is an orphaned flag (a build that crashed
+// before clearing it) — don't let it mask a snapshot that has since generated fine.
+function warmStatusActive_(warmStatus) {
+  if (!warmStatus) return false;
+  const st = warmStatus.state;
+  if (st !== 'running' && st !== 'scheduled') return false;
+  const ts = warmStatus.updatedAt || warmStatus.startedAt;
+  const ageMs = ts ? (Date.now() - new Date(ts).getTime()) : Infinity;
+  return ageMs < 15 * 60 * 1000;
+}
+
 async function refreshOperationalSnapshotStatus() {
   const el = document.getElementById('operationalSnapshotLabel');
   if (!el) return;
@@ -8041,7 +8053,7 @@ async function refreshOperationalSnapshotStatus() {
   try {
     const status = await getOperationalStatus(true); // force-fresh to show latest snapshot state
     const warmState = status.warmStatus && status.warmStatus.state;
-    if (warmState === 'scheduled' || warmState === 'running') {
+    if (warmStatusActive_(status.warmStatus)) {
       el.textContent = warmState === 'scheduled' ? 'Build scheduled' : 'Building...';
       el.style.color = '#d4a843';
       el.title = status.warmStatus.message || 'Operational snapshot build is in progress.';
