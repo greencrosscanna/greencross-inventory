@@ -108,7 +108,7 @@ const DEFAULT_LOADING_QUOTES_ = [
 ];
 
 function ensureLoadingQuotesSheet_() {
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   let sheet = ss.getSheetByName(LOADING_QUOTES_SHEET_NAME);
   if (sheet) return sheet;
   sheet = ss.insertSheet(LOADING_QUOTES_SHEET_NAME);
@@ -120,7 +120,7 @@ function ensureLoadingQuotesSheet_() {
 function getLoadingQuotes() {
   try {
     ensureLoadingQuotesSheet_();
-    const quotes = sheetToObjects_(LOADING_QUOTES_SHEET_NAME)
+    const quotes = sheetToObjects_(LOADING_QUOTES_SHEET_NAME, getInvDataSpreadsheetId())
       .filter(r => r.setup && r.punchline)
       .map(r => [String(r.setup), String(r.punchline)]);
     return { ok: true, quotes };
@@ -136,6 +136,17 @@ function getDataMode() {
 
 function getDataSpreadsheetId() {
   return getDataMode() === 'beta' ? BETA_SPREADSHEET_ID : LIVE_SPREADSHEET_ID;
+}
+
+// The inventory tool's own data sheets (Vel Cache, Inv Snapshot, ProductCatalog,
+// Product SKU Dict, Operational Snapshot, Loading Quotes) live in a DEDICATED spreadsheet so
+// they don't consume the financial workbook's 10,000,000-cell cap (they had filled it, which
+// blocked velocity sync, snapshot builds and everything else). The id is stored in a script
+// property after migration; until then this falls back to the financial workbook so behavior
+// is unchanged. Financial reads (income/budget via getSheetByGid) and the BETA-spreadsheet
+// sheets (Decision Feed, Shared State) are unaffected — they keep using their own ids.
+function getInvDataSpreadsheetId() {
+  return PropertiesService.getScriptProperties().getProperty('INV_DATA_SS_ID') || getDataSpreadsheetId();
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -183,6 +194,7 @@ function doGet(e) {
     if (params.action === 'velreset')       return jsonOut(resetVelSyncDate());
     if (params.action === 'velresyncfrom')  return jsonOut(velResyncFrom(params));
     if (params.action === 'veldedup')       return jsonOut(velDedup());
+    if (params.action === 'velclearfrom')   return jsonOut(velClearFrom(params));
     if (params.action === 'velclear')       return jsonOut(clearVelCache());
     if (params.action === 'velbackfill')       return jsonOut(velBackfillChunk(params));
     if (params.action === 'velbackfillstatus') return jsonOut(velBackfillStatus());
@@ -208,6 +220,14 @@ function doGet(e) {
     if (params.action === 'prodcatclear')   return jsonOut(clearProductCatalogCache());
     if (params.action === 'roomcacheclear') return jsonOut(clearRoomCache());
     if (params.action === 'roomidprobe')    return jsonOut(roomIdProbe(params));
+    if (params.action === 'roomendpointprobe') return jsonOut(roomEndpointProbe(params));
+    if (params.action === 'txfullprobe')    return jsonOut(txFullProbe(params));
+    if (params.action === 'skudebug')       return jsonOut(skuDebug(params));
+    if (params.action === 'sheetsinfo')     return jsonOut(sheetsInfo(params));
+    if (params.action === 'trimempty')      return jsonOut(trimEmptySheetSpace(params));
+    if (params.action === 'migrateinvdata') return jsonOut(migrateInventoryData(params));
+    if (params.action === 'copyinvsnap')    return jsonOut(copyInvSnapshotRecent(params));
+    if (params.action === 'deletemigrated') return jsonOut(deleteMigratedFromFinancial(params));
     if (params.action === 'roomdata')       return jsonOut(buildRoomData(params.store || 'Hillsboro'));
     if (params.action === 'retiredprobe')   return jsonOut(retiredProbe(params));
     if (params.action === 'returnprobe')    return jsonOut(returnProbe(params));
@@ -377,28 +397,50 @@ function getStoreRooms(store) {
 //   4. default 'back'
 const ROOM_DATA_CACHE_PREFIX = 'roomdata4_';
 
+// Dutchie's /inventory/inventorytransaction now REQUIRES both startDate and endDate and
+// caps the range at 31 days (previously it accepted an unbounded startDate, or none). The
+// old requests passed only startDate / no dates → HTTP 400 → zero Move rows → empty
+// invRoomMap → no room designation (every package fell to the default, and River's default
+// was 'distro', hiding its whole floor — the Tawny bug). Fix: query the endpoint in dated
+// ≤31-day windows covering ROOM_TX_LOOKBACK_DAYS of history; the latest toRoom per
+// inventoryId gives each package's current room. More windows = deeper history but more
+// API calls; 4×30d = 120 days covers essentially all currently-held stock's last move.
+const ROOM_TX_WINDOW_DAYS   = 30;  // per-request span, must stay ≤ 31 (API cap)
+const ROOM_TX_WINDOW_COUNT  = 4;   // → 120 days of move history
+
 // Build the parallel requests for one store's room data.
-// Order is significant — _processRoomData_ destructures responses in this exact order.
+// Layout: [ /room/rooms, ...N inventorytransaction windows, /reporting/transactions ].
+// _processRoomData_ reads responses[0] as rooms, responses[last] as register, and
+// everything between as Move-transaction windows — so the window count can change freely.
 function _roomDataRequests_(store) {
   const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
-  // Register transactions (last 14 days) are used to detect customer returns → quarantine.
-  const date90    = new Date(Date.now() - 90  * 86400000).toISOString().slice(0, 10);
-  const date150   = new Date(Date.now() - 150 * 86400000).toISOString().slice(0, 10);
-  const now14ISO  = new Date(Date.now() - 14  * 86400000).toISOString();
-  const nowISO    = new Date().toISOString();
-  return [
-    { url: DUTCHIE_BASE + '/room/rooms',                                                    headers: hdrs, muteHttpExceptions: true },
-    { url: DUTCHIE_BASE + '/inventory/inventorytransaction',                                headers: hdrs, muteHttpExceptions: true },
-    { url: DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + date90,            headers: hdrs, muteHttpExceptions: true },
-    { url: DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + date150,           headers: hdrs, muteHttpExceptions: true },
-    { url: DUTCHIE_BASE + '/reporting/transactions?FromDateUTC=' + encodeURIComponent(now14ISO) + '&ToDateUTC=' + encodeURIComponent(nowISO) + '&IncludeDetail=true', headers: hdrs, muteHttpExceptions: true },
+  const now  = Date.now();
+  const reqs = [
+    { url: DUTCHIE_BASE + '/room/rooms', headers: hdrs, muteHttpExceptions: true },
   ];
+  const spanMs = ROOM_TX_WINDOW_DAYS * 86400000;
+  for (let w = 0; w < ROOM_TX_WINDOW_COUNT; w++) {
+    // Window w covers [today - (w+1)*30d, today - w*30d]. w=0's end is tomorrow so today is included.
+    const endMs   = now - (w * spanMs) + (w === 0 ? 86400000 : 0);
+    const startMs = now - ((w + 1) * spanMs);
+    const startD  = new Date(startMs).toISOString().slice(0, 10);
+    const endD    = new Date(endMs).toISOString().slice(0, 10);
+    reqs.push({ url: DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + startD + '&endDate=' + endD, headers: hdrs, muteHttpExceptions: true });
+  }
+  // Register transactions (last 14 days) — used to detect customer returns → quarantine.
+  const now14ISO = new Date(now - 14 * 86400000).toISOString();
+  const nowISO   = new Date(now).toISOString();
+  reqs.push({ url: DUTCHIE_BASE + '/reporting/transactions?FromDateUTC=' + encodeURIComponent(now14ISO) + '&ToDateUTC=' + encodeURIComponent(nowISO) + '&IncludeDetail=true', headers: hdrs, muteHttpExceptions: true });
+  return reqs;
 }
 
-// Process the 5 responses (in _roomDataRequests_ order) into the room-data result object.
+// Process the responses (in _roomDataRequests_ order) into the room-data result object.
 // Pure — no fetching, no caching — so it works for both single-store and batch paths.
+// responses[0] = /room/rooms, responses[last] = register txns, middle = Move-tx windows.
 function _processRoomData_(responses) {
-  const [roomsResp, txBase, txRecent90, txRecent150, regResp] = responses;
+  const roomsResp = responses[0];
+  const regResp   = responses[responses.length - 1];
+  const txResps   = responses.slice(1, responses.length - 1);
 
   const roomNameType = {};  // name → type
   const roomIdType   = {};  // roomId → type (fallback when roomName absent)
@@ -420,13 +462,14 @@ function _processRoomData_(responses) {
     }
   }
 
-  // Merge all transaction responses; keep latest move per inventoryId.
-  // Recent responses override base (newer date wins by ISO string comparison).
+  // Merge all Move-transaction windows; keep the latest toRoom per inventoryId (newer date
+  // wins by ISO string comparison). Any transactionType carrying a toRoom counts (Move,
+  // Receive, Create Package, …) — the most recent one reflects the package's current room.
   const invRoomMap = {};
   const latestMove = {};
-  for (const resp of [txBase, txRecent90, txRecent150]) {
+  for (const resp of txResps) {
     if (resp.getResponseCode() !== 200) continue;
-    const txs = JSON.parse(resp.getContentText());
+    let txs; try { txs = JSON.parse(resp.getContentText()); } catch (e) { continue; }
     for (const tx of (Array.isArray(txs) ? txs : [])) {
       if (!tx.inventoryId || !tx.toRoom) continue;
       const id = tx.inventoryId;
@@ -462,8 +505,8 @@ function _processRoomData_(responses) {
 // Single-store room data with 1h-ish cache. Unchanged contract for existing callers
 // (getQuarantine, the roomdata diagnostic action, single-store getInventory).
 // Delegates to the batch path so cache get/put + parse-resilience live in one place.
-function buildRoomData(store) {
-  return buildRoomDataBatch_([store])[store];
+function buildRoomData(store, force) {
+  return buildRoomDataBatch_([store], force)[store];
 }
 
 // Batch room data for many stores in ONE fetchAll round. Cache-hit stores are served
@@ -475,14 +518,17 @@ function buildRoomData(store) {
 // Slicing is self-describing: each cold store records the start index and length of its
 // own response block, so the per-store split stays correct regardless of how many
 // requests _roomDataRequests_ returns (no hand-synced count constant to drift out of date).
-function buildRoomDataBatch_(stores) {
+function buildRoomDataBatch_(stores, force) {
   const cache    = CacheService.getScriptCache();
   const result   = {};
   const cold     = []; // { store, start, count }
   const requests = [];
 
   for (const store of stores) {
-    const cached = cache.get(ROOM_DATA_CACHE_PREFIX + store);
+    // force=true (a live Refresh) bypasses the cached room map so the floor/back/distro
+    // designation reflects packages moved since the last cache write — essential at River
+    // (the DC), where stock is constantly moved between rooms and staged for distribution.
+    const cached = force ? null : cache.get(ROOM_DATA_CACHE_PREFIX + store);
     if (cached) {
       try { result[store] = JSON.parse(cached); continue; } catch(e) { /* corrupt entry → refetch */ }
     }
@@ -509,9 +555,10 @@ function buildInventoryRoomMap(store) {
 
 // ─── LIVE INVENTORY (Dutchie API) ─────────────────────────────────────────────
 // Returns on-hand grouped by productName, split by room (floor vs back).
-// Room is determined by the latest "Move" transaction per inventoryId.
-// River Rd is the distribution hub: packages received but never moved default to 'distro'
-// (staged for distribution to other stores). At all other stores they default to 'back'.
+// Room is determined by roomQuantities → roomName/roomId → latest "Move" transaction.
+// When none of those are available (Dutchie currently returns no room data), packages
+// default to 'back' (active) at EVERY store — including River Rd. Genuine Distro-room
+// staging is only split out when Dutchie positively identifies it.
 const OPERATIONAL_CACHE_TTL = 21600; // seconds — CacheService max, keeps same-day loads fast
 const INV_CACHE_TTL = OPERATIONAL_CACHE_TTL;
 
@@ -544,7 +591,7 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
 
   const raw      = JSON.parse(invResp.getContentText());
   const items    = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
-  const { roomNameType, roomIdType, invRoomMap, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store);
+  const { roomNameType, roomIdType, invRoomMap, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store, params.force === '1');
   const returnedPackageIds = new Set(returnedPkgArr || []);
 
   const cutoff90   = new Date(Date.now() - 90 * 86400000).toISOString();
@@ -629,7 +676,15 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
         ? roomIdType[item.roomId]
         : safeTxRoom
         ? safeTxRoom
-        : (store === 'River Rd' ? 'distro' : 'back'); // River Rd: unreceived/unmoved packages default to distro (staged for distribution)
+        : 'back'; // unknown room → active/back at EVERY store, incl. River Rd.
+        // River Rd formerly defaulted to 'distro' (distribution-hub assumption: unmoved
+        // packages staged for inter-store distribution). But Dutchie now returns NO room
+        // data for any store — roomQuantities is empty, /reporting/inventory has no
+        // roomName/roomId, and River has no Move transactions — so 100% of River's packages
+        // hit this default and its entire (retail) floor stock was hidden as qtyDistro
+        // (Tawny bug, v2.51). Defaulting to 'back' keeps River consistent with every other
+        // store and never hides available inventory. Genuine distro staging is still split
+        // out correctly whenever Dutchie DOES supply a "Distro" roomName/roomId/Move-tx above.
 
       const itemCost = Number(item.unitCost || 0);
       if (itemCost > 0) p.unitCost = itemCost;
@@ -869,7 +924,7 @@ function buildWhyChips_(p, ctx) {
 
 function buildOosLastSeenMap_() {
   try {
-    const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+    const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
     const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
     if (!sheet || sheet.getLastRow() < 2) return {};
     const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
@@ -1556,7 +1611,7 @@ function _velDateToYMD(v) {
 let _velSheetFormatted = false;
 
 function getVelSheet() {
-  const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss    = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   let sheet   = ss.getSheetByName(VEL_SHEET_NAME);
   const isNew = !sheet;
   if (isNew) {
@@ -1569,16 +1624,17 @@ function getVelSheet() {
   // execution tracked via a module-level flag (no-op after first call) and a
   // ScriptProperties flag (persists across executions).
   if (!_velSheetFormatted) {
-    const props     = PropertiesService.getScriptProperties();
-    const formatted = props.getProperty('velSheetFormatted');
-    if (isNew || !formatted) {
-      // Format the entire column A as plain text. On an existing sheet this scopes
-      // to actual data; on a new sheet (lastRow=1) we must cover future rows too.
-      const lastRow = isNew ? sheet.getMaxRows() : Math.max(sheet.getLastRow(), 1);
-      sheet.getRange(1, 1, lastRow, 1).setNumberFormat('@STRING@');
-      props.setProperty('velSheetFormatted', 'true');
-    }
-    _velSheetFormatted = true; // skip PropertiesService on all subsequent calls this execution
+    // Format the ENTIRE column A as plain text (all rows, including future-appended ones),
+    // so Sheets never coerces a "2026-06-05" date string into a Date object. That coercion
+    // was the root cause of two bugs: (1) a sheet-vs-script timezone mismatch shifted stored
+    // dates by one day on readback, and (2) that shift made _syncChunk's collision key miss
+    // existing rows, appending duplicates. Text dates read back as the exact string written —
+    // no TZ interpretation, no shift, no dup, and _velDateToYMD short-circuits (no service
+    // call). Scope to the whole column via getMaxRows so appended rows inherit text format.
+    // Re-applied once per execution (cheap: one setNumberFormat call), no longer gated on a
+    // persistent flag, so a sheet that lost its formatting self-heals on the next sync.
+    sheet.getRange(1, 1, sheet.getMaxRows(), 1).setNumberFormat('@');
+    _velSheetFormatted = true; // skip on all subsequent getVelSheet calls this execution
   }
   return sheet;
 }
@@ -1586,6 +1642,59 @@ function getVelSheet() {
 // Fetch productId → {name, brand, category, sku} from all stores in parallel
 // Product catalog cache TTL — /products changes infrequently, 120/min rate limit
 const PROD_CATALOG_CACHE_TTL = 3600; // 1 hour
+
+// Persistent product catalog. Dutchie's /products response is intermittently
+// incomplete (a product can be present on one fetch and absent the next). _syncChunk
+// drops any sale whose productId isn't in the catalog, so an incomplete fetch silently
+// erases that product's SALES from velocity. We persist the union of every productId
+// ever seen here, so a momentary omission can never again drop a known product.
+const PROD_CATALOG_SHEET_NAME = 'ProductCatalog';
+const PROD_CATALOG_COLS = ['productId', 'name', 'brand', 'category', 'sku', 'img'];
+
+function getProductCatalogSheet_() {
+  const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
+  let sheet = ss.getSheetByName(PROD_CATALOG_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(PROD_CATALOG_SHEET_NAME);
+    sheet.getRange(1, 1, 1, PROD_CATALOG_COLS.length).setValues([PROD_CATALOG_COLS]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function _loadPersistedCatalog_() {
+  try {
+    const sheet = getProductCatalogSheet_();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return {};
+    const data = sheet.getRange(2, 1, lastRow - 1, PROD_CATALOG_COLS.length).getValues();
+    const dict = {};
+    for (const r of data) {
+      const pid = String(r[0] || '').trim();
+      if (!pid) continue;
+      dict[pid] = { name: String(r[1] || ''), brand: String(r[2] || ''), category: String(r[3] || 'Other'), sku: String(r[4] || ''), img: String(r[5] || '') };
+    }
+    return dict;
+  } catch (e) { Logger.log('_loadPersistedCatalog_ failed: ' + e.message); return {}; }
+}
+
+function _savePersistedCatalog_(dict) {
+  try {
+    const sheet = getProductCatalogSheet_();
+    const rows = Object.keys(dict).map(pid => {
+      const d = dict[pid];
+      return [pid, d.name || '', d.brand || '', d.category || '', d.sku || '', d.img || ''];
+    });
+    sheet.clearContents();
+    sheet.getRange(1, 1, 1, PROD_CATALOG_COLS.length).setValues([PROD_CATALOG_COLS]);
+    const BATCH = 5000;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const b = rows.slice(i, i + BATCH);
+      sheet.getRange(i + 2, 1, b.length, PROD_CATALOG_COLS.length).setValues(b);
+    }
+    sheet.setFrozenRows(1);
+  } catch (e) { Logger.log('_savePersistedCatalog_ failed: ' + e.message); }
+}
 
 // Returns a productId → {name, brand, category, sku} dict covering ALL products,
 // including OOS/discontinued. Uses GET /products (120/min, returns full catalog
@@ -1644,6 +1753,21 @@ function buildProductIdDict() {
       }
     } catch (e) { /* skip bad JSON */ }
   }
+
+  // Merge the PERSISTED catalog under the fresh fetch: fresh values win (so name/price
+  // updates apply), but any product missing from this fetch is retained from the
+  // persisted union. This is what stops an intermittently-incomplete /products response
+  // from silently dropping a known product's sales in _syncChunk.
+  const freshCount = Object.keys(dict).length;
+  try {
+    const persisted = _loadPersistedCatalog_();
+    for (const pid of Object.keys(persisted)) {
+      if (!dict[pid]) dict[pid] = persisted[pid];
+    }
+    // Persist the union back — but only if we got real fresh data this run, so a
+    // fully-failed fetch (all 429/errors) doesn't needlessly rewrite the sheet.
+    if (freshCount > 0) _savePersistedCatalog_(dict);
+  } catch (e) { Logger.log('buildProductIdDict merge failed: ' + e.message); }
 
   // Cache result — split across two keys if needed (CacheService 100KB limit per key)
   try {
@@ -1820,10 +1944,24 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
 
   if (!productDict) productDict = buildProductIdDict(); // fallback for single-call sites
 
+  // Rows are bucketed by LOCAL date (transactionDateLocalTime) but the Dutchie query
+  // filters by UTC. A local day spans up to ~31h of UTC (a 8 PM Pacific sale is next-day
+  // UTC), so a naive UTC window splits a local day across two chunks — and the later
+  // chunk's upsert REPLACES the earlier chunk's same store|date row, silently dropping
+  // the earlier partial count (this clipped evening-near-seam sales). Fix: over-fetch the
+  // UTC window by ±24h so each chunk sees every owned local day's FULL 24h, then only
+  // aggregate rows whose local date this chunk OWNS ([fromYMD, toYMD] inclusive). Each
+  // local date is thus fully counted by exactly one chunk. The ±24h pad (>max TZ offset
+  // of 8h) makes this DST-safe without any timezone math.
+  const ownFromYMD  = fromISO.slice(0, 10);
+  const ownToYMD    = toISO.slice(0, 10);
+  const queryFromISO = new Date(fromDate.getTime() - 86400000).toISOString();
+  const queryToISO   = new Date(toDate.getTime()   + 86400000).toISOString();
+
   const requests = STORES.map(store => ({
     url: DUTCHIE_BASE + '/reporting/transactions'
-      + '?FromDateUTC=' + encodeURIComponent(fromISO)
-      + '&ToDateUTC='   + encodeURIComponent(toISO)
+      + '?FromDateUTC=' + encodeURIComponent(queryFromISO)
+      + '&ToDateUTC='   + encodeURIComponent(queryToISO)
       + '&IncludeDetail=true',
     headers: { Authorization: dutchieAuth(store), Accept: 'application/json' },
     muteHttpExceptions: true,
@@ -1847,6 +1985,7 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
       if (!Array.isArray(tx.items)) continue;
       const dateStr = (tx.transactionDateLocalTime || tx.transactionDate || '').slice(0, 10);
       if (!dateStr || dateStr < cutoff180Str) continue; // skip rows outside the retention window
+      if (dateStr < ownFromYMD || dateStr > ownToYMD) continue; // only this chunk's owned local dates (the ±24h over-fetch pulls in neighbors we skip here)
 
       for (const item of tx.items) {
         if (item.isReturned) continue;
@@ -1855,9 +1994,21 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
         const pid = item.productId;
         if (!pid) continue;
         const product = productDict[pid];
-        if (!product) continue; // skip products absent from full product catalog
+        // Resolve product info from the (now persistent/union) catalog. If the productId
+        // still isn't known, DON'T drop the sale — fall back to the transaction item's own
+        // fields so a brand-new product (not yet in any catalog fetch) still counts. The
+        // accumulating catalog will enrich it on the next sync. Only skip if there's truly
+        // no name to key velocity by.
+        let pName, pBrand, pCategory, pSku;
+        if (product) {
+          pName = product.name; pBrand = product.brand; pCategory = product.category; pSku = product.sku;
+        } else {
+          pName = String(item.productName || '').trim();
+          pBrand = item.brandName || ''; pCategory = item.masterCategory || item.category || 'Other'; pSku = item.sku || '';
+        }
+        if (!pName) continue;
         const key = store + '|' + dateStr + '|' + pid;
-        if (!agg[key]) agg[key] = { date: dateStr, store, productId: pid, name: product.name, brand: product.brand, category: product.category, sku: product.sku, qty: 0 };
+        if (!agg[key]) agg[key] = { date: dateStr, store, productId: pid, name: pName, brand: pBrand, category: pCategory, sku: pSku, qty: 0 };
         agg[key].qty += qty;
       }
     }
@@ -1883,6 +2034,10 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
     if (!hasCollision) {
       // Fast path: just append — no full-sheet rewrite needed.
       const appendData = newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]);
+      // Force the appended date cells to text BEFORE writing, so Sheets keeps "2026-06-05"
+      // as a string (no Date coercion → no timezone shift). Rows appended past the current
+      // max-row don't inherit the column format set in getVelSheet, so set it explicitly here.
+      sheet.getRange(lastRow + 1, 1, appendData.length, 1).setNumberFormat('@');
       sheet.getRange(lastRow + 1, 1, appendData.length, VEL_COLS.length).setValues(appendData);
     } else {
       // Slow path: dedup, prune, and rewrite the full sheet.
@@ -1891,9 +2046,14 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
       // check detects truncation and sets velSheetCorrupted so the gap self-heal recovers.
       const kept    = existingData.filter(row => !newKeys.has(row[1] + '|' + _velDateToYMD(row[0]) + '|' + row[2]));
       const pruned  = kept.filter(row => _velDateToYMD(row[0]) >= cutoff180Str);
-      const allRows = pruned.concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
+      // Normalize every date cell to a YMD string so the rewritten sheet is uniformly text
+      // (kept rows may be legacy Date objects; convert them) — keeps the date column free of
+      // Date objects going forward.
+      const allRows = pruned.map(row => [_velDateToYMD(row[0]), row[1], row[2], row[3], row[4], row[5], row[6], row[7]])
+        .concat(newRows.map(r => [r.date, r.store, r.productId, r.name, r.brand, r.category, r.sku, r.qty]));
       sheet.clearContents();
       sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+      if (allRows.length > 0) sheet.getRange(2, 1, allRows.length, 1).setNumberFormat('@'); // text date col
       const WRITE_BATCH = 5000;
       for (let i = 0; i < allRows.length; i += WRITE_BATCH) {
         const batch = allRows.slice(i, i + WRITE_BATCH);
@@ -2130,6 +2290,30 @@ function velProductDiagnostic(params) {
   }
 
   const velSyncDate = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
+
+  // Optional per-date dump for one store (&dates=1&store=Bend). Surfaces duplicate or
+  // TZ-shifted date rows: each entry shows the raw cell type, the normalized YMD, qty,
+  // and how many physical rows share that (store,date) key. count>1 = duplicate rows.
+  let dateDump = null;
+  if (params.dates === '1' && params.store) {
+    const wantStore = String(params.store);
+    const perKey = {};
+    for (const r of matches) {
+      if (String(r[1]) !== wantStore) continue;
+      const ymd = _velDateToYMD(r[0]);
+      const isDateObj = (r[0] instanceof Date);
+      const qty = parseFloat(r[7]) || 0;
+      if (!perKey[ymd]) perKey[ymd] = { ymd, qty: 0, rows: 0, rawTypes: {} };
+      perKey[ymd].qty += qty;
+      perKey[ymd].rows++;
+      const t = isDateObj ? 'Date' : (typeof r[0]);
+      perKey[ymd].rawTypes[t] = (perKey[ymd].rawTypes[t] || 0) + 1;
+    }
+    const list = Object.values(perKey).sort((a, b) => a.ymd < b.ymd ? -1 : 1);
+    const dupDates = list.filter(d => d.rows > 1);
+    dateDump = { store: wantStore, distinctDates: list.length, dupDateCount: dupDates.length, dupDates, dates: list };
+  }
+
   return {
     found: true,
     name:      String(matches[0][3]),
@@ -2139,7 +2323,8 @@ function velProductDiagnostic(params) {
     productId: String(matches[0][2]),
     totalMatchRows: matches.length,
     velSyncDate,
-    byStore: Object.values(byStore)
+    byStore: Object.values(byStore),
+    dateDump
   };
 }
 
@@ -2206,6 +2391,357 @@ function roomIdProbe(params) {
   };
 }
 
+// Diagnostic: probe every candidate endpoint that might expose per-package room
+// designation for a store, across all of that store's rooms. ?action=roomendpointprobe&store=River Rd
+// Goal: find a live source of room assignment now that /reporting/inventory's roomQuantities
+// is empty. Returns a matrix of endpoint × room → package count, so we can see which
+// endpoint actually partitions inventory by room.
+function roomEndpointProbe(params) {
+  const store = params.store || 'River Rd';
+  const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
+
+  // 1) Get the room list for this store
+  let rooms = [];
+  try {
+    const rr = UrlFetchApp.fetch(DUTCHIE_BASE + '/room/rooms', { headers: hdrs, muteHttpExceptions: true });
+    if (rr.getResponseCode() === 200) rooms = JSON.parse(rr.getContentText()) || [];
+  } catch (e) {}
+  const roomList = (Array.isArray(rooms) ? rooms : []).map(r => ({ roomId: r.roomId, roomName: r.roomName || r.name, isSalesFloor: !!r.isSalesFloor }));
+
+  const summarize = (resp) => {
+    const code = resp.getResponseCode();
+    if (code !== 200) return { http: code, err: resp.getContentText().slice(0, 120) };
+    let items = [];
+    try { const raw = JSON.parse(resp.getContentText()); items = Array.isArray(raw) ? raw : (raw.data || raw.items || []); } catch (e) { return { http: code, parseErr: true }; }
+    const withRoomId   = items.filter(i => i.roomId != null).length;
+    const withRoomName = items.filter(i => i.roomName).length;
+    const withRQ       = items.filter(i => Array.isArray(i.roomQuantities) && i.roomQuantities.length > 0).length;
+    return { http: code, count: items.length, withRoomId, withRoomName, withRoomQuantities: withRQ };
+  };
+
+  const out = { store, roomList, baseline: {}, perRoom: {} };
+
+  // 2) Baseline unfiltered endpoints (batch)
+  const baseReqs = [
+    ['reporting_inventory',            DUTCHIE_BASE + '/reporting/inventory'],
+    ['inventory_plain',               DUTCHIE_BASE + '/inventory'],
+    ['inventory_includeRoomQty',      DUTCHIE_BASE + '/inventory?includeRoomQuantities=true'],
+  ];
+  const baseResp = UrlFetchApp.fetchAll(baseReqs.map(([, url]) => ({ url, headers: hdrs, muteHttpExceptions: true })));
+  baseReqs.forEach(([name], i) => { out.baseline[name] = summarize(baseResp[i]); });
+
+  // 3) Per-room filtered endpoints — test both /inventory?roomId and /reporting/inventory?roomId
+  const roomReqs = [];
+  const roomKeys = [];
+  for (const r of roomList) {
+    if (r.roomId == null) continue;
+    roomReqs.push({ url: DUTCHIE_BASE + '/inventory?roomId=' + r.roomId,           headers: hdrs, muteHttpExceptions: true });
+    roomKeys.push([r.roomName + ' (' + r.roomId + ')', 'inventory_roomId']);
+    roomReqs.push({ url: DUTCHIE_BASE + '/reporting/inventory?roomId=' + r.roomId, headers: hdrs, muteHttpExceptions: true });
+    roomKeys.push([r.roomName + ' (' + r.roomId + ')', 'reporting_roomId']);
+  }
+  if (roomReqs.length) {
+    const roomResp = UrlFetchApp.fetchAll(roomReqs);
+    roomKeys.forEach(([roomLabel, ep], i) => {
+      if (!out.perRoom[roomLabel]) out.perRoom[roomLabel] = {};
+      out.perRoom[roomLabel][ep] = summarize(roomResp[i]);
+    });
+  }
+
+  // 4) Move-transaction endpoint (the code's invRoomMap fallback source). Report count and
+  // whether rows carry toRoom/roomId, since an empty/roomless tx feed is why invRoomMap is 0.
+  const date150 = new Date(Date.now() - 150 * 86400000).toISOString().slice(0, 10);
+  const txReqs = [
+    ['inventorytransaction_all',        DUTCHIE_BASE + '/inventory/inventorytransaction'],
+    ['inventorytransaction_150d',       DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + date150],
+  ];
+  const txResp = UrlFetchApp.fetchAll(txReqs.map(([, url]) => ({ url, headers: hdrs, muteHttpExceptions: true })));
+  out.moveTx = {};
+  txReqs.forEach(([name], i) => {
+    const resp = txResp[i]; const code = resp.getResponseCode();
+    if (code !== 200) { out.moveTx[name] = { http: code, err: resp.getContentText().slice(0,120) }; return; }
+    let items = []; try { const raw = JSON.parse(resp.getContentText()); items = Array.isArray(raw) ? raw : (raw.data || raw.items || []); } catch(e) { out.moveTx[name] = {http:code, parseErr:true}; return; }
+    const withToRoom = items.filter(t => t.toRoom).length;
+    const types = {}; items.forEach(t => { const ty = t.transactionType || t.type || '?'; types[ty] = (types[ty]||0)+1; });
+    out.moveTx[name] = { http: code, count: items.length, withToRoom, fields: items.length ? Object.keys(items[0]) : [], txTypes: types, sample: items.slice(0,2).map(t => ({ type: t.transactionType||t.type, inventoryId: t.inventoryId, toRoom: t.toRoom, fromRoom: t.fromRoom, roomId: t.roomId, date: t.transactionDate })) };
+  });
+
+  return out;
+}
+
+// Diagnostic: test /inventory/inventorytransaction with BOTH startDate and endDate
+// (the endpoint now requires both). ?action=txfullprobe&store=River Rd&days=30
+// Reports whether Move rows carry toRoom/roomId so we can rebuild room designation.
+function txFullProbe(params) {
+  const store = params.store || 'River Rd';
+  const days  = parseInt(params.days || '30', 10);
+  const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
+  const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const end   = new Date(Date.now() + 86400000).toISOString().slice(0, 10); // tomorrow, inclusive
+  const variants = [
+    ['date_only',      DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + start + '&endDate=' + end],
+    ['utc_iso',        DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + encodeURIComponent(new Date(Date.now()-days*86400000).toISOString()) + '&endDate=' + encodeURIComponent(new Date().toISOString())],
+  ];
+  const resp = UrlFetchApp.fetchAll(variants.map(([, url]) => ({ url, headers: hdrs, muteHttpExceptions: true })));
+  const out = { store, start, end, variants: {} };
+  variants.forEach(([name], i) => {
+    const r = resp[i]; const code = r.getResponseCode();
+    if (code !== 200) { out.variants[name] = { http: code, err: r.getContentText().slice(0, 300) }; return; }
+    let items = []; try { const raw = JSON.parse(r.getContentText()); items = Array.isArray(raw) ? raw : (raw.data || raw.items || []); } catch(e){ out.variants[name] = {http:code, parseErr:true}; return; }
+    const withToRoom = items.filter(t => t.toRoom).length;
+    const roomVals = {}; items.forEach(t => { if (t.toRoom) roomVals[t.toRoom] = (roomVals[t.toRoom]||0)+1; });
+    const types = {}; items.forEach(t => { const ty = t.transactionType || t.type || '?'; types[ty]=(types[ty]||0)+1; });
+    out.variants[name] = {
+      http: code, count: items.length, withToRoom, toRoomValues: roomVals, txTypes: types,
+      fields: items.length ? Object.keys(items[0]) : [],
+      sample: items.slice(0, 3).map(t => ({ type: t.transactionType||t.type, inventoryId: t.inventoryId, packageId: t.packageId, toRoom: t.toRoom, fromRoom: t.fromRoom, roomId: t.roomId, roomName: t.roomName, date: t.transactionDate || t.date })),
+    };
+  });
+  return out;
+}
+
+// Diagnostic: full trace of how one SKU at one store is classified into rooms.
+// ?action=skudebug&store=River Rd&sku=62938162
+// Shows each inventory package's quantity + how getInventory would classify it (roomQuantities
+// → roomName/roomId → invRoomMap Move-tx → default), plus the raw Move-tx history per package.
+function skuDebug(params) {
+  const store = params.store || 'River Rd';
+  const sku   = String(params.sku || '');
+  const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
+
+  const invResp = UrlFetchApp.fetch(DUTCHIE_BASE + '/reporting/inventory', { headers: hdrs, muteHttpExceptions: true });
+  if (invResp.getResponseCode() !== 200) return { error: 'inventory HTTP ' + invResp.getResponseCode() };
+  const raw   = JSON.parse(invResp.getContentText());
+  const items = (Array.isArray(raw) ? raw : (raw.data || raw.items || [])).filter(i => String(i.sku) === sku);
+
+  const rd = buildRoomData(store); // uses the live (fixed) room-data path
+  const { roomNameType, roomIdType, invRoomMap } = rd;
+
+  // Latest Move-tx toRoom per inventoryId for THIS sku (last 30 days, one window)
+  const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const end   = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const txResp = UrlFetchApp.fetch(DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + start + '&endDate=' + end, { headers: hdrs, muteHttpExceptions: true });
+  const txBySku = {};
+  if (txResp.getResponseCode() === 200) {
+    const txs = JSON.parse(txResp.getContentText());
+    for (const tx of (Array.isArray(txs) ? txs : [])) {
+      if (String(tx.sku) !== sku) continue;
+      (txBySku[tx.inventoryId] = txBySku[tx.inventoryId] || []).push({ type: tx.transactionType, toRoom: tx.toRoom, fromRoom: tx.fromRoom, qty: tx.quantity, date: tx.transactionDate });
+    }
+  }
+
+  const cutoff90 = new Date(Date.now() - 90 * 86400000).toISOString();
+  const packages = items.map(item => {
+    const qty = Number(item.quantityAvailable || 0);
+    const included = !(qty <= 0 && (item.lastModifiedDateUtc || '') < cutoff90);
+    const rqs = Array.isArray(item.roomQuantities) ? item.roomQuantities : null;
+    const txRoom = invRoomMap[item.inventoryId];
+    const safeTxRoom = (txRoom === 'floor' || txRoom === 'back' || txRoom === 'distro') ? txRoom : null;
+    const resolved = (item.roomName && roomNameType[item.roomName]) ? roomNameType[item.roomName]
+      : (item.roomId && roomIdType[item.roomId]) ? roomIdType[item.roomId]
+      : safeTxRoom ? safeTxRoom : 'back';
+    return {
+      inventoryId: item.inventoryId,
+      packageId: item.packageId,
+      quantityAvailable: qty,
+      allocatedQuantity: item.allocatedQuantity,
+      lastModified: item.lastModifiedDateUtc,
+      includedInApp: included,
+      roomQuantities: rqs,
+      itemRoomName: item.roomName || null,
+      itemRoomId: item.roomId || null,
+      invRoomMapType: txRoom || null,
+      resolvedRoomType: resolved,
+      moveTxHistory: (txBySku[item.inventoryId] || []).sort((a,b)=> (a.date<b.date?1:-1)),
+    };
+  });
+
+  const totals = { active: 0, floor: 0, back: 0, distro: 0, quarantine: 0, sample: 0 };
+  packages.forEach(pk => {
+    if (!pk.includedInApp) return;
+    const t = pk.resolvedRoomType, q = pk.quantityAvailable;
+    if (t === 'quarantine') totals.quarantine += q;
+    else if (t === 'sample') totals.sample += q;
+    else if (t === 'distro') totals.distro += q;
+    else { totals.active += q; if (t === 'floor') totals.floor += q; else totals.back += q; }
+  });
+
+  return { store, sku, packageCount: packages.length, appTotals: totals, packages };
+}
+
+// Diagnostic: report every sheet's grid size in the data spreadsheet, to find what is
+// consuming the 10,000,000-cell workbook cap. ?action=sheetsinfo
+// A sheet's cell cost is maxRows × maxColumns (the GRID, not the used range) — a sheet
+// with millions of empty rows or hundreds of untrimmed columns is the usual culprit.
+function sheetsInfo(params) {
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const sheets = ss.getSheets();
+  let totalCells = 0;
+  const rows = sheets.map(sh => {
+    const maxR = sh.getMaxRows(), maxC = sh.getMaxColumns();
+    const cells = maxR * maxC;
+    totalCells += cells;
+    return {
+      name: sh.getName(),
+      maxRows: maxR, maxCols: maxC, gridCells: cells,
+      lastRow: sh.getLastRow(), lastCol: sh.getLastColumn(),
+      wastedRows: maxR - sh.getLastRow(), wastedCols: maxC - sh.getLastColumn(),
+    };
+  });
+  rows.sort((a, b) => b.gridCells - a.gridCells);
+  return {
+    spreadsheetId: ss.getId(),
+    sheetCount: sheets.length,
+    totalGridCells: totalCells,
+    cellLimit: 10000000,
+    pctOfLimit: Math.round(totalCells / 10000000 * 1000) / 10,
+    sheets: rows,
+  };
+}
+
+// Reclaim workbook cells by deleting empty trailing rows/columns beyond each sheet's used
+// range (the grid cost is maxRows × maxColumns, not the used range, so untrimmed empty rows
+// waste cells and can fill the 10,000,000-cell cap). Non-destructive: only removes space past
+// getLastRow()/getLastColumn(), keeping a small buffer. ?action=trimempty (optionally &sheet=Name)
+function trimEmptySheetSpace(params) {
+  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const only = params.sheet || null;
+  const ROW_BUFFER = 2, COL_BUFFER = 1;
+  const results = [];
+  let freedCells = 0;
+  for (const sh of ss.getSheets()) {
+    if (only && sh.getName() !== only) continue;
+    const maxR = sh.getMaxRows(), maxC = sh.getMaxColumns();
+    const lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+    const keepR = Math.max(lastR + ROW_BUFFER, 1);
+    const keepC = Math.max(lastC + COL_BUFFER, 1);
+    let dRows = 0, dCols = 0;
+    if (maxR > keepR) { sh.deleteRows(keepR + 1, maxR - keepR); dRows = maxR - keepR; }
+    // Re-read maxColumns after row delete (unchanged) and trim columns.
+    if (maxC > keepC) { sh.deleteColumns(keepC + 1, maxC - keepC); dCols = maxC - keepC; }
+    if (dRows || dCols) {
+      const before = maxR * maxC;
+      const after = (maxR - dRows) * (maxC - dCols);
+      freedCells += (before - after);
+      results.push({ sheet: sh.getName(), deletedRows: dRows, deletedCols: dCols, newRows: maxR - dRows, newCols: maxC - dCols });
+    }
+  }
+  return { ok: true, freedCells, trimmed: results };
+}
+
+// ─── INVENTORY-DATA SPREADSHEET MIGRATION ─────────────────────────────────────
+// Sheets moved out of the financial workbook into their own dedicated spreadsheet.
+const INV_DATA_MOVE_SHEETS = ['Vel Cache', 'Inv Snapshot', 'ProductCatalog', 'Product SKU Dict', 'Operational Snapshot'];
+
+// Create the dedicated inventory-data spreadsheet (if needed) and copy the sheets over with
+// sheet.copyTo (server-side, handles the 400k+ row sheets without loading them into memory).
+// Idempotent + resumable: skips sheets already copied, so a 6-min timeout mid-run is safe to
+// re-invoke. Pass &sheet=Name to copy just one (use for the biggest sheets). Pass &activate=1
+// to flip getInvDataSpreadsheetId() over to the new spreadsheet once every sheet is present.
+// Does NOT delete anything from the financial workbook — that's deletemigrated, run last.
+function migrateInventoryData(params) {
+  const props = PropertiesService.getScriptProperties();
+  const oldSS = SpreadsheetApp.openById(getDataSpreadsheetId()); // financial workbook = source
+  let newId = props.getProperty('INV_DATA_SS_ID') || props.getProperty('INV_DATA_SS_PENDING');
+  let created = false;
+  let newSS;
+  if (newId) {
+    newSS = SpreadsheetApp.openById(newId);
+  } else {
+    newSS = SpreadsheetApp.create('Green Cross — Inventory Data');
+    newId = newSS.getId();
+    props.setProperty('INV_DATA_SS_PENDING', newId);
+    created = true;
+  }
+  const only = params.sheet || null;
+  const copied = [], skipped = [], errors = [];
+  for (const name of INV_DATA_MOVE_SHEETS) {
+    if (only && name !== only) continue;
+    if (newSS.getSheetByName(name)) { skipped.push(name + ' (already in new SS)'); continue; }
+    const src = oldSS.getSheetByName(name);
+    if (!src) { skipped.push(name + ' (not in financial workbook)'); continue; }
+    try {
+      const dest = src.copyTo(newSS);
+      dest.setName(name);
+      copied.push(name + ' (' + src.getLastRow() + ' rows)');
+    } catch (e) { errors.push(name + ': ' + e.message); }
+  }
+  // Drop the default empty "Sheet1" once real sheets exist.
+  const def = newSS.getSheetByName('Sheet1');
+  if (def && newSS.getSheets().length > 1) { try { newSS.deleteSheet(def); } catch (e) {} }
+
+  // A sheet is "handled" if it's now in the new SS, or it never existed in the old SS.
+  const allPresent = INV_DATA_MOVE_SHEETS.every(n => newSS.getSheetByName(n) || !oldSS.getSheetByName(n));
+  let activated = false;
+  if (params.activate === '1' && allPresent && !errors.length) {
+    props.setProperty('INV_DATA_SS_ID', newId);
+    props.deleteProperty('INV_DATA_SS_PENDING');
+    activated = true;
+  }
+  return {
+    ok: true, created, newSpreadsheetId: newId,
+    newUrl: 'https://docs.google.com/spreadsheets/d/' + newId + '/edit',
+    copied, skipped, errors, allPresent, activated,
+    activeSpreadsheetId: props.getProperty('INV_DATA_SS_ID') || null,
+  };
+}
+
+// Copy only the RECENT tail of 'Inv Snapshot' into the new spreadsheet. The full sheet has
+// grown to 400k+ rows, which (a) copyTo can't load from the maxed-out financial workbook and
+// (b) is the growth we wanted to cap anyway. A range read of the last N rows is far lighter
+// than copyTo, and keeping the recent tail preserves current OOS "last-seen" dates (older
+// products are stale). ?action=copyinvsnap&rows=80000
+function copyInvSnapshotRecent(params) {
+  const props = PropertiesService.getScriptProperties();
+  const keepRows = parseInt(params.rows || '80000', 10);
+  const oldSS = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const src = oldSS.getSheetByName(SNAPSHOT_SHEET_NAME);
+  if (!src) return { ok: false, error: 'Inv Snapshot not in financial workbook' };
+  const newId = props.getProperty('INV_DATA_SS_ID') || props.getProperty('INV_DATA_SS_PENDING');
+  if (!newId) return { ok: false, error: 'Run migrateinvdata first (no target spreadsheet yet).' };
+  const newSS = SpreadsheetApp.openById(newId);
+  if (newSS.getSheetByName(SNAPSHOT_SHEET_NAME)) return { ok: true, note: 'Inv Snapshot already in new SS', skipped: true };
+
+  const lastRow = src.getLastRow(), lastCol = src.getLastColumn();
+  const startRow = Math.max(2, lastRow - keepRows + 1); // keep header + last N data rows
+  const nData = lastRow - startRow + 1;
+  const dest = newSS.insertSheet(SNAPSHOT_SHEET_NAME);
+  // header
+  dest.getRange(1, 1, 1, lastCol).setValues(src.getRange(1, 1, 1, lastCol).getValues());
+  // recent rows in batches (avoids a single oversized read)
+  const BATCH = 20000; let copied = 0, cur = startRow;
+  while (cur <= lastRow) {
+    const n = Math.min(BATCH, lastRow - cur + 1);
+    const vals = src.getRange(cur, 1, n, lastCol).getValues();
+    dest.getRange(dest.getLastRow() + 1, 1, n, lastCol).setValues(vals);
+    cur += n; copied += n;
+  }
+  return { ok: true, srcRows: lastRow, keptRows: copied, droppedOldRows: (startRow - 2), destRows: dest.getLastRow() };
+}
+
+// Final step: after the migration is activated AND verified, delete the moved sheets from the
+// financial workbook to reclaim its cells. Refuses to delete any sheet unless a populated copy
+// exists in the new SS. Requires &confirm=1.
+function deleteMigratedFromFinancial(params) {
+  if (params.confirm !== '1') return { ok: false, error: 'Pass confirm=1 to delete (guard).' };
+  const props = PropertiesService.getScriptProperties();
+  const activeId = props.getProperty('INV_DATA_SS_ID');
+  if (!activeId) return { ok: false, error: 'Migration not activated yet (INV_DATA_SS_ID unset).' };
+  const newSS = SpreadsheetApp.openById(activeId);
+  const oldSS = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const deleted = [], skipped = [];
+  for (const name of INV_DATA_MOVE_SHEETS) {
+    const inOld = oldSS.getSheetByName(name);
+    if (!inOld) { skipped.push(name + ' (not in financial workbook)'); continue; }
+    const inNew = newSS.getSheetByName(name);
+    if (!inNew || inNew.getLastRow() < Math.min(inOld.getLastRow(), 1)) {
+      skipped.push(name + ' (NOT safely present in new SS — refused)'); continue;
+    }
+    try { oldSS.deleteSheet(inOld); deleted.push(name); } catch (e) { skipped.push(name + ': ' + e.message); }
+  }
+  return { ok: true, deleted, skipped };
+}
+
 function clearProductCatalogCache() {
   const sc = CacheService.getScriptCache();
   sc.removeAll(['prodcat_v2', 'prodcat_v2_a', 'prodcat_v2_b', 'prodcat_v2_split']);
@@ -2233,6 +2769,9 @@ function velDedup() {
     const key  = row[1] + '|' + ymd + '|' + row[2];
     if (seen.has(key)) continue; // duplicate — skip
     seen.add(key);
+    // Normalize the date cell to its YMD string so the rewritten sheet is uniformly text
+    // (no Date objects) — prevents the timezone-shift / duplicate-row cycle from recurring.
+    row[0] = ymd;
     deduped.push(row);
   }
   deduped.reverse(); // restore chronological order
@@ -2240,10 +2779,72 @@ function velDedup() {
   const removed = data.length - deduped.length;
   sheet.clearContents();
   sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
-  if (deduped.length > 0) sheet.getRange(2, 1, deduped.length, VEL_COLS.length).setValues(deduped);
+  if (deduped.length > 0) sheet.getRange(2, 1, deduped.length, 1).setNumberFormat('@'); // text date col
+  // Batched write (5K rows/batch), NOT a single setValues. A single write of the full
+  // deduped set (>100K rows) can hit the GAS 6-min limit mid-write and silently TRUNCATE
+  // the sheet — which is exactly how the recent-tail data loss happened. Batching means a
+  // timeout leaves the sheet written from the top, and the post-write count check below
+  // flags any shortfall so the nightly gap self-heal recovers it.
+  const WRITE_BATCH = 5000;
+  for (let i = 0; i < deduped.length; i += WRITE_BATCH) {
+    const batch = deduped.slice(i, i + WRITE_BATCH);
+    sheet.getRange(i + 2, 1, batch.length, VEL_COLS.length).setValues(batch);
+  }
+  const writtenRows = sheet.getLastRow() - 1; // subtract header
+  const props = PropertiesService.getScriptProperties();
+  let truncated = false;
+  if (writtenRows !== deduped.length) {
+    truncated = true;
+    props.setProperty('velSheetCorrupted', 'dedup-incomplete:' + writtenRows + '/' + deduped.length);
+    Logger.log('velDedup WRITE INCOMPLETE — ' + writtenRows + '/' + deduped.length + '. Gap self-heal will recover.');
+  } else {
+    props.deleteProperty('velSheetCorrupted');
+  }
 
   Logger.log('velDedup: ' + data.length + ' → ' + deduped.length + ' rows (' + removed + ' removed)');
-  return { ok: true, before: data.length, after: deduped.length, removed };
+  return { ok: true, before: data.length, after: deduped.length, removed, writtenRows, truncated };
+}
+
+// Delete all Vel Cache rows on/after a cutoff date (?action=velclearfrom&from=YYYY-MM-DD),
+// keeping everything older. Used to wipe a window of legacy timezone-shifted rows so a
+// subsequent re-sync rewrites it with correct text dates (a plain re-sync would leave the
+// shifted rows behind as phantoms, since their date keys differ by a day). Also normalizes
+// the kept rows' dates to text strings. Batched write + truncation guard, like velDedup.
+function velClearFrom(params) {
+  const from = params.from;
+  if (!from || !/^\d{4}-\d{2}-\d{2}$/.test(from)) return { ok: false, error: 'Provide from=YYYY-MM-DD' };
+  const sheet   = getVelSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: true, before: 0, after: 0, removed: 0 };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+  const kept = [];
+  for (const row of data) {
+    const ymd = _velDateToYMD(row[0]);
+    if (ymd && ymd >= from) continue; // drop rows in the cleared window
+    row[0] = ymd; // normalize kept dates to text
+    kept.push(row);
+  }
+  const removed = data.length - kept.length;
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, VEL_COLS.length).setValues([VEL_COLS]);
+  if (kept.length > 0) sheet.getRange(2, 1, kept.length, 1).setNumberFormat('@'); // text date col
+  const WRITE_BATCH = 5000;
+  for (let i = 0; i < kept.length; i += WRITE_BATCH) {
+    const batch = kept.slice(i, i + WRITE_BATCH);
+    sheet.getRange(i + 2, 1, batch.length, VEL_COLS.length).setValues(batch);
+  }
+  const writtenRows = sheet.getLastRow() - 1;
+  const props = PropertiesService.getScriptProperties();
+  let truncated = false;
+  if (writtenRows !== kept.length) {
+    truncated = true;
+    props.setProperty('velSheetCorrupted', 'clearfrom-incomplete:' + writtenRows + '/' + kept.length);
+  } else {
+    props.deleteProperty('velSheetCorrupted');
+  }
+  Logger.log('velClearFrom ' + from + ': ' + data.length + ' → ' + kept.length + ' rows (' + removed + ' removed)');
+  return { ok: true, from, before: data.length, after: kept.length, removed, writtenRows, truncated };
 }
 
 function resetVelSyncDate() {
@@ -2353,7 +2954,7 @@ function getQuarantine(params) {
 function buildNameSkuFromSnapshot() {
   const nameToSku = {};
   try {
-    const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
+    const ss    = SpreadsheetApp.openById(getInvDataSpreadsheetId());
     const sheet = ss.getSheetByName(SKU_DICT_SHEET_NAME);
     if (!sheet) return nameToSku;
     const lastRow = sheet.getLastRow();
@@ -3066,7 +3667,7 @@ function getOOSMap() {
   const cached = cache.get(cacheKey);
   if (cached) { try { return JSON.parse(cached); } catch(e) {} }
 
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!sheet || sheet.getLastRow() < 2) return {};
 
@@ -3176,7 +3777,7 @@ function getLeafLinkOrders() {
 // Called by time-based trigger. Appends one row per product per store to the
 // Inv Snapshot sheet, then purges entries older than 90 days.
 function snapshotInventory() {
-  const ss    = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss    = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   const sheet = getOrCreateSnapshotSheet(ss);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -3246,7 +3847,7 @@ function setupSnapshotTrigger() {
 }
 
 function getOrCreateOperationalSnapshotSheet_() {
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   let sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(OPERATIONAL_SNAPSHOT_SHEET_NAME);
@@ -3289,7 +3890,7 @@ function readOperationalSnapshot_(key) {
 
 function getOperationalSnapshotStatus() {
   const key = 'inventory_bundle_v1';
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   const sheet = ss.getSheetByName(OPERATIONAL_SNAPSHOT_SHEET_NAME);
   const triggers = ScriptApp.getProjectTriggers();
   const WARM_HANDLERS = ['warmOperationalCaches', 'warmVelocityOnly', 'warmBundleOnly', 'warmDecisionFeedOnly'];
@@ -3756,7 +4357,7 @@ function getSchema() {
 // ─── ONE-TIME BACKFILL ─────────────────────────────────────────────────────────
 // Run once from the Apps Script editor to seed the SKU Dict from existing snapshot data.
 function backfillSkuDict() {
-  const ss       = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const ss       = SpreadsheetApp.openById(getInvDataSpreadsheetId());
   const snapshot = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!snapshot) { Logger.log('No snapshot sheet found'); return; }
   const lastRow = snapshot.getLastRow();
@@ -4002,7 +4603,26 @@ function requireAuth_(params) {
   return validateSessionToken_(params.token || params.session || params.auth || '');
 }
 
+// Phase 1 shared sign-on: Inventory authenticates through GX Core (which also enforces the
+// per-app access grant), with a local fallback so a GX Core hiccup or a not-yet-imported user
+// can never lock anyone out. Tokens are signed with the shared GC_SESSION_SECRET, so a token
+// issued by either path validates identically in requireAuth_/validateSessionToken_.
 function loginUser(params) {
+  try {
+    if (typeof GXCore !== 'undefined' && GXCore && GXCore.login) {
+      const r = GXCore.login(params.user, params.pass, 'inventory');
+      if (r && r.ok) return r;                    // GX Core authenticated + granted access
+      const local = _loginUserLocal_(params);     // GX Core rejected — try local so a missing
+      if (local && local.ok) return local;        // import can't lock out an otherwise-valid user
+      return r;                                   // both rejected → surface GX Core's message
+    }
+  } catch (e) {
+    _logGasError('loginUser/GXCore', e.message);  // library/permission issue → local keeps login up
+  }
+  return _loginUserLocal_(params);
+}
+
+function _loginUserLocal_(params) {
   if (!params.user || !params.pass) return { ok: false, error: 'Missing credentials' };
   const props = PropertiesService.getScriptProperties();
   const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
