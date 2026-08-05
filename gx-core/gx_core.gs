@@ -29,12 +29,12 @@ const GX_APPS = ['inventory', 'pricetags', 'spiff', 'sales', 'performance', 'cor
 // name your team uses, shown in every app. store_id is a stable slug of the Dutchie name, so
 // renaming a display_name (e.g. "Century" → "Century Drive") never moves the key or breaks auth.
 const GX_STORE_SEED = [
-  { store_id: 'bend',        dutchie_name: 'Bend',        display_name: 'Century',    region: 'Bend',      is_dc: false },
-  { store_id: 'center',      dutchie_name: 'Center',      display_name: 'Center',     region: 'Salem',     is_dc: false },
-  { store_id: 'commercial',  dutchie_name: 'Commercial',  display_name: 'Commercial', region: 'Salem',     is_dc: false },
-  { store_id: 'hillsboro',   dutchie_name: 'Hillsboro',   display_name: 'Baseline',   region: 'Hillsboro', is_dc: false },
-  { store_id: 'portland-rd', dutchie_name: 'Portland Rd', display_name: 'Portland',   region: 'Salem',     is_dc: false },
-  { store_id: 'river-rd',    dutchie_name: 'River Rd',    display_name: 'River',      region: 'Salem',     is_dc: true  },
+  { store_id: 'bend',        dutchie_name: 'Bend',        display_name: 'Century',    region: 'Bend',      color: '#22D3EE', is_dc: false },
+  { store_id: 'center',      dutchie_name: 'Center',      display_name: 'Center',     region: 'Salem',     color: '#3B82F6', is_dc: false },
+  { store_id: 'commercial',  dutchie_name: 'Commercial',  display_name: 'Commercial', region: 'Salem',     color: '#A855F7', is_dc: false },
+  { store_id: 'hillsboro',   dutchie_name: 'Hillsboro',   display_name: 'Baseline',   region: 'Hillsboro', color: '#6366F1', is_dc: false },
+  { store_id: 'portland-rd', dutchie_name: 'Portland Rd', display_name: 'Portland',   region: 'Salem',     color: '#D946EF', is_dc: false },
+  { store_id: 'river-rd',    dutchie_name: 'River Rd',    display_name: 'River',      region: 'Salem',     color: '#EC4899', is_dc: true  },
 ];
 function gxShortCode_(displayName) { return String(displayName || '').replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase(); }
 
@@ -143,7 +143,7 @@ function gxSeedStores_(ss) {
     s.region,                         // region
     gxShortCode_(s.display_name),     // short_code
     String(i + 1),                    // sort_order
-    '',                               // color
+    s.color || '',                    // color
     'America/Los_Angeles',            // timezone
     s.is_dc ? 'TRUE' : 'FALSE',       // is_dc (River is the distribution center)
     '',                               // dutchie_key_prop (name of the ScriptProperty, not the secret)
@@ -167,6 +167,7 @@ function gxHealStores_() {
     if (!String(r.display_name || '').trim() && s.display_name) { merged.display_name = s.display_name; touched++; }
     if (!String(r.dutchie_name || '').trim() && s.dutchie_name) { merged.dutchie_name = s.dutchie_name; touched++; }
     if (!String(r.region || '').trim() && s.region)             { merged.region = s.region; touched++; }
+    if (!String(r.color || '').trim() && s.color)               { merged.color = s.color; touched++; }
     if (!String(r.short_code || '').trim())                     { merged.short_code = gxShortCode_(merged.display_name); touched++; }
     return merged;
   });
@@ -189,6 +190,7 @@ function gxFixStoreNames() {
       display_name: s.display_name,
       dutchie_name: s.dutchie_name,
       region: s.region,
+      color: s.color,
       short_code: gxShortCode_(s.display_name),
     });
   });
