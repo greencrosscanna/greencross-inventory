@@ -22,9 +22,21 @@ const GX_SESSION_TTL_MS    = 7 * 24 * 60 * 60 * 1000; // 7 days — same as Inve
 const GX_AUDIT_MAX_ROWS    = 5000;                    // audit_log ring-buffer cap
 const GX_GRANT_CACHE_TTL_S = 60;                      // CacheService TTL for the grants read
 
-const GX_STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
-const GX_DC_STORE = 'River Rd';                       // River Rd is also the distribution center
 const GX_APPS = ['inventory', 'pricetags', 'spiff', 'sales', 'performance', 'core-admin'];
+
+// Canonical store mapping. dutchie_name = the location name IN DUTCHIE — the STABLE key the POS
+// auth is keyed by (DUTCHIE_STORE_KEYS_JSON), so it never changes. display_name = the INTERNAL
+// name your team uses, shown in every app. store_id is a stable slug of the Dutchie name, so
+// renaming a display_name (e.g. "Century" → "Century Drive") never moves the key or breaks auth.
+const GX_STORE_SEED = [
+  { store_id: 'bend',        dutchie_name: 'Bend',        display_name: 'Century',    region: 'Bend',      is_dc: false },
+  { store_id: 'center',      dutchie_name: 'Center',      display_name: 'Center',     region: 'Salem',     is_dc: false },
+  { store_id: 'commercial',  dutchie_name: 'Commercial',  display_name: 'Commercial', region: 'Salem',     is_dc: false },
+  { store_id: 'hillsboro',   dutchie_name: 'Hillsboro',   display_name: 'Baseline',   region: 'Hillsboro', is_dc: false },
+  { store_id: 'portland-rd', dutchie_name: 'Portland Rd', display_name: 'Portland',   region: 'Salem',     is_dc: false },
+  { store_id: 'river-rd',    dutchie_name: 'River Rd',    display_name: 'River',      region: 'Salem',     is_dc: true  },
+];
+function gxShortCode_(displayName) { return String(displayName || '').replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase(); }
 
 // Tab name → ordered header row. This object IS the schema; gxBootstrap() materializes it.
 const GX_TABS = {
@@ -124,43 +136,66 @@ function gxEnsureTab_(ss, name, headers) {
 function gxSeedStores_(ss) {
   const sheet = ss.getSheetByName('stores');
   if (sheet.getLastRow() > 1) return; // already seeded
-  // Region: Bend and Hillsboro stand alone; the other four are Salem (Center, Commercial,
-  // Portland Rd, River Rd) — grouping them disambiguates the four Salem locations.
-  const REGION = { 'Bend': 'Bend', 'Hillsboro': 'Hillsboro' };
-  const rows = GX_STORES.map((name, i) => ([
-    gxSlug_(name).replace(/\s+/g, '-'),  // store_id: "portland-rd"
-    name,                                 // display_name — INTERNAL name your team uses
-    '',                                   // dutchie_name — what Dutchie calls it (fill in; differs from internal)
-    REGION[name] || 'Salem',              // region
-    name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase(), // short_code
-    String(i + 1),                        // sort_order
-    '',                                   // color
-    'America/Los_Angeles',                // timezone
-    name === GX_DC_STORE ? 'TRUE' : 'FALSE', // is_dc
-    '',                                   // dutchie_key_prop (name of the ScriptProperty, not the secret)
-    'TRUE',                               // active
+  const rows = GX_STORE_SEED.map((s, i) => ([
+    s.store_id,                       // store_id (stable slug of the Dutchie name)
+    s.display_name,                   // display_name — INTERNAL name your team uses
+    s.dutchie_name,                   // dutchie_name — the location name in Dutchie (auth key)
+    s.region,                         // region
+    gxShortCode_(s.display_name),     // short_code
+    String(i + 1),                    // sort_order
+    '',                               // color
+    'America/Los_Angeles',            // timezone
+    s.is_dc ? 'TRUE' : 'FALSE',       // is_dc (River is the distribution center)
+    '',                               // dutchie_key_prop (name of the ScriptProperty, not the secret)
+    'TRUE',                           // active
   ]));
   sheet.getRange(2, 1, rows.length, GX_TABS.stores.length).setValues(rows);
 }
 
-// Idempotent: fills empty region/short_code on existing store rows (deterministic from
-// display_name) while preserving every other column, including any dutchie_name you've typed.
+// Idempotent, NON-destructive: fills only EMPTY display_name/dutchie_name/region/short_code on
+// existing rows from the canonical seed (keyed by store_id). Never overwrites a value you've set,
+// so a display_name you rename in the sheet sticks.
 function gxHealStores_() {
   const rows = gxRead_('stores');
   if (!rows.length) return;
-  const REGION = { 'Bend': 'Bend', 'Hillsboro': 'Hillsboro' };
-  // Dutchie's store names, lifted from the Inventory app's existing mapping (SKU Probe selector).
-  const DUTCHIE = { 'Bend': 'Century', 'Center': 'Center', 'Commercial': 'Commercial', 'Hillsboro': 'Baseline', 'Portland Rd': 'Portland', 'River Rd': 'River' };
+  const byId = {};
+  GX_STORE_SEED.forEach(s => { byId[s.store_id] = s; });
   let touched = 0;
   const updates = rows.map(r => {
-    const name = String(r.display_name || '').trim();
-    const merged = Object.assign({}, r);           // keep the full existing row
-    if (!String(r.region || '').trim())       { merged.region = REGION[name] || 'Salem'; touched++; }
-    if (!String(r.short_code || '').trim())   { merged.short_code = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase(); touched++; }
-    if (!String(r.dutchie_name || '').trim() && DUTCHIE[name]) { merged.dutchie_name = DUTCHIE[name]; touched++; }
+    const s = byId[String(r.store_id || '').trim()] || {};
+    const merged = Object.assign({}, r);
+    if (!String(r.display_name || '').trim() && s.display_name) { merged.display_name = s.display_name; touched++; }
+    if (!String(r.dutchie_name || '').trim() && s.dutchie_name) { merged.dutchie_name = s.dutchie_name; touched++; }
+    if (!String(r.region || '').trim() && s.region)             { merged.region = s.region; touched++; }
+    if (!String(r.short_code || '').trim())                     { merged.short_code = gxShortCode_(merged.display_name); touched++; }
     return merged;
   });
   if (touched) gxWrite_('stores', updates, ['store_id']);
+}
+
+// Editor-run, one-time. OVERWRITES display_name/dutchie_name/region/short_code on existing rows
+// with the canonical mapping (keyed by store_id) to correct the initial seed, which had the
+// internal and Dutchie names swapped. Preserves color/timezone/dutchie_key_prop/sort_order/active.
+// NOT called by gxBootstrap, so it won't fight a display_name you later rename by hand.
+function gxFixStoreNames() {
+  const rows = gxRead_('stores');
+  if (!rows.length) return { ok: false, error: 'No store rows found — run gxBootstrap() first.' };
+  const byId = {};
+  GX_STORE_SEED.forEach(s => { byId[s.store_id] = s; });
+  const updates = rows.map(r => {
+    const s = byId[String(r.store_id || '').trim()];
+    if (!s) return r;
+    return Object.assign({}, r, {
+      display_name: s.display_name,
+      dutchie_name: s.dutchie_name,
+      region: s.region,
+      short_code: gxShortCode_(s.display_name),
+    });
+  });
+  gxWrite_('stores', updates, ['store_id']);
+  const summary = GX_STORE_SEED.map(s => s.dutchie_name + ' (Dutchie) → ' + s.display_name + ' (internal)');
+  Logger.log('Store names corrected:\n' + summary.join('\n'));
+  return { ok: true, corrected: summary };
 }
 
 function gxSeedSuperadmin_(ss) {
