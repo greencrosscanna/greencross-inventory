@@ -1683,7 +1683,8 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.53</span><span class="ver-date">Jul 28, 2026</span><span class="ver-desc">Distro room fixed. River Rd's active stock was showing as if it were all still staged in the Distro room — its entire sellable floor (≈1,350 products) looked like distribution stock, and other stores were unaffected. Root cause: Dutchie changed its inventory-transaction API to require a dated window of 31 days or less, so the app was getting no room data at all and River fell back to a "distro" default (every other store defaulted to active, which is why only River looked wrong). Room designation is now pulled correctly again via dated 30-day transaction windows: active / back stock / Distro split accurately at every store, and River's real distribution staging is cleanly separated from its sellable floor stock. Unknown-room packages now default to active everywhere so stock is never hidden on a guess.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.54</span><span class="ver-date">Aug 5, 2026</span><span class="ver-desc">New "FATTY" hide pill in the Inventory filter bar's Hide: row — hides every product with FATTY in the name, on by default (toggle off to show). Also: a Log out button in Settings; fixed the operational snapshot status getting stuck on "Building…" (a crashed build had left a stale flag — it now ignores an orphaned build flag older than 15 minutes); and a new store color palette that reserves green / red / amber for status, applied across store pills and charts.</span></div>
+      <div class="ver-row"><span class="ver-num" style="width:44px">v2.53</span><span class="ver-date">Jul 28, 2026</span><span class="ver-desc">Distro room fixed. River Rd's active stock was showing as if it were all still staged in the Distro room — its entire sellable floor (≈1,350 products) looked like distribution stock, and other stores were unaffected. Root cause: Dutchie changed its inventory-transaction API to require a dated window of 31 days or less, so the app was getting no room data at all and River fell back to a "distro" default (every other store defaulted to active, which is why only River looked wrong). Room designation is now pulled correctly again via dated 30-day transaction windows: active / back stock / Distro split accurately at every store, and River's real distribution staging is cleanly separated from its sellable floor stock. Unknown-room packages now default to active everywhere so stock is never hidden on a guess.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.52</span><span class="ver-date">Jul 28, 2026</span><span class="ver-desc">Refresh now pulls LIVE data. Hitting ↺ Refresh fetches each store's current on-hand AND room designation (active / back stock / distro) straight from Dutchie, bypassing the nightly snapshot — so active stock vs distribution stock is accurate in real time. This matters most at River (the DC), where stock is constantly staged for distribution: previously a manual refresh only re-read the baked snapshot, so recently-moved packages could still show in the wrong room. Normal page loads still use the fast cached snapshot; only a deliberate Refresh click goes live (≈1 inventory + 6 room lookups per store).</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.51</span><span class="ver-date">Jun 25, 2026</span><span class="ver-desc">OOS visibility: products that sold at a store but are now out of stock there are surfaced as OOS rows even if the last sale was more than 28 days ago. Previously the "sold here, now empty" detection only counted products that sold in the last 28 days, so slower movers that sold ~a month ago showed nothing at all at that location (misleading — looked like the product was never carried there). Now any product with sales history in the velocity window that's currently out of stock shows as OOS at that store.</span></div>
       <div class="ver-row"><span class="ver-num" style="width:44px">v2.50</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner search: typing in the search box now shows a list of matching products to pick from (name / brand / SKU), just like the Inventory "Search products" box — it no longer auto-loads the first match. Focusing the search also turns the live camera off and hides it (so it isn't running or firing scans while you type); a "📷 Camera" button returns to live scanning.</span></div>
@@ -4139,7 +4140,7 @@ state.invFilters    = { status: 'all', category: '', brand: '', vendor: '', sear
 state.excludedCats      = new Set(JSON.parse(localStorage.getItem(LS.EXCL_CAT) || '[]'));
 state.catRowExpanded    = localStorage.getItem(LS.CAT_EXPANDED) === 'true';
 state.hideBackstock     = localStorage.getItem(LS.HIDE_BACKSTOCK) === 'true';
-state.hideFatty         = localStorage.getItem(LS.HIDE_FATTY) === 'true';
+state.hideFatty         = localStorage.getItem(LS.HIDE_FATTY) !== 'false'; // default HIDDEN unless the user explicitly turns it off
 state.expandedGroups    = new Set();
 state.expandedPoGroups  = new Set();
 state.expandedTxGroups  = new Set();
@@ -7403,6 +7404,15 @@ function scanNameSelect(name, scannedCode) {
 
 // ── What's New modal ─────────────────────────────────────────────────────────
 const CHANGELOG = [
+  {
+    v: 'v2.54', date: 'Aug 5, 2026',
+    items: [
+      'Inventory: new "FATTY" hide pill in the Hide: row — hides every product with FATTY in the name. On by default; toggle it off to show them',
+      'Added a Log out button in Settings (Account)',
+      'Fixed the snapshot status getting stuck on "Building…" — a crashed build had left a stale flag; it now ignores an orphaned build flag older than 15 min',
+      'New store color palette that reserves green / red / amber for status, applied across store pills and charts',
+    ]
+  },
   {
     v: 'v2.53', date: 'Jul 28, 2026',
     items: [
