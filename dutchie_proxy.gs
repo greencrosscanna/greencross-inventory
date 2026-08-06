@@ -245,6 +245,7 @@ function doGet(e) {
     if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
     if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
+    if (params.action === 'stores')         return jsonOut(getStoresConfig());
     if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
     if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
     if (params.action === 'decisionqueue')  return jsonOut(readBetaDecisionQueue(params));
@@ -765,6 +766,26 @@ function sheetToObjects_(sheetName, spreadsheetId) {
 }
 
 function loadStoreConfig_(spreadsheetId) {
+  // Shared source of truth: GX Core. Falls back to the legacy "Config - Stores" sheet, then to
+  // the hardcoded STORES list — so a GX Core hiccup can never blank the store list. storeKey stays
+  // the Dutchie name (what auth + STORES key on); only the display/config metadata is centralized.
+  try {
+    if (typeof GXCore !== 'undefined' && GXCore && GXCore.getStores) {
+      const gx = GXCore.getStores()
+        .map(s => ({
+          storeKey: String(s.dutchie_name || '').trim(),   // Dutchie/POS name — the auth + STORES key
+          displayName: String(s.display_name || '').trim(), // internal name shown in the apps
+          sortOrder: Number(s.sort_order) || 999,
+          color: String(s.color || '').trim(),
+          dutchieLocationKeyProperty: String(s.dutchie_key_prop || '').trim(),
+        }))
+        .filter(r => r.storeKey)
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.storeKey.localeCompare(b.storeKey));
+      if (gx.length) return gx;
+    }
+  } catch (e) {
+    _logGasError('loadStoreConfig_/GXCore', e.message); // GX Core unreachable → fall through to legacy
+  }
   const rows = sheetToObjects_(STORE_CONFIG_SHEET_NAME, spreadsheetId || BETA_SPREADSHEET_ID)
     .filter(r => String(r.active).toLowerCase() !== 'false')
     .map(r => ({
@@ -777,6 +798,13 @@ function loadStoreConfig_(spreadsheetId) {
     .filter(r => r.storeKey)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.storeKey.localeCompare(b.storeKey));
   return rows.length ? rows : STORES.map((storeKey, i) => ({ storeKey, displayName: storeKey, sortOrder: i + 1 }));
+}
+
+// ?action=stores — the shared store list + display mapping (storeKey=Dutchie name, displayName=
+// internal name, color, sortOrder), read from GX Core with fallback. Lets the frontend source its
+// pills/labels/colors from one place instead of hardcoding them (the follow-up frontend change).
+function getStoresConfig() {
+  return { ok: true, stores: loadStoreConfig_() };
 }
 
 function betaStoreKeys_() {
