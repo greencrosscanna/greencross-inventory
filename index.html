@@ -28,21 +28,24 @@ if (location.protocol === 'file:') {
   m.content = content;
 })();
 </script>
+<link rel="stylesheet" href="https://greencrosscanna.github.io/greencross-gx-theme/gx-theme.css">
 <title>Green Cross — Inventory</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:       #111;
-    --card:     #1a1a1a;
-    --border:   #2a2a2a;
-    --text:     #f0f0f0;
-    --muted:    #888;
-    --green:    #1D9E75;
-    --amber:    #EF9F27;
-    --red:      #F09595;
-    --blue:     #5b9bd5;
-    --radius:   8px;
+    /* Aliased to the shared GX theme (greencross-gx-theme). The fallbacks ARE the shared values,
+       so if the theme stylesheet ever fails to load the app still renders correctly. Undo = revert. */
+    --bg:       var(--gx-bg,        #0a0e0d);
+    --card:     var(--gx-surface,   #121715);
+    --border:   var(--gx-border,    #232a27);
+    --text:     var(--gx-text,      #e6ece9);
+    --muted:    var(--gx-text-dim,  #8a958f);
+    --green:    var(--gx-green,     #4ade80);
+    --amber:    var(--gx-amber,     #eab308);
+    --red:      var(--gx-red,       #ef4444);
+    --blue:     var(--gx-blue,      #60a5fa);
+    --radius:   var(--gx-radius-md, 8px);
   }
 
   body {
