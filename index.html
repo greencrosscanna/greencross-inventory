@@ -1833,12 +1833,12 @@ if (location.protocol === 'file:') {
   <div class="controls-bar">
     <div class="store-filters" id="storePills">
       <button class="pill active" data-store="All">All Stores</button>
-      <button class="pill" data-store="Hillsboro"   style="--store-color:#7F77DD">Baseline</button>
-      <button class="pill" data-store="Center"      style="--store-color:#378ADD">Center</button>
+      <button class="pill" data-store="Hillsboro"   style="--store-color:#6366F1">Baseline</button>
+      <button class="pill" data-store="Center"      style="--store-color:#3B82F6">Center</button>
       <button class="pill" data-store="Bend"        style="--store-color:#22D3EE">Century</button>
-      <button class="pill" data-store="Commercial"  style="--store-color:#D85A30">Commercial</button>
-      <button class="pill" data-store="Portland Rd" style="--store-color:#BA7517">Portland</button>
-      <button class="pill" data-store="River Rd"    style="--store-color:#E05C8A">River</button>
+      <button class="pill" data-store="Commercial"  style="--store-color:#A855F7">Commercial</button>
+      <button class="pill" data-store="Portland Rd" style="--store-color:#D946EF">Portland</button>
+      <button class="pill" data-store="River Rd"    style="--store-color:#EC4899">River</button>
     </div>
     <div class="tag-pills-group" id="tagPills">
       <div class="tag-pills-sep"></div>
@@ -2091,16 +2091,16 @@ function randomLoadingQuote() {
 }
 
 const STORES = [
-  { name:'Bend',        display:'Century',    color:'#1D9E75' },
-  { name:'Center',      display:'Center',     color:'#378ADD' },
-  { name:'Commercial',  display:'Commercial', color:'#D85A30' },
-  { name:'Hillsboro',   display:'Baseline',   color:'#7F77DD' },
-  { name:'Portland Rd', display:'Portland',   color:'#BA7517' },
-  { name:'River Rd',    display:'River',      color:'#E05C8A' },
+  { name:'Bend',        display:'Century',    color:'#22D3EE' },
+  { name:'Center',      display:'Center',     color:'#3B82F6' },
+  { name:'Commercial',  display:'Commercial', color:'#A855F7' },
+  { name:'Hillsboro',   display:'Baseline',   color:'#6366F1' },
+  { name:'Portland Rd', display:'Portland',   color:'#D946EF' },
+  { name:'River Rd',    display:'River',      color:'#EC4899' },
 ];
 const STORE_BY_NAME = Object.fromEntries(STORES.map(s => [s.name, s]));
 function storeDisplay(name) { return STORE_BY_NAME[name]?.display || name; }
-function storeColor(name)   { return STORE_BY_NAME[name]?.color   || 'var(--green)'; }
+function storeColor(name)   { return STORE_BY_NAME[name]?.color   || 'var(--muted)'; }
 
 // ── Formatting ──────────────────────────────────────────
 const CAT_SHORT = {
