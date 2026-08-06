@@ -2169,6 +2169,7 @@ const LS = {
   EXCL_CAT:            'gc_inv_excl_cat',
   CAT_EXPANDED:        'gc_inv_cat_expanded',
   HIDE_BACKSTOCK:      'gc_inv_hide_backstock',
+  HIDE_FATTY:          'gc_inv_hide_fatty',
   ORDER_CART:          'gc_order_cart',
   TRANSFER_CART:       'gc_transfer_cart',
   PINNED_TRANSFERS:    'gc_pinned_transfer_suggestions',
@@ -4138,6 +4139,7 @@ state.invFilters    = { status: 'all', category: '', brand: '', vendor: '', sear
 state.excludedCats      = new Set(JSON.parse(localStorage.getItem(LS.EXCL_CAT) || '[]'));
 state.catRowExpanded    = localStorage.getItem(LS.CAT_EXPANDED) === 'true';
 state.hideBackstock     = localStorage.getItem(LS.HIDE_BACKSTOCK) === 'true';
+state.hideFatty         = localStorage.getItem(LS.HIDE_FATTY) === 'true';
 state.expandedGroups    = new Set();
 state.expandedPoGroups  = new Set();
 state.expandedTxGroups  = new Set();
@@ -4312,6 +4314,7 @@ function filterInventory(products, flagged) {
     if (store !== 'All' && p.store !== store) return false;
     if (state.excludedCats.size && state.excludedCats.has(p.category)) return false;
     if (state.hideBackstock && p.isBackstock) return false;
+    if (state.hideFatty && /fatty/i.test(p.name)) return false;
     if (status === 'reorder') { if (!(p.reorderQty > 0)) return false; }
   else if (status && status !== 'all' && p.status !== status) return false;
     if (category && p.category !== category)                        return false;
@@ -4684,11 +4687,12 @@ function buildInvFilterOptions(products) {
   // Build category exclude pills
   const row = document.getElementById('catExcludeRow');
   const backstockPill = `<button class="cat-pill${state.hideBackstock ? ' excluded' : ''}" id="tagBackstock" onclick="toggleHideBackstock()">Backstock</button>`;
+  const fattyPill = `<button class="cat-pill${state.hideFatty ? ' excluded' : ''}" id="tagFatty" onclick="toggleHideFatty()">FATTY</button>`;
   const pills = categories.map(cat => {
     const excl = state.excludedCats.has(cat);
     return `<button class="cat-pill${excl ? ' excluded' : ''}" onclick="toggleExcludeCat(this,'${cat.replace(/'/g,"\\'")}')">${cat}</button>`;
   }).join('');
-  row.innerHTML = `<span class="cat-exclude-label">Hide:</span>${backstockPill}${pills}`;
+  row.innerHTML = `<span class="cat-exclude-label">Hide:</span>${backstockPill}${fattyPill}${pills}`;
   updateCatToggleBtn();
 }
 
@@ -4712,7 +4716,7 @@ function toggleCatExcludeRow() {
 function updateCatToggleBtn() {
   const btn = document.getElementById('catToggleBtn');
   if (!btn) return;
-  const n = state.excludedCats.size + (state.hideBackstock ? 1 : 0);
+  const n = state.excludedCats.size + (state.hideBackstock ? 1 : 0) + (state.hideFatty ? 1 : 0);
   const badge = n > 0 ? `<span class="excl-badge">${n}</span>` : '';
   const eye = state.catRowExpanded
     ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
@@ -6076,6 +6080,16 @@ function toggleHideBackstock() {
   renderInventory();
 }
 
+function toggleHideFatty() {
+  state.hideFatty = !state.hideFatty;
+  localStorage.setItem(LS.HIDE_FATTY, state.hideFatty);
+  document.getElementById('tagFatty')?.classList.toggle('excluded', state.hideFatty);
+  updateCatToggleBtn();
+  updateClearFiltersBtn();
+  state.invPage = 0;
+  renderInventory();
+}
+
 function invToggleTag(tag) {
   state.invFilters.tags[tag] = !state.invFilters.tags[tag];
   const clsMap = { dead: 'active-dead', hot: 'active-hot', new: 'active-new', distro: 'active-distro', transfer: 'active-transfer' };
@@ -6090,7 +6104,7 @@ function _hasActiveFilters() {
   const f = state.invFilters;
   return f.status !== 'all' || f.category || f.brand || f.vendor || f.search ||
     Object.values(f.tags).some(Boolean) ||
-    state.excludedCats.size > 0 || state.hideBackstock;
+    state.excludedCats.size > 0 || state.hideBackstock || state.hideFatty;
 }
 
 function updateClearFiltersBtn() {
@@ -6115,6 +6129,8 @@ function clearAllInvFilters() {
   localStorage.setItem(LS.EXCL_CAT, '[]');
   state.hideBackstock = false;
   localStorage.setItem(LS.HIDE_BACKSTOCK, 'false');
+  state.hideFatty = false;
+  localStorage.setItem(LS.HIDE_FATTY, 'false');
   buildInvFilterOptions(state.inventoryData || []);
   updateCatToggleBtn();
   state.invPage = 0;
