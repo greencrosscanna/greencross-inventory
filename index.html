@@ -2091,7 +2091,7 @@ function randomLoadingQuote() {
   return `<div class="loading-quote"><span class="lq-a">${a}</span><br><span class="lq-b">${b}</span></div>`;
 }
 
-const STORES = [
+let STORES = [
   { name:'Bend',        display:'Century',    color:'#22D3EE' },
   { name:'Center',      display:'Center',     color:'#3B82F6' },
   { name:'Commercial',  display:'Commercial', color:'#A855F7' },
@@ -2099,7 +2099,7 @@ const STORES = [
   { name:'Portland Rd', display:'Portland',   color:'#D946EF' },
   { name:'River Rd',    display:'River',      color:'#EC4899' },
 ];
-const STORE_BY_NAME = Object.fromEntries(STORES.map(s => [s.name, s]));
+let STORE_BY_NAME = Object.fromEntries(STORES.map(s => [s.name, s]));
 function storeDisplay(name) { return STORE_BY_NAME[name]?.display || name; }
 function storeColor(name)   { return STORE_BY_NAME[name]?.color   || 'var(--muted)'; }
 
@@ -3967,6 +3967,25 @@ function init() {
   fetch(proxyUrl({ action: 'loadingquotes' }))
     .then(r => r.json())
     .then(d => { if (d.ok && Array.isArray(d.quotes) && d.quotes.length) LOADING_QUOTES = d.quotes; })
+    .catch(() => {});
+
+  // Pull the shared store list + display mapping from GX Core (non-blocking; hardcoded STORES stays
+  // as fallback). Store renames/colors made in GX Core then flow to the UI with no code change.
+  fetch(proxyUrl({ action: 'stores' }))
+    .then(r => r.json())
+    .then(d => {
+      if (!d || !d.ok || !Array.isArray(d.stores) || !d.stores.length) return;
+      const next = d.stores
+        .map(s => ({ name: String(s.storeKey || '').trim(), display: String(s.displayName || s.storeKey || '').trim(), color: String(s.color || '').trim() || 'var(--muted)' }))
+        .filter(s => s.name);
+      if (!next.length) return;
+      STORES = next;
+      STORE_BY_NAME = Object.fromEntries(STORES.map(s => [s.name, s]));
+      document.querySelectorAll('.pill[data-store]').forEach(pill => {
+        const s = STORE_BY_NAME[pill.dataset.store];
+        if (s) { pill.textContent = s.display; pill.style.setProperty('--store-color', s.color); }
+      });
+    })
     .catch(() => {});
 
   // Bootstrap: merge hardcoded CAT_SHORT into localStorage so settings drawer shows them,
