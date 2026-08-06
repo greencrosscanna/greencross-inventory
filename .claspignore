@@ -5,6 +5,3 @@
 .claude/
 .claude/**
 clasp.sh
-# GX Core is a SEPARATE Apps Script project — never push its .gs into the Inventory script.
-gx-core/
-gx-core/**
