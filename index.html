@@ -7976,7 +7976,9 @@ function openBugReport() {
   document.getElementById('bugDesc').value = '';
   document.getElementById('bugSuccess').style.display = 'none';
   document.getElementById('bugFormBody').style.display = '';
-  document.getElementById('bugSubmitBtn').disabled = false;
+  const _bugBtn = document.getElementById('bugSubmitBtn');
+  _bugBtn.disabled = false;
+  _bugBtn.textContent = 'Submit';
   selectPri('medium');
   document.getElementById('bugOverlay').classList.add('open');
   setTimeout(() => document.getElementById('bugTitle').focus(), 50);
