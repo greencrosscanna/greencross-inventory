@@ -21,7 +21,12 @@ if [ "$1" = "deploy" ]; then
   [ "$2" = "--force" ] && FORCE="1"
 
   # Always push the working files to the project HEAD (this alone never creates a version).
-  $CLASP push || exit 1
+  # GREMLIN FIX: clasp intermittently prints "Skipping push" from stale mtime change-detection
+  # and then deploys the OLD code — and --force alone does NOT reliably override it. Bumping the
+  # source mtimes first is what actually defeats the skip. This can't cause spurious versions:
+  # version-cutting is gated separately by BACKEND_HASH below, not by whether a push happened.
+  touch ./*.gs appsscript.json index.html 2>/dev/null
+  $CLASP push --force || exit 1
 
   # Hash the backend so we can tell whether a new version is actually warranted.
   BACKEND_HASH=$(cat ./*.gs appsscript.json 2>/dev/null | shasum -a 256 | awk '{print $1}')
