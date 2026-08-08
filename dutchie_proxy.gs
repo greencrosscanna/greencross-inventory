@@ -269,44 +269,13 @@ function jsonOut(obj, callback) {
 }
 
 function handleBugReport(b) {
-  // Use a separate spreadsheet to avoid hitting the main sheet's 10M cell limit.
-  // ID is stored in PropertiesService on first use.
-  const props   = PropertiesService.getScriptProperties();
-  let   bugSsId = props.getProperty('BUG_REPORTS_SS_ID');
-  let   bugSs;
-
-  if (!bugSsId) {
-    bugSs   = SpreadsheetApp.create('GC Bug Reports');
-    bugSsId = bugSs.getId();
-    props.setProperty('BUG_REPORTS_SS_ID', bugSsId);
-  } else {
-    bugSs = SpreadsheetApp.openById(bugSsId);
-  }
-
-  let sheet = bugSs.getSheetByName('Bugs');
-  if (!sheet) {
-    sheet = bugSs.getSheets()[0];
-    sheet.setName('Bugs');
-    sheet.getRange(1, 1, 1, 8).setValues([[
-      'Timestamp', 'Reporter', 'Priority', 'Title', 'Description', 'Tab', 'Store', 'Version'
-    ]]);
-    sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, 8).setFontWeight('bold');
-  }
-
+  // GX Command Center is now the SINGLE bug log — this app no longer writes its own
+  // "GC Bug Reports" sheet. The email below is both the alert and a no-lost-report
+  // fallback if GX Core is ever unavailable. (BUG_REPORTS_SS_ID script property is left
+  // in place, harmless; the old sheet is deleted separately once migration is verified.)
   const ts = new Date();
-  sheet.appendRow([
-    ts,
-    b.reporter  || '',
-    b.priority  || 'medium',
-    b.title     || '',
-    b.desc      || '',
-    b.appTab    || '',
-    b.appStore  || '',
-    b.appVer    || '',
-  ]);
 
-  // Email notification
+  // Email notification (alert + durability fallback)
   try {
     const priorityEmoji = { low: '🟢', medium: '🟡', high: '🔴' }[b.priority] || '🟡';
     MailApp.sendEmail({
@@ -324,6 +293,16 @@ function handleBugReport(b) {
       ].join('\n'),
     });
   } catch(mailErr) { /* non-fatal */ }
+
+  // Central bug log — write into GX Core's shared bug_reports table (Command Center cockpit).
+  // NOTE: the library function is gxIngestBug(app, reporter, payload) — NOT ingestBug, which
+  // does not exist in GX Core v12 and would throw, silently dropping every report.
+  try {
+    GXCore.gxIngestBug('inventory', b.reporter, {
+      title: b.title, desc: b.desc, priority: b.priority,
+      store: b.appStore, appVer: b.appVer
+    });
+  } catch (e) { /* central unavailable — the email above is the fallback */ }
 
   return { ok: true };
 }
