@@ -1533,6 +1533,7 @@ if (location.protocol === 'file:') {
       </div>
       <div class="bug-success" id="bugSuccess" style="display:none">
         ✓ Bug reported — thanks Tawny!
+        <div id="bugSuccessTime" style="margin-top:6px;font-size:12px;opacity:.7;font-weight:400"></div>
       </div>
     </div>
   </div>
@@ -8006,9 +8007,14 @@ async function submitBugReport() {
 
   try {
     await proxyFetch(payload);
+    document.getElementById('bugSuccessTime').textContent =
+      'Reported ' + new Date().toLocaleString('en-US', {
+        timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit'
+      });
     document.getElementById('bugFormBody').style.display = 'none';
     document.getElementById('bugSuccess').style.display = '';
-    setTimeout(closeBugReport, 2000);
+    setTimeout(closeBugReport, 2600);
   } catch(e) {
     btn.disabled = false;
     btn.textContent = 'Submit';
