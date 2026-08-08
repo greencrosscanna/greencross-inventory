@@ -1532,7 +1532,7 @@ if (location.protocol === 'file:') {
         <button class="bug-submit" id="bugSubmitBtn" onclick="submitBugReport()">Submit</button>
       </div>
       <div class="bug-success" id="bugSuccess" style="display:none">
-        ✓ Bug reported — thanks Tawny!
+        <span id="bugSuccessMsg">✓ Bug reported — thank you!</span>
         <div id="bugSuccessTime" style="margin-top:6px;font-size:12px;opacity:.7;font-weight:400"></div>
       </div>
     </div>
@@ -8007,6 +8007,10 @@ async function submitBugReport() {
 
   try {
     await proxyFetch(payload);
+    const _who = String(_getSessionUser() || '').split('@')[0].split(/[.\s_]/)[0].trim();
+    const _first = (_who && _who !== 'unknown') ? _who.charAt(0).toUpperCase() + _who.slice(1) : '';
+    document.getElementById('bugSuccessMsg').textContent =
+      _first ? `✓ Bug reported — thanks ${_first}!` : '✓ Bug reported — thank you!';
     document.getElementById('bugSuccessTime').textContent =
       'Reported ' + new Date().toLocaleString('en-US', {
         timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric',
