@@ -300,7 +300,7 @@ function handleBugReport(b) {
   try {
     GXCore.gxIngestBug('inventory', b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
-      store: b.appStore, appVer: b.appVer
+      store: b.appStore, tab: b.appTab, appVer: b.appVer
     });
   } catch (e) { /* central unavailable — the email above is the fallback */ }
 
