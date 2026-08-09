@@ -9,7 +9,20 @@ deploy; the brain owns the shared GX Core seam.
 
 ## Pending
 
-_(nothing for this app right now)_
+### Namespace the `gc_wn_seen` localStorage key (collision-proofing)
+
+**Why:** all GX apps are served from the SAME origin (`greencrosscanna.github.io`), so localStorage is
+shared across them. This app uses a bare `gc_wn_seen` key for the What's New "last seen version" — which
+**collided** with Leaderboard (Inventory's `v2.54` was suppressing Leaderboard's popup). Leaderboard fixed
+its side (now `gc_wn_seen_performance`). Inventory is currently the only user of the bare key, so nothing's
+broken right now — but namespace it so a *future* same-origin app can't collide with it either.
+
+**Do:** rename this app's What's New seen-key `gc_wn_seen` → **`gc_wn_seen_inventory`** at both the read
+(`checkWhatsNew`) and write sites. Optional one-time migration: if `gc_wn_seen_inventory` is unset but
+`gc_wn_seen` looks like an Inventory version (starts `v2.`), seed the new key from it so users don't
+re-see old What's New. Verify + deploy.
+
+**When done:** move to ## Archive with date + commit.
 
 ---
 
