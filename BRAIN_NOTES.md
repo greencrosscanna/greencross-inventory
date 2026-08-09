@@ -22,6 +22,12 @@ https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFd
 Returns JSONP: `{ ok:true, app:"inventory", history:[ {version, deployed_at, deployed_by, git_sha, notes}, ... ] }`
 (newest first). `notes` is a string of newline-separated bullets (split on `\n`).
 
+**Provenance (confirmed by the brain):** that URL is the official GX Core web app — the Command Center's
+Master Control deployment, the same one that serves the cockpit UI and this `version_history` route. It's
+**public, read-only, no auth**, and returns **only release notes** (no sensitive data), so the cross-origin
+fetch is safe. Making "What's New" depend on this fetch is intended, with the specified silent fallback if
+GX Core is momentarily down. → **You're cleared to proceed.**
+
 **The two local copies to remove (both in index.html):**
 1. `const CHANGELOG = [ {v, date, items:[]} ... ]` (~line 7428) — powers the **"What's New"** popup.
 2. The static `<div class="ver-row">…</div>` block (~line 1690) — the **"Version History"** list.
