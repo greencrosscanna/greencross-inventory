@@ -1,0 +1,355 @@
+{
+  "app": "inventory",
+  "history": [
+    {
+      "version": "v2.51",
+      "deployed_at": "2026-06-25T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "OOS visibility: products that sold at a store but are now out of stock there are surfaced as OOS rows even if the last sale was more than 28 days ago. Previously the \"sold here, now empty\" detection only counted products that sold in the last 28 days, so slower movers that sold ~a month ago showed nothing at all at that location (misleading — looked like the product was never carried there). Now any product with sales history in the velocity window that's currently out of stock shows as OOS at that store."
+    },
+    {
+      "version": "v2.50",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner search: typing in the search box now shows a list of matching products to pick from (name / brand / SKU), just like the Inventory \"Search products\" box — it no longer auto-loads the first match. Focusing the search also turns the live camera off and hides it (so it isn't running or firing scans while you type); a \"📷 Camera\" button returns to live scanning."
+    },
+    {
+      "version": "v2.49",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner: hid the diagnostic overlay (sw/iw/frames/foc/decode trail) that was used to debug the camera — the Scan tab is clean now. The diagnostics aren't gone, just gated: append ?scandebug=1 to the URL to bring them back for troubleshooting, ?scandebug=0 to hide again."
+    },
+    {
+      "version": "v2.48",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner: snapped UPC barcodes now decode reliably. The photo decoder was cropping barcode regions from an already-shrunk 1800px copy, then nearest-neighbor upscaling — which destroys the sharp bar edges 1D barcodes need (fine for QR, fatal for UPC/EAN). Crops now come from the full-resolution camera photo and downscale cleanly, giving ZXing readable bars. Diag now shows the hi-res source size too."
+    },
+    {
+      "version": "v2.47",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops)."
+    },
+    {
+      "version": "v2.46",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto."
+    },
+    {
+      "version": "v2.45",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as \"camera denied\" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device."
+    },
+    {
+      "version": "v2.44",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Scanner: return-to-scan camera restore + autofocus/tap-to-focus (superseded by v2.45 hotfix)"
+    },
+    {
+      "version": "v2.43",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot."
+    },
+    {
+      "version": "v2.42",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Phase 3: parallel store inventory fetches cut bundle build from ~9s to ~1.5s; GAS error log with ⚠ badge in Settings if overnight failures occur; Vel Cache date column forced to text format so Sheets stops auto-converting dates; decision feed staleness guard — feed older than 26h shows ⚠ stale and auto-schedules a background refresh"
+    },
+    {
+      "version": "v2.41",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Code review fixes: restored v2.39 stale-snapshot guard that was dropped by worktree copy; vel cache backfill now updates velLastWriteDate so the gap self-heal can see backfill progress (previously blind to backfill-only write paths)"
+    },
+    {
+      "version": "v2.40",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Code quality: centralized localStorage key registry (LS.*), named DOH threshold constants (DOH_CRITICAL/LOW/WATCH/WARN), and cache version guard (bump CACHE_VERSION to force-evict all caches on schema change)"
+    },
+    {
+      "version": "v2.39",
+      "deployed_at": "2026-06-02T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Stale snapshot guard: page now silently checks the server snapshot version on every load and evicts the local cache if a newer build exists — no more reloading against 12-hour-old data after a manual \"Build Snapshot Now\". GAS: vel cache gap self-heal — if the hourly sync detects that the last write date is 28+ days behind today (data lost during a sheet rewrite timeout), it automatically rolls the sync date back so the next run re-fills the gap"
+    },
+    {
+      "version": "v2.38",
+      "deployed_at": "2026-06-01T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Settings Admin: added \"Trigger Velocity Backfill\" button to manually kick off a vel cache backfill without opening the GAS editor"
+    },
+    {
+      "version": "v36",
+      "deployed_at": "2026-04-25T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Reorder pill is now a clickable button (+N) for child and flat rows; parent +N adds all stores at once; transfer suggestion rendered as amber ↔N button; new Transfers tab — grouped by donor store, editable qty, Excel export"
+    },
+    {
+      "version": "v35",
+      "deployed_at": "2026-04-25T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Orders tab: PO-style order builder grouped by vendor; + cart button in Reorder column; editable qty/cost; line and grand totals; Export to Excel (per-vendor sheets + Summary tab)"
+    },
+    {
+      "version": "v34",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Room detection: roomQuantities array as primary classifier; date-filtered recent transactions merged into room map"
+    },
+    {
+      "version": "v33",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "SKU probe raw fields (roomName, roomQuantities, inventoryId); txprobe sort param testing; search clear button (✕)"
+    },
+    {
+      "version": "v32",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "item.roomName primary classifier; roomdata_ cache key to bust stale v31 cache"
+    },
+    {
+      "version": "v31",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "invroom3_ cache key fix; OOS injection from velocity cross-reference (vel30 > 0 absent from Dutchie)"
+    },
+    {
+      "version": "v30",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Reverted roomId filter approach; transaction-based room detection restored; quarantine/sample moved to Flags tab"
+    },
+    {
+      "version": "v29",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Attempted roomId-per-room inventory queries (broke everything — Dutchie ignores roomId param)"
+    },
+    {
+      "version": "v28",
+      "deployed_at": "2026-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Settings: category aliases editor, version history, Hard Reset; SKU probe tool; category alias bootstrap on init"
+    },
+    {
+      "version": "v27",
+      "deployed_at": "2025-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "QUARNT/SAMPLE status pills; separate quarantine vs sample room detection"
+    },
+    {
+      "version": "v26",
+      "deployed_at": "2025-04-23T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Settings drawer: category aliases, reorder buffer, density, export, quarantine viewer"
+    },
+    {
+      "version": "v25",
+      "deployed_at": "2025-04-22T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Quarantine filter fix; Performance tab (merged Overview/COGS/Margin); inventory header stat pills"
+    },
+    {
+      "version": "v24",
+      "deployed_at": "2025-04-20T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Store display names & colors; multi-line store trend chart; per-store sparklines"
+    },
+    {
+      "version": "v23",
+      "deployed_at": "2025-04-18T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Flower reorder rounding to 454g increments; store color pills"
+    },
+    {
+      "version": "v22",
+      "deployed_at": "2025-04-15T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Inventory tab as default; status filter pills; COGS & margin analysis"
+    },
+    {
+      "version": "v21",
+      "deployed_at": "2025-04-12T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Flags tab: dead stock, distro-only, high reorder alerts"
+    },
+    {
+      "version": "v20",
+      "deployed_at": "2025-04-10T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Reorder quantity column; flower 454g increment rounding (initial)"
+    },
+    {
+      "version": "v19",
+      "deployed_at": "2025-04-07T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Distro room type; tag pills (Hot, New, Distro, Dead)"
+    },
+    {
+      "version": "v18",
+      "deployed_at": "2025-04-04T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Category exclude row; hide/show categories filter"
+    },
+    {
+      "version": "v17",
+      "deployed_at": "2025-04-01T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Brand and vendor filter dropdowns; category short-name aliases"
+    },
+    {
+      "version": "v16",
+      "deployed_at": "2025-03-28T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Inventory value column; price × qty calculation per product"
+    },
+    {
+      "version": "v15",
+      "deployed_at": "2025-03-25T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Days-on-hand (DOH) velocity from 30-day sales history"
+    },
+    {
+      "version": "v14",
+      "deployed_at": "2025-03-21T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Floor vs back-room split; room type classification via transaction history"
+    },
+    {
+      "version": "v13",
+      "deployed_at": "2025-03-18T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Quarantine room filtering; sample room exclusion from inventory counts"
+    },
+    {
+      "version": "v12",
+      "deployed_at": "2025-03-14T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Multi-store inventory aggregation; per-store store selector pills"
+    },
+    {
+      "version": "v11",
+      "deployed_at": "2025-03-11T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Local cache layer (localStorage, 30-min TTL) to reduce API calls"
+    },
+    {
+      "version": "v10",
+      "deployed_at": "2025-03-07T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Overview tab: total sales, COGS, gross margin cards with sparklines"
+    },
+    {
+      "version": "v9",
+      "deployed_at": "2025-03-04T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Monthly bar charts for sales and COGS by store"
+    },
+    {
+      "version": "v8",
+      "deployed_at": "2025-02-28T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Budget vs actual comparison; variance highlighting"
+    },
+    {
+      "version": "v7",
+      "deployed_at": "2025-02-24T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Date range picker; apply button for custom reporting periods"
+    },
+    {
+      "version": "v6",
+      "deployed_at": "2025-02-20T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Apps Script proxy deployed; CORS-safe Dutchie API access"
+    },
+    {
+      "version": "v5",
+      "deployed_at": "2025-02-17T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Google Sheets COGS/sales data integration via GAS"
+    },
+    {
+      "version": "v4",
+      "deployed_at": "2025-02-13T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Product search; status filter (OOS, Critical, Low, Watch, OK)"
+    },
+    {
+      "version": "v3",
+      "deployed_at": "2025-02-10T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Live inventory table from Dutchie API; qty and SKU columns"
+    },
+    {
+      "version": "v2",
+      "deployed_at": "2025-02-06T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Dark-mode UI shell; tab navigation; Green Cross branding"
+    },
+    {
+      "version": "v1",
+      "deployed_at": "2025-02-03T12:00:00.000Z",
+      "deployed_by": "import",
+      "git_sha": "",
+      "notes": "Initial build: single-page HTML dashboard concept, static data"
+    }
+  ]
+}

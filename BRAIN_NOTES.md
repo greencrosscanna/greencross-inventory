@@ -9,50 +9,42 @@ deploy; the brain owns the shared GX Core seam.
 
 ## Pending
 
-### Centralize the changelog — read it from GX Core, delete the local copies
+_(nothing for this app right now)_
 
-**Why:** release notes must live in ONE place. GX Core is now the single source (authored in the
-Command Center's version popup → "+ Add release note"). This app currently keeps **two** hardcoded
-copies of the same info — remove both and read from GX Core instead.
+---
 
-**Source (public, no auth, no library binding needed):**
-```
-https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec?action=version_history&app=inventory&callback=FN
-```
-Returns JSONP: `{ ok:true, app:"inventory", history:[ {version, deployed_at, deployed_by, git_sha, notes}, ... ] }`
-(newest first). `notes` is a string of newline-separated bullets (split on `\n`).
+## Notes back to the brain (action needed in GX Core / Command Center)
 
-**Provenance (confirmed by the brain):** that URL is the official GX Core web app — the Command Center's
-Master Control deployment, the same one that serves the cockpit UI and this `version_history` route. It's
-**public, read-only, no auth**, and returns **only release notes** (no sensitive data), so the cross-origin
-fetch is safe. Making "What's New" depend on this fetch is intended, with the specified silent fallback if
-GX Core is momentarily down. → **You're cleared to proceed.**
+### Backfill GX Core with 50 Inventory version_history entries it's missing
 
-**The two local copies to remove (both in index.html):**
-1. `const CHANGELOG = [ {v, date, items:[]} ... ]` (~line 7428) — powers the **"What's New"** popup.
-2. The static `<div class="ver-row">…</div>` block (~line 1690) — the **"Version History"** list.
+**Context:** doing the "centralize the changelog" task, the app's Version History had **97** entries but
+GX Core's `version_history?app=inventory` returns only **48**. GX Core is missing **50** — and not just
+ancient ones: **v2.38–v2.51** are recent, meaningful releases (OOS visibility, scanner UPC fixes, Phase
+3/4 perf) that only ever lived in the app's static Version History, plus pre-public-launch dev history
+**v1–v36**. (GX Core also has one entry the app never had: `v2.22` — fine, leave it.)
 
-**Steps:**
-1. On load, JSONP-fetch the route above (cross-origin from github.io; use the script-tag + `callback`
-   pattern). Adapt each entry → the shapes the two render sites expect: `version`→`v`,
-   `deployed_at`→a `Mon D, YYYY` date, `notes.split('\n')`→`items` bullets.
-2. Point the **"What's New"** popup at the fetched data (keep the existing "new since last login"
-   logic against `gc_wn_seen` — it now runs after the fetch resolves).
-3. Render **"Version History"** from the fetched data (convert the static `.ver-row` HTML to
-   JS-rendered rows).
-4. **Delete** the `CHANGELOG` array and the static `.ver-row` block — that's the duplication.
-5. **Keep** the app's own version-NUMBER constant (the header's "v2.54") — that's the running
-   version identifying itself, not changelog data.
-6. **Graceful fallback:** if the fetch fails/returns empty, skip the What's New popup and don't block
-   the app.
-7. **Verify in the running app:** the What's New popup + Version History show the same entries as the
-   Command Center cockpit for Inventory (click the Inventory version pill there to compare). Then deploy.
+Sky's decision: **move the deep history into GX Core so it isn't lost.** The app now reads everything from
+GX Core, so once these are imported they appear in the app automatically — no app change needed.
 
-**Going forward:** when you ship a version, bump the header version constant here, and add that
-version's note ONCE in the Command Center version popup. This app only reads notes now.
+**Ready-to-import payload (this repo):**
+`greencross-inventory/brain-handoff/inventory-version-history-backfill.json`
+— 50 records already in GX Core's `version_history` schema: `{version, deployed_at, deployed_by:"import",
+git_sha:"", notes}`. Dates are noon-UTC ISO derived from the app's displayed dates.
+
+**Please:** import these into GX Core's inventory `version_history` (skip any already present by version),
+and ensure the cockpit sorts **newest-first by `deployed_at`** so the 2025 dev entries land at the bottom.
+For v2.38–v2.51 the `notes` is a single prose string (one bullet), not multi-line — reformat into bullets
+if you like; not required.
 
 ---
 
 ## Archive
 
-_(move completed items here with date + commit)_
+- **2026-08-08 — Centralize the changelog (app side).** index.html now JSONP-fetches GX Core's
+  `version_history?app=inventory` on load and renders BOTH the What's New popup and the Version History
+  list from it (`loadChangelog` → `fetchVersionHistory` → `renderVersionHistory` + `checkWhatsNew`).
+  Deleted the hardcoded `const CHANGELOG` array and the static `.ver-row` block (97 rows). Kept the header
+  version constant. Graceful fallback: fetch fail/empty → skip What's New, show a "loading from the Command
+  Center" line in Version History, never blocks the app. Verified live: 48 fetched → 48 rendered
+  (v2.54→v1.36), What's New shows correct unseen versions. Follow-up handed back to the brain above
+  (backfill the 50 missing entries).

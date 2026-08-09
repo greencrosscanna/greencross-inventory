@@ -1687,103 +1687,6 @@ if (location.protocol === 'file:') {
         <span id="verHistoryArrow" style="font-size:12px;color:var(--muted)">▶</span>
       </div>
       <div id="verHistoryRows" style="display:none">
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.54</span><span class="ver-date">Aug 5, 2026</span><span class="ver-desc">New "FATTY" hide pill in the Inventory filter bar's Hide: row — hides every product with FATTY in the name, on by default (toggle off to show). Also: a Log out button in Settings; fixed the operational snapshot status getting stuck on "Building…" (a crashed build had left a stale flag — it now ignores an orphaned build flag older than 15 minutes); and a new store color palette that reserves green / red / amber for status, applied across store pills and charts.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.53</span><span class="ver-date">Jul 28, 2026</span><span class="ver-desc">Distro room fixed. River Rd's active stock was showing as if it were all still staged in the Distro room — its entire sellable floor (≈1,350 products) looked like distribution stock, and other stores were unaffected. Root cause: Dutchie changed its inventory-transaction API to require a dated window of 31 days or less, so the app was getting no room data at all and River fell back to a "distro" default (every other store defaulted to active, which is why only River looked wrong). Room designation is now pulled correctly again via dated 30-day transaction windows: active / back stock / Distro split accurately at every store, and River's real distribution staging is cleanly separated from its sellable floor stock. Unknown-room packages now default to active everywhere so stock is never hidden on a guess.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.52</span><span class="ver-date">Jul 28, 2026</span><span class="ver-desc">Refresh now pulls LIVE data. Hitting ↺ Refresh fetches each store's current on-hand AND room designation (active / back stock / distro) straight from Dutchie, bypassing the nightly snapshot — so active stock vs distribution stock is accurate in real time. This matters most at River (the DC), where stock is constantly staged for distribution: previously a manual refresh only re-read the baked snapshot, so recently-moved packages could still show in the wrong room. Normal page loads still use the fast cached snapshot; only a deliberate Refresh click goes live (≈1 inventory + 6 room lookups per store).</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.51</span><span class="ver-date">Jun 25, 2026</span><span class="ver-desc">OOS visibility: products that sold at a store but are now out of stock there are surfaced as OOS rows even if the last sale was more than 28 days ago. Previously the "sold here, now empty" detection only counted products that sold in the last 28 days, so slower movers that sold ~a month ago showed nothing at all at that location (misleading — looked like the product was never carried there). Now any product with sales history in the velocity window that's currently out of stock shows as OOS at that store.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.50</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner search: typing in the search box now shows a list of matching products to pick from (name / brand / SKU), just like the Inventory "Search products" box — it no longer auto-loads the first match. Focusing the search also turns the live camera off and hides it (so it isn't running or firing scans while you type); a "📷 Camera" button returns to live scanning.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.49</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: hid the diagnostic overlay (sw/iw/frames/foc/decode trail) that was used to debug the camera — the Scan tab is clean now. The diagnostics aren't gone, just gated: append ?scandebug=1 to the URL to bring them back for troubleshooting, ?scandebug=0 to hide again.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.48</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped UPC barcodes now decode reliably. The photo decoder was cropping barcode regions from an already-shrunk 1800px copy, then nearest-neighbor upscaling — which destroys the sharp bar edges 1D barcodes need (fine for QR, fatal for UPC/EAN). Crops now come from the full-resolution camera photo and downscale cleanly, giving ZXing readable bars. Diag now shows the hi-res source size too.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.47</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: snapped photos now read UPC/EAN barcodes reliably. On iOS the photo path falls through to ZXing (no BarcodeDetector), which was decoding without hints and missing 1D barcodes the live view caught — now it uses TRY_HARDER + explicit UPC/EAN/Code-128 format hints, plus wide horizontal crop bands tuned for 1D barcodes (vs the QR-tuned crops).</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.46</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: added a 📸 snap-photo shutter to the live view. iOS Safari exposes no focus control to web pages (confirmed foc:unsupported), so the live camera can't autofocus on close-up labels — the shutter hands off to the native iOS camera, which has real autofocus + macro, then decodes the photo through the same engine. Tap 📸 for any barcode the live view won't lock onto.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.45</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner hotfix: v2.44's camera-start constraints broke live camera on iOS and got mis-recorded as "camera denied" — reverted to the proven camera selector, with autofocus now applied safely after start (can't break the stream) plus tap-to-focus. Transient start failures no longer poison future loads, and a one-time self-heal clears the stale denied flag. Returning to Scan re-shows the camera correctly; diag line shows foc: capability per device.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.44</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Scanner: return-to-scan camera restore + autofocus/tap-to-focus (superseded by v2.45 hotfix)</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.43</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 4: room-data fetches now batch across all stores in a single parallel round instead of one store at a time — cold-cache nightly snapshot build drops from ~18s to ~3s. Each store keeps its own API key so per-key request bursts are unchanged. Falls back to per-store fetch if the batch fails, so a single store's error never aborts the whole snapshot.</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.42</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Phase 3: parallel store inventory fetches cut bundle build from ~9s to ~1.5s; GAS error log with ⚠ badge in Settings if overnight failures occur; Vel Cache date column forced to text format so Sheets stops auto-converting dates; decision feed staleness guard — feed older than 26h shows ⚠ stale and auto-schedules a background refresh</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.41</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code review fixes: restored v2.39 stale-snapshot guard that was dropped by worktree copy; vel cache backfill now updates velLastWriteDate so the gap self-heal can see backfill progress (previously blind to backfill-only write paths)</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.40</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Code quality: centralized localStorage key registry (LS.*), named DOH threshold constants (DOH_CRITICAL/LOW/WATCH/WARN), and cache version guard (bump CACHE_VERSION to force-evict all caches on schema change)</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.39</span><span class="ver-date">Jun 2, 2026</span><span class="ver-desc">Stale snapshot guard: page now silently checks the server snapshot version on every load and evicts the local cache if a newer build exists — no more reloading against 12-hour-old data after a manual "Build Snapshot Now". GAS: vel cache gap self-heal — if the hourly sync detects that the last write date is 28+ days behind today (data lost during a sheet rewrite timeout), it automatically rolls the sync date back so the next run re-fills the gap</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.38</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Settings Admin: added "Trigger Velocity Backfill" button to manually kick off a vel cache backfill without opening the GAS editor</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.37</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Velocity history fix: sync now processes up to 8 × 14-day chunks per hourly call (was 1), so the full 180-day backfill completes in 2 runs instead of 13 — bars 3 and 4 of the velocity sparkline will populate after the next sync</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.36</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Inventory summary bar now shows a Lost Revenue pill: total estimated revenue lost while OOS products have been out of stock — click it to filter straight to the OOS list</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.35</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Transfer suggestion buttons disappear once added to the transfer cart, matching order button behaviour — no more lingering amber buttons after a transfer is queued</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.34</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Single-store view now loads from the operational snapshot instead of hitting the Dutchie API directly — switching between All / Bend / Hillsboro etc. costs zero extra API calls</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v2.33</span><span class="ver-date">Jun 1, 2026</span><span class="ver-desc">Startup is lighter: Beta loads queue-first, Inventory defers full recommendation details until after first render, and Performance data loads only when opened</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.32</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta Action Queue items now jump straight to the matching Inventory product group with filters cleared and All Stores selected</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.31</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta freshness panel now separates snapshot age, Decision Feed age, and midnight job status with clear Regenerate Feed, Build Snapshot, and Install Trigger actions</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.30</span><span class="ver-date">May 30, 2026</span><span class="ver-desc">Beta now shows a Decision Rules card for vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.29</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Settings now calls the local reorder control Target days, defaults it to the 14-day beta model, and removes obsolete long-lead/vendor-lead filters from the beta queue</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.28</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Decision Feed now standardizes beta vendor replenishment to the team-confirmed 7-day lead time, ignoring stale lead-time values from older config rows</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.27</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Decision Feed regeneration now uses the prepared operational inventory snapshot when available, avoiding live Dutchie inventory fetches during manual queue refreshes</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.26</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Action Queue can now use a backend decisionqueue endpoint so bucket counts and top items are ranked from the full Decision Feed dataset instead of only the loaded table rows</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.25</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Beta now opens to an Action Queue that ranks loaded decisions into Order Today, Transfer Today, Investigate, and Dead / Kill Review buckets</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.24</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Inventory decision health warnings now include manual actions to refresh the decision feed, schedule a snapshot build, or install the nightly trigger when needed</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.23</span><span class="ver-date">May 29, 2026</span><span class="ver-desc">Fixed critical URL fetch quota exhaustion — removed auto-regen of beta decision feed, Refresh button now reloads from snapshot, snapshot-missing shows clear error, GAS force-rebuild now schedules async job</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.21</span><span class="ver-date">May 27, 2026</span><span class="ver-desc">Beta now includes operational health cards for snapshot readiness, generated time, nightly trigger status, and system issues</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.20</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Settings now shows whether the operational inventory snapshot is ready and whether the warm-cache trigger is installed</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.19</span><span class="ver-date">May 20, 2026</span><span class="ver-desc">Beta can now load Inventory from a persisted operational snapshot bundle without rebuilding it during normal app loads</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.18</span><span class="ver-date">May 17, 2026</span><span class="ver-desc">Inventory loading now treats inventory and velocity as same-day operational data, reducing routine reloads and leaving heavy refresh work to backend jobs</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.17</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Bulk flower transfer guidance now hides redundant Need chips and caps very high donor coverage as &gt;90d instead of noisy precision</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.16</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Orders now has buyer workbench summary cards and vendor diagnostics for value, stores, category mix, and missing costs</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.15</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Beta now includes an Exceptions view for stale rows, live-stock mismatches, missing pricing, generic categories, and recommendation logic checks</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.14</span><span class="ver-date">May 16, 2026</span><span class="ver-desc">Apparel velocity now requires exact product or SKU matches so shirt sizes and colors do not inherit sales from neighboring variants</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.13</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower action buttons now use the same half-pound labels and beta flower rules as the recommendation chips</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.12</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower recommendation chips now use pound labels with one decimal place, and redundant MOQ/multiple chips are hidden from Inventory</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.11</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Bulk flower order quantities now round to half-pound increments and display consistently as N.NNlb across Inventory, Orders, and exports</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.10</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now marks stale rows by feed age, old assumptions, and live-stock mismatch so buyer guidance is visibly freshness-aware</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.9</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Inventory now ignores stale OOS beta decision rows when live inventory shows stock, preventing false missed-revenue chips on stocked products</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.8</span><span class="ver-date">May 14, 2026</span><span class="ver-desc">Beta Decision Feed now warns when rows were generated with old 5-day lead or 12-day buffer assumptions so stale buyer guidance is not trusted quietly</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.7</span><span class="ver-date">May 13, 2026</span><span class="ver-desc">Beta Decision Feed now reads active store keys from the Config - Stores tab, grounding Century/Baseline naming in the beta workbook</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.6</span><span class="ver-date">May 13, 2026</span><span class="ver-desc">Transfer timing updated to team-confirmed routes: Salem to Salem is 3 days, and any route involving Century or Baseline is 7 days; vendor replenishment now uses a standard 7-day lead time for all vendors</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.5</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Login timeout window extended for Apps Script cold starts and post-deploy warmups, reducing false timeout errors in preview and production</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.4</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta vendor lead-time rules now use the most specific matching config row, and Beta can filter recommendations affected by vendor lead timing</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.3</span><span class="ver-date">May 12, 2026</span><span class="ver-desc">Beta Decision Feed detects stale sheet schemas, adds a Regenerate control, and can rebuild the feed in the background so missed-revenue columns are available after schema updates</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.2</span><span class="ver-date">May 11, 2026</span><span class="ver-desc">Decision-feed missed revenue now feeds Inventory recommendations: OOS rows backfill price from matching store inventory, lost-sales chips are prioritized and highlighted, and status sorting uses buyer impact as a tie-breaker</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.1</span><span class="ver-date">May 10, 2026</span><span class="ver-desc">Beta buyer intelligence: decision feed powers Inventory recommendations; smarter transfer allocation and order offsets; beta Google Sheet now tracks Action Tracker and beta Shared State for flags/hidden items; product value backfill for missing unit costs; Inventory recommendation chips simplified; collapsed transfer totals now match expanded allocation; expanded transfer actions now live on donor rows only; selected transfers prevent duplicate recipient suggestions; server-issued login sessions protect data actions</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px;font-weight:700;color:var(--green)">v2.0</span><span class="ver-date">May 8, 2026</span><span class="ver-desc">v2.0 — Mobile Scanner: live camera barcode scanning (UPC-A, EAN-13, QR, Code 128); native BarcodeDetector + html5-qrcode + ZXing fallback chain; instant DOH / velocity / store breakdown on scan</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.42</span><span class="ver-date">May 7, 2026</span><span class="ver-desc">Scanner tab initial release</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.41</span><span class="ver-date">May 7, 2026</span><span class="ver-desc">What's New popup after login showing recent updates since last session</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.40</span><span class="ver-date">May 7, 2026</span><span class="ver-desc">LeafLink integration: open-order status badges on inventory rows; LL Order Sheet modal in Orders tab grouped by vendor</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.39</span><span class="ver-date">May 7, 2026</span><span class="ver-desc">In-app bug reporter (🐞 button) — submits to Bug Reports sheet + emails sky; doPost handler in GAS</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.38</span><span class="ver-date">May 7, 2026</span><span class="ver-desc">OOS date in DOH column; velocity-window fallback (>7d, >14d…) for items OOS before snapshot history</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.37</span><span class="ver-date">May 1, 2026</span><span class="ver-desc">Multi-user login (sky + tawny); 7-day persistent session via localStorage; room classification fix — partial returns no longer misclassify packages as quarantine; velocity staleness badge (amber >4h, red >24h) with auto-resync; localStorage quota eviction for vel cache</span></div>
-      <div class="ver-row"><span class="ver-num" style="width:44px">v1.36</span><span class="ver-date">Apr 26, 2026</span><span class="ver-desc">Public launch — login screen (Tawny-Wan Kenobi); financial privacy toggle; live velocity via Dutchie transactions API with rolling 90-day cache and hourly sync; auto-resurrect hidden items on restock; transfer logic uses total on-hand incl. backstock; FATTY-specific min transfer qty setting; loading quotes; store pills alphabetical with distinct Century color; tag pills in controls bar; Kill→Hide rename</span></div>
-      <div class="ver-row"><span class="ver-num">v36</span><span class="ver-date">Apr 25, 2026</span><span class="ver-desc">Reorder pill is now a clickable button (+N) for child and flat rows; parent +N adds all stores at once; transfer suggestion rendered as amber ↔N button; new Transfers tab — grouped by donor store, editable qty, Excel export</span></div>
-      <div class="ver-row"><span class="ver-num">v35</span><span class="ver-date">Apr 25, 2026</span><span class="ver-desc">Orders tab: PO-style order builder grouped by vendor; + cart button in Reorder column; editable qty/cost; line and grand totals; Export to Excel (per-vendor sheets + Summary tab)</span></div>
-      <div class="ver-row"><span class="ver-num">v34</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">Room detection: roomQuantities array as primary classifier; date-filtered recent transactions merged into room map</span></div>
-      <div class="ver-row"><span class="ver-num">v33</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">SKU probe raw fields (roomName, roomQuantities, inventoryId); txprobe sort param testing; search clear button (✕)</span></div>
-      <div class="ver-row"><span class="ver-num">v32</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">item.roomName primary classifier; roomdata_ cache key to bust stale v31 cache</span></div>
-      <div class="ver-row"><span class="ver-num">v31</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">invroom3_ cache key fix; OOS injection from velocity cross-reference (vel30 &gt; 0 absent from Dutchie)</span></div>
-      <div class="ver-row"><span class="ver-num">v30</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">Reverted roomId filter approach; transaction-based room detection restored; quarantine/sample moved to Flags tab</span></div>
-      <div class="ver-row"><span class="ver-num">v29</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">Attempted roomId-per-room inventory queries (broke everything — Dutchie ignores roomId param)</span></div>
-      <div class="ver-row"><span class="ver-num">v28</span><span class="ver-date">Apr 23, 2026</span><span class="ver-desc">Settings: category aliases editor, version history, Hard Reset; SKU probe tool; category alias bootstrap on init</span></div>
-      <div class="ver-row"><span class="ver-num">v27</span><span class="ver-date">Apr 23, 2025</span><span class="ver-desc">QUARNT/SAMPLE status pills; separate quarantine vs sample room detection</span></div>
-      <div class="ver-row"><span class="ver-num">v26</span><span class="ver-date">Apr 23, 2025</span><span class="ver-desc">Settings drawer: category aliases, reorder buffer, density, export, quarantine viewer</span></div>
-      <div class="ver-row"><span class="ver-num">v25</span><span class="ver-date">Apr 22, 2025</span><span class="ver-desc">Quarantine filter fix; Performance tab (merged Overview/COGS/Margin); inventory header stat pills</span></div>
-      <div class="ver-row"><span class="ver-num">v24</span><span class="ver-date">Apr 20, 2025</span><span class="ver-desc">Store display names &amp; colors; multi-line store trend chart; per-store sparklines</span></div>
-      <div class="ver-row"><span class="ver-num">v23</span><span class="ver-date">Apr 18, 2025</span><span class="ver-desc">Flower reorder rounding to 454g increments; store color pills</span></div>
-      <div class="ver-row"><span class="ver-num">v22</span><span class="ver-date">Apr 15, 2025</span><span class="ver-desc">Inventory tab as default; status filter pills; COGS &amp; margin analysis</span></div>
-      <div class="ver-row"><span class="ver-num">v21</span><span class="ver-date">Apr 12, 2025</span><span class="ver-desc">Flags tab: dead stock, distro-only, high reorder alerts</span></div>
-      <div class="ver-row"><span class="ver-num">v20</span><span class="ver-date">Apr 10, 2025</span><span class="ver-desc">Reorder quantity column; flower 454g increment rounding (initial)</span></div>
-      <div class="ver-row"><span class="ver-num">v19</span><span class="ver-date">Apr 7, 2025</span><span class="ver-desc">Distro room type; tag pills (Hot, New, Distro, Dead)</span></div>
-      <div class="ver-row"><span class="ver-num">v18</span><span class="ver-date">Apr 4, 2025</span><span class="ver-desc">Category exclude row; hide/show categories filter</span></div>
-      <div class="ver-row"><span class="ver-num">v17</span><span class="ver-date">Apr 1, 2025</span><span class="ver-desc">Brand and vendor filter dropdowns; category short-name aliases</span></div>
-      <div class="ver-row"><span class="ver-num">v16</span><span class="ver-date">Mar 28, 2025</span><span class="ver-desc">Inventory value column; price × qty calculation per product</span></div>
-      <div class="ver-row"><span class="ver-num">v15</span><span class="ver-date">Mar 25, 2025</span><span class="ver-desc">Days-on-hand (DOH) velocity from 30-day sales history</span></div>
-      <div class="ver-row"><span class="ver-num">v14</span><span class="ver-date">Mar 21, 2025</span><span class="ver-desc">Floor vs back-room split; room type classification via transaction history</span></div>
-      <div class="ver-row"><span class="ver-num">v13</span><span class="ver-date">Mar 18, 2025</span><span class="ver-desc">Quarantine room filtering; sample room exclusion from inventory counts</span></div>
-      <div class="ver-row"><span class="ver-num">v12</span><span class="ver-date">Mar 14, 2025</span><span class="ver-desc">Multi-store inventory aggregation; per-store store selector pills</span></div>
-      <div class="ver-row"><span class="ver-num">v11</span><span class="ver-date">Mar 11, 2025</span><span class="ver-desc">Local cache layer (localStorage, 30-min TTL) to reduce API calls</span></div>
-      <div class="ver-row"><span class="ver-num">v10</span><span class="ver-date">Mar 7, 2025</span><span class="ver-desc">Overview tab: total sales, COGS, gross margin cards with sparklines</span></div>
-      <div class="ver-row"><span class="ver-num">v9</span><span class="ver-date">Mar 4, 2025</span><span class="ver-desc">Monthly bar charts for sales and COGS by store</span></div>
-      <div class="ver-row"><span class="ver-num">v8</span><span class="ver-date">Feb 28, 2025</span><span class="ver-desc">Budget vs actual comparison; variance highlighting</span></div>
-      <div class="ver-row"><span class="ver-num">v7</span><span class="ver-date">Feb 24, 2025</span><span class="ver-desc">Date range picker; apply button for custom reporting periods</span></div>
-      <div class="ver-row"><span class="ver-num">v6</span><span class="ver-date">Feb 20, 2025</span><span class="ver-desc">Apps Script proxy deployed; CORS-safe Dutchie API access</span></div>
-      <div class="ver-row"><span class="ver-num">v5</span><span class="ver-date">Feb 17, 2025</span><span class="ver-desc">Google Sheets COGS/sales data integration via GAS</span></div>
-      <div class="ver-row"><span class="ver-num">v4</span><span class="ver-date">Feb 13, 2025</span><span class="ver-desc">Product search; status filter (OOS, Critical, Low, Watch, OK)</span></div>
-      <div class="ver-row"><span class="ver-num">v3</span><span class="ver-date">Feb 10, 2025</span><span class="ver-desc">Live inventory table from Dutchie API; qty and SKU columns</span></div>
-      <div class="ver-row"><span class="ver-num">v2</span><span class="ver-date">Feb 6, 2025</span><span class="ver-desc">Dark-mode UI shell; tab navigation; Green Cross branding</span></div>
-      <div class="ver-row"><span class="ver-num">v1</span><span class="ver-date">Feb 3, 2025</span><span class="ver-desc">Initial build: single-page HTML dashboard concept, static data</span></div>
       </div><!-- /verHistoryRows -->
     </div>
   </div>
@@ -4136,8 +4039,8 @@ function init() {
   syncSharedState();
   setInterval(syncSharedState, 5 * 60 * 1000);
 
-  // Show What's New if there are unseen updates
-  checkWhatsNew();
+  // Load release notes from GX Core (single source of truth), then drive What's New + Version History
+  loadChangelog();
 }
 
 function setLoadingAll() {
@@ -7426,394 +7329,70 @@ function scanNameSelect(name, scannedCode) {
 }
 
 // ── What's New modal ─────────────────────────────────────────────────────────
-const CHANGELOG = [
-  {
-    v: 'v2.54', date: 'Aug 5, 2026',
-    items: [
-      'Inventory: new "FATTY" hide pill in the Hide: row — hides every product with FATTY in the name. On by default; toggle it off to show them',
-      'Added a Log out button in Settings (Account)',
-      'Fixed the snapshot status getting stuck on "Building…" — a crashed build had left a stale flag; it now ignores an orphaned build flag older than 15 min',
-      'New store color palette that reserves green / red / amber for status, applied across store pills and charts',
-    ]
-  },
-  {
-    v: 'v2.53', date: 'Jul 28, 2026',
-    items: [
-      'Distro room fixed: River Rd\'s active stock was showing as if it were all staged in the Distro room (its whole sellable floor looked like distribution stock)',
-      'Cause: Dutchie changed its inventory-transaction API to require a dated ≤31-day window, so the app got no room data and River fell back to a "distro" default',
-      'Room designation is pulled correctly again — active / back stock / Distro split accurately at every store, and River\'s distribution staging is separated from its sellable floor',
-    ]
-  },
-  {
-    v: 'v2.52', date: 'Jul 28, 2026',
-    items: [
-      '↺ Refresh now pulls LIVE inventory straight from Dutchie, bypassing the nightly snapshot',
-      'Live refresh also re-fetches room designation, so active stock vs Distro is accurate in real time — matters most at River (the DC), where stock is staged for distribution',
-      'Normal page loads still use the fast cached snapshot; only a deliberate Refresh click goes live',
-    ]
-  },
-  {
-    v: 'v2.37', date: 'Jun 1, 2026',
-    items: [
-      'Velocity history fix: sync now processes up to 8 × 14-day chunks per hourly call (was 1)',
-      'Full 180-day backfill completes in ~2 hourly runs instead of 13',
-      'Bars 3 and 4 of the 4-week velocity sparkline will populate after the next sync cycle',
-    ]
-  },
-  {
-    v: 'v2.36', date: 'Jun 1, 2026',
-    items: [
-      'Inventory summary bar now shows a "Lost Revenue" pill: total estimated revenue missed while OOS products have been out of stock',
-      'Pill appears only when beta decision data is available and at least one OOS product has a price on file',
-      'Falls back to "lost units" count when no price data is available',
-      'Click the pill to filter the inventory list to OOS products',
-    ]
-  },
-  {
-    v: 'v2.35', date: 'Jun 1, 2026',
-    items: [
-      'Transfer suggestion buttons now disappear once added to the transfer cart, matching how order buttons behave',
-      'Applies to all three surfaces: flat inventory rows, multi-store group child rows, and the OOS restock panel',
-    ]
-  },
-  {
-    v: 'v2.34', date: 'Jun 1, 2026',
-    items: [
-      'Single-store inventory now loads from the midnight operational snapshot instead of hitting the Dutchie API directly',
-      'Switching between All, Bend, Hillsboro, etc. costs zero extra API calls — all store data comes from the same cached bundle',
-      'Velocity data is also pulled from the snapshot for single-store views, eliminating a second network round-trip',
-    ]
-  },
-  {
-    v: 'v2.33', date: 'Jun 1, 2026',
-    items: [
-      'Beta opens Action Queue from the ranked backend queue without pulling the 500-row Decision Feed table first',
-      'Decision Feed and Exceptions rows now load only when those views are opened',
-      'Inventory renders the prepared snapshot first, then loads recommendation details after the initial page is usable',
-      'Performance sales, COGS, and budget requests wait until the Performance tab is opened',
-    ]
-  },
-  {
-    v: 'v2.32', date: 'May 30, 2026',
-    items: [
-      'Beta Action Queue items now open the matching product in Inventory',
-      'The jump clears filters, switches to All Stores, searches the SKU/product, and expands the product group',
-      'Queue cards are keyboard accessible so Enter or Space performs the same jump',
-    ]
-  },
-  {
-    v: 'v2.31', date: 'May 30, 2026',
-    items: [
-      'Beta now has a freshness panel that separates snapshot age, Decision Feed age, and midnight job status',
-      'Regenerate Feed, Build Snapshot, and Install Trigger actions appear beside the freshness state when they are needed',
-      'The stale-feed copy now points buyers to the safer snapshot-first workflow instead of implying live Dutchie data is required',
-    ]
-  },
-  {
-    v: 'v2.30', date: 'May 30, 2026',
-    items: [
-      'Beta now shows a Decision Rules card near the Action Queue',
-      'The card makes vendor lead, safety stock, target coverage, transfer timing, snapshot cadence, and bulk flower rounding visible',
-      'This keeps buyer assumptions inspectable without opening Settings or reading the sheet config',
-    ]
-  },
-  {
-    v: 'v2.29', date: 'May 29, 2026',
-    items: [
-      'Settings now labels the local reorder control as Target days instead of legacy Buffer days',
-      'Local Inventory reorder chips default to the same 14-day target used by the beta Decision Feed',
-      'Obsolete long-lead and vendor-lead beta filters were removed because all vendors now use the standard 7-day lead',
-    ]
-  },
-  {
-    v: 'v2.28', date: 'May 29, 2026',
-    items: [
-      'Decision Feed now uses the team-confirmed 7-day vendor replenishment window for beta recommendations',
-      'Older sheet lead-time values no longer reintroduce 5-day vendor timing or long-lead vendor flags',
-      'After deployment, regenerate the Decision Feed to clear stale timing warnings',
-    ]
-  },
-  {
-    v: 'v2.27', date: 'May 29, 2026',
-    items: [
-      'Decision Feed regeneration now uses the prepared operational inventory snapshot when available',
-      'Manual queue refreshes no longer need live Dutchie inventory fetches when the snapshot is ready',
-      'This reduces the risk of hitting premium URL fetch quota during weekend beta testing',
-    ]
-  },
-  {
-    v: 'v2.26', date: 'May 29, 2026',
-    items: [
-      'Action Queue can now read a full-dataset backend queue when the GAS backend is deployed',
-      'Bucket counts and top items are ranked from the full Decision Feed sheet instead of only the loaded table rows',
-      'Frontend keeps the local loaded-row queue as a fallback for older beta backends',
-    ]
-  },
-  {
-    v: 'v2.25', date: 'May 29, 2026',
-    items: [
-      'Beta now opens to an Action Queue instead of a raw table',
-      'Loaded decision rows are ranked into Order Today, Transfer Today, Investigate, and Dead / Kill Review',
-      'Decision Feed and Exceptions remain available as secondary beta views',
-    ]
-  },
-  {
-    v: 'v2.24', date: 'May 29, 2026',
-    items: [
-      'Inventory decision health warnings now include manual action buttons',
-      'Refresh Feed, Build Snapshot, and Install Trigger appear only when the related beta data condition needs attention',
-      'Decision-feed refresh stays explicit so page loads do not burn Dutchie/API quota',
-    ]
-  },
-  {
-    v: 'v2.23', date: 'May 29, 2026',
-    items: [
-      'Fixed critical URL fetch quota exhaustion ("Service invoked too many times for one day")',
-      'Removed auto-regen of beta decision feed on every inventory load (was burning 36+ API calls per load when schema was stale)',
-      'Refresh button no longer triggers expensive Dutchie API rebuild — reloads from snapshot instead',
-      'Snapshot-missing state now shows a clear error with instructions instead of silently falling back to 36 API calls',
-      'GAS: force-rebuild of operational bundle now schedules async background job instead of synchronous 36-fetch rebuild',
-      'GAS: snapshot auto-schedules a rebuild once per day if found missing (self-healing)',
-    ]
-  },
-  {
-    v: 'v2.22', date: 'May 29, 2026',
-    items: [
-      'Inventory now shows beta decision health in the main buyer workflow',
-      'The health strip reports operational snapshot freshness, decision-feed generation time, and stale/schema/regeneration warnings',
-    ]
-  },
-  {
-    v: 'v2.21', date: 'May 27, 2026',
-    items: [
-      'Beta now shows operational health cards before the decision feed',
-      'Snapshot readiness, generated time, nightly trigger status, and system issues are visible in one place',
-    ]
-  },
-  {
-    v: 'v2.20', date: 'May 20, 2026',
-    items: [
-      'Settings now shows whether the operational inventory snapshot is ready',
-      'Snapshot status also reports whether the backend warm-cache trigger is installed',
-      'Settings includes a protected Build Snapshot Now action that schedules the heavy rebuild in the background',
-      'Settings includes a protected Install Nightly Trigger action for operational setup',
-    ]
-  },
-  {
-    v: 'v2.19', date: 'May 20, 2026',
-    items: [
-      'Inventory can now load from a persisted operational snapshot bundle when the backend has one ready',
-      'Normal app loads read the prepared snapshot only; forced refresh and backend jobs own the heavy rebuild work',
-    ]
-  },
-  {
-    v: 'v2.18', date: 'May 17, 2026',
-    items: [
-      'Inventory and velocity caches now use same-day operational freshness instead of forcing short reload cycles',
-      'Normal page load no longer kicks off background velocity sync work; backend jobs own heavy refreshes',
-    ]
-  },
-  {
-    v: 'v2.17', date: 'May 16, 2026',
-    items: [
-      'Bulk flower transfer guidance now hides redundant Need chips when Buy and Move round to the same half-pound',
-      'Very high donor coverage now displays as >90d instead of noisy hundred-day precision',
-    ]
-  },
-  {
-    v: 'v2.16', date: 'May 16, 2026',
-    items: [
-      'Orders now has buyer workbench cards for order value, vendor count, store count, line count, and missing costs',
-      'Vendor sections now show line count, store spread, category mix, and cost-gap warnings before reviewing line items',
-    ]
-  },
-  {
-    v: 'v2.15', date: 'May 16, 2026',
-    items: [
-      'Beta now has an Exceptions view for stale rows, live-stock mismatches, generic categories, missing pricing, and recommendation logic checks',
-      'Exception counts summarize freshness, revenue, and data/logic issues before reviewing individual rows',
-    ]
-  },
-  {
-    v: 'v2.14', date: 'May 16, 2026',
-    items: [
-      'Apparel velocity matching now skips fuzzy name fallback',
-      'Shirt sizes and colors must match by exact product name or SKU before sales velocity is shown',
-    ]
-  },
-  {
-    v: 'v2.13', date: 'May 14, 2026',
-    items: [
-      'Bulk flower order and transfer buttons now display as half-pound labels instead of raw grams',
-      'Products marked by beta MOQ/multiple rules are treated as bulk flower even when Dutchie category says Other',
-    ]
-  },
-  {
-    v: 'v2.12', date: 'May 14, 2026',
-    items: [
-      'Bulk flower Need, Buy, and Move chips now display as pounds instead of raw grams',
-      'Flower quantities now show one decimal place because ordering uses half-pound increments',
-      'Inventory buyer chips no longer show redundant MOQ or multiple values',
-    ]
-  },
-  {
-    v: 'v2.11', date: 'May 14, 2026',
-    items: [
-      'Bulk flower order suggestions now round up to half-pound increments',
-      'Flower order quantities display as N.NNlb in Inventory, Orders, and exports',
-    ]
-  },
-  {
-    v: 'v2.10', date: 'May 14, 2026',
-    items: [
-      'Beta Decision Feed now marks stale rows when the feed is more than 4 hours old',
-      'Rows also call out old assumptions and live-stock mismatches when live inventory is loaded',
-    ]
-  },
-  {
-    v: 'v2.9', date: 'May 14, 2026',
-    items: [
-      'Inventory now ignores stale OOS beta decision rows when live inventory shows stock',
-      'Future Decision Feed generation only estimates missed revenue when the item is OOS and quantity is zero',
-    ]
-  },
-  {
-    v: 'v2.8', date: 'May 14, 2026',
-    items: [
-      'Beta Decision Feed now warns when rows were generated with old lead-time or reorder-buffer assumptions',
-      'Stale buyer guidance is flagged clearly until the beta backend is deployed and the feed is regenerated',
-    ]
-  },
-  {
-    v: 'v2.7', date: 'May 13, 2026',
-    items: [
-      'Beta Decision Feed now reads active store keys from the Config - Stores tab',
-      'Century/Baseline store mapping is now grounded in the beta workbook instead of only hardcoded assumptions',
-    ]
-  },
-  {
-    v: 'v2.6', date: 'May 13, 2026',
-    items: [
-      'Transfer timing now uses the team-confirmed model: Salem to Salem is 3 days; any route involving Century or Baseline is 7 days',
-      'Vendor replenishment is now treated as a standard 7-day lead time for all vendors',
-      'Beta workbook lead-time config was updated to remove old Verdant long-lead assumptions',
-    ]
-  },
-  {
-    v: 'v2.5', date: 'May 12, 2026',
-    items: [
-      'Login timeout window extended so Apps Script cold starts and post-deploy warmups do not fail as quickly',
-      'JSONP login fallback now waits longer before reporting a timeout in local preview',
-    ]
-  },
-  {
-    v: 'v2.4', date: 'May 12, 2026',
-    items: [
-      'Beta vendor lead-time rules now choose the most specific matching config row instead of relying on sheet order',
-      'Decision Feed rows can now be filtered by vendor lead-time recommendations',
-      'Weekly vendor timing from the beta workbook can now affect recommendation quantities without SKU-specific overrides',
-    ]
-  },
-  {
-    v: 'v2.3', date: 'May 12, 2026',
-    items: [
-      'Beta Decision Feed now detects when the Google Sheet schema is stale',
-      'Added a beta-only Regenerate button to rebuild the Decision Feed after schema changes',
-      'Inventory can kick off a background feed regeneration when it sees stale beta data, so missed-revenue chips can appear after the rebuild',
-    ]
-  },
-  {
-    v: 'v2.2', date: 'May 11, 2026',
-    items: [
-      'Missed revenue estimates now flow into Inventory recommendation chips when the beta decision feed has OOS history and product price',
-      'OOS decision rows can backfill unit price from matching products at other stores, so lost sales show as dollars instead of only units more often',
-      'Lost-sales chips are highlighted as risk signals in Inventory',
-      'Inventory status sorting now uses buyer impact as a tie-breaker, helping high-value OOS and critical items float up first',
-      'Dutchie store API keys were moved out of source code and into Apps Script properties',
-    ]
-  },
-  {
-    v: 'v2.1', date: 'May 10, 2026',
-    items: [
-      'Beta buyer intelligence now appears directly in Inventory recommendations',
-      'Smarter transfer planning: donor depletion updates, transfer selections reduce order quantities, and stock is split more evenly across stores',
-      'Beta Google Sheet now includes an Action Tracker and beta Shared State for flags/hidden items',
-      'Product value backfill fills missing unit-cost values from matching SKU/name peers when Dutchie omits cost',
-      'Missed revenue / lost sales estimate added to the beta roadmap',
-      'Inventory recommendation chips now hide duplicate sold, DOH, lead-time, transfer, donor, and buy details',
-      'Collapsed Inventory transfer totals now use the same allocation logic as expanded store rows',
-      'Expanded Inventory transfer buttons now appear only on donor rows to avoid duplicate recipient-row actions',
-      'Paired beta transfer/order recommendations now show full store need first; selecting the transfer reduces the order quantity',
-      'Selected transfer suggestions now remain visible on donor rows and can be clicked again to remove',
-      'Supplemental local transfer options now appear up front, but duplicate recipient-store transfers are consolidated into one clear donor path',
-      'Expanded donor rows now show each transfer on its own line with transfer details highlighted in amber',
-      'Selected transfer suggestions now move out of the action button area and can be removed from the qty indicator, matching order behavior',
-      'Selecting a transfer now prevents new unselected transfer suggestions from appearing for the same recipient store',
-      'Server-issued login sessions now protect Apps Script data actions; browser-stored hardcoded credentials were removed',
-    ]
-  },
-  {
-    v: 'v2.0', date: 'May 8, 2026',
-    items: [
-      '🎉 v2.0 — Mobile Scanner is here',
-      'Live camera barcode scanning: point at any UPC, EAN-13, Code 128, or Dutchie QR label',
-      'Triple-decoder engine: native BarcodeDetector (iOS 17+) → html5-qrcode → ZXing fallback',
-      'Instant result: DOH, Vel 7d, Vel 30d, total qty, and per-store breakdown on scan',
-      'Photo fallback when live camera is unavailable (e.g. on script.google.com)',
-    ]
-  },
-  {
-    v: 'v1.42', date: 'May 7, 2026',
-    items: [
-      'Scanner tab initial release',
-    ]
-  },
-  {
-    v: 'v1.41', date: 'May 7, 2026',
-    items: [
-      'What\'s New popup after login — shows updates since your last session',
-    ]
-  },
-  {
-    v: 'v1.40', date: 'May 7, 2026',
-    items: [
-      'LeafLink integration — open-order status badges (Shipped / Accepted / Combined) appear on inventory rows',
-      'LL Order Sheet — formatted reference modal in Orders tab, grouped by vendor, printable',
-      'Combined order tooltip shows parent combined order ID (not child order ID)',
-      'OOS date fallback — items OOS before snapshot history show ">7d", ">14d" etc. brackets',
-      'Shared hidden items now sync across all users instantly',
-    ]
-  },
-  {
-    v: 'v1.39', date: 'May 7, 2026',
-    items: [
-      'In-app bug reporter — 🐞 button sends issues to Sky with app state attached',
-    ]
-  },
-  {
-    v: 'v1.38', date: 'May 7, 2026',
-    items: [
-      'OOS date shown in DOH column for out-of-stock items',
-      'Velocity-window fallback brackets (">7d", ">14d"…) for items OOS before snapshot history began',
-    ]
-  },
-  {
-    v: 'v1.37', date: 'May 1, 2026',
-    items: [
-      'Multi-user login (sky + tawny) with 7-day persistent sessions',
-      'Velocity staleness badge — amber >4h, red >24h — with auto-resync button',
-      'Room classification fix: partial returns no longer misclassify packages as quarantine',
-    ]
-  },
-  {
-    v: 'v1.36', date: 'Apr 26, 2026',
-    items: [
-      'Public launch — login screen, financial privacy toggle',
-      'Live velocity via Dutchie transactions API with rolling 90-day cache and hourly sync',
-      'Auto-resurrect hidden items on restock; Kill renamed to Hide',
-    ]
-  },
-];
+// ── Release notes — single source of truth is GX Core (Command Center) ────────
+// This app no longer hardcodes changelog data. On load we JSONP-fetch GX Core's
+// version_history for "inventory" and drive BOTH the What's New popup and the
+// Version History list from it. Release notes are authored ONCE in the Command
+// Center (version popup → "+ Add release note"); this app only reads them.
+const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
+let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
+let _vhCbSeq = 0;
+
+function fetchVersionHistory() {
+  return new Promise(resolve => {
+    const callback = '__gcVerHist' + Date.now() + '_' + (++_vhCbSeq);
+    const script = document.createElement('script');
+    const cleanup = () => { delete window[callback]; script.remove(); clearTimeout(timer); };
+    const timer = setTimeout(() => { cleanup(); resolve([]); }, 8000);   // fail soft → empty list
+    window[callback] = payload => {
+      cleanup();
+      let out = [];
+      try {
+        if (payload && payload.ok && Array.isArray(payload.history)) {
+          out = payload.history.map(h => ({
+            v: h.version,
+            date: fmtVerDate(h.deployed_at),
+            items: String(h.notes || '').split('\n').map(s => s.trim()).filter(Boolean),
+          }));
+        }
+      } catch (e) { out = []; }
+      resolve(out);
+    };
+    script.onerror = () => { cleanup(); resolve([]); };
+    script.src = VERSION_HISTORY_URL + '?action=version_history&app=inventory&callback=' + callback;
+    document.head.appendChild(script);
+  });
+}
+
+function fmtVerDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+async function loadChangelog() {
+  CHANGELOG_DATA = await fetchVersionHistory();
+  renderVersionHistory();
+  checkWhatsNew();
+}
+
+function renderVersionHistory() {
+  const box = document.getElementById('verHistoryRows');
+  if (!box) return;
+  if (!CHANGELOG_DATA.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:2px 0">Version history is loading from the Command Center — check back in a moment.</div>';
+    return;
+  }
+  box.innerHTML = CHANGELOG_DATA.map((e, i) => {
+    const numStyle = i === 0 ? 'width:44px;font-weight:700;color:var(--green)' : 'width:44px';
+    const desc = e.items.map(escapeHtml).join(' · ');
+    return '<div class="ver-row">'
+      + '<span class="ver-num" style="' + numStyle + '">' + escapeHtml(e.v) + '</span>'
+      + '<span class="ver-date">' + escapeHtml(e.date) + '</span>'
+      + '<span class="ver-desc">' + desc + '</span></div>';
+  }).join('');
+}
 
 function versionParts(v) {
   return String(v || '').replace(/^v/i, '').split('.').map(n => Number(n) || 0);
@@ -7831,9 +7410,10 @@ function compareVersions(a, b) {
 }
 
 function checkWhatsNew() {
+  if (!CHANGELOG_DATA.length) return;   // GX Core fetch failed/empty → skip the popup, don't block the app
   const seen = localStorage.getItem(LS.WN_SEEN) || '';
   // Find entries newer than what was last seen
-  const unseen = CHANGELOG.filter(c => compareVersions(c.v, seen) > 0);
+  const unseen = CHANGELOG_DATA.filter(c => compareVersions(c.v, seen) > 0);
   if (!unseen.length) return;
   showWhatsNew(unseen);
 }
@@ -7849,7 +7429,7 @@ function showWhatsNew(entries) {
           <span class="wn-ver-date">${e.date}</span>
         </div>
         <ul class="wn-items">
-          ${e.items.map(i => `<li>${i}</li>`).join('')}
+          ${e.items.map(i => `<li>${escapeHtml(i)}</li>`).join('')}
         </ul>
       </div>`;
   }
@@ -7870,7 +7450,7 @@ function showWhatsNew(entries) {
 
 function closeWhatsNew() {
   document.getElementById('wnOverlay').classList.remove('open');
-  localStorage.setItem(LS.WN_SEEN, CHANGELOG[0].v);
+  if (CHANGELOG_DATA.length) localStorage.setItem(LS.WN_SEEN, CHANGELOG_DATA[0].v);
 }
 
 // ── LL Order Sheet modal ──────────────────────────────────────────────────────
