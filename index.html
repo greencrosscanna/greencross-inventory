@@ -2092,7 +2092,7 @@ const LS = {
   BULK_FLOWER_MIN_QTY: 'gc_bulk_flower_min_qty',
   REORDER_BUFFER:      'gc_reorder_buffer',
   REORDER_TARGET:      'gc_reorder_target_v2',
-  WN_SEEN:             'gc_wn_seen',            // what's-new modal last-seen version
+  WN_SEEN:             'gc_wn_seen_inventory',  // what's-new last-seen version — namespaced per-app (bare gc_wn_seen is shared across same-origin GX apps and collided with Leaderboard)
   EXCL_ROWS:           'gc_inv5_excluded',       // excluded-row map (includes cache prefix)
   SCANNER_FIX_V:       'gc_scanner_fix_v',       // one-time self-heal version for stale camera-denied flags
   SCAN_DEBUG:          'gc_scan_debug',          // show scanner diagnostic overlay (toggle via ?scandebug=1)
@@ -7334,6 +7334,10 @@ function scanNameSelect(name, scannedCode) {
 // version_history for "inventory" and drive BOTH the What's New popup and the
 // Version History list from it. Release notes are authored ONCE in the Command
 // Center (version popup → "+ Add release note"); this app only reads them.
+// The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
+// now lives in GX Core; this constant is just the version number. Also the source for bug-report
+// appVer and the deploy_version record. Keep in sync with the release you ship.
+const APP_VERSION = 'v2.54';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
@@ -7372,9 +7376,22 @@ function fmtVerDate(iso) {
 }
 
 async function loadChangelog() {
+  migrateWnSeenKey_();
   CHANGELOG_DATA = await fetchVersionHistory();
   renderVersionHistory();
   checkWhatsNew();
+}
+
+// One-time migration: the What's New seen-key used to be a bare `gc_wn_seen`, which is shared across
+// all same-origin GX apps and collided with Leaderboard. If the namespaced key is unset but the old
+// bare key holds an Inventory version (v2.x), carry it over so users don't re-see old What's New.
+// (Bare key is left in place — harmless.)
+function migrateWnSeenKey_() {
+  try {
+    if (localStorage.getItem(LS.WN_SEEN)) return;
+    const old = localStorage.getItem('gc_wn_seen');
+    if (old && /^v2\./.test(old)) localStorage.setItem(LS.WN_SEEN, old);
+  } catch (e) {}
 }
 
 function renderVersionHistory() {
@@ -7584,7 +7601,7 @@ async function submitBugReport() {
     reporter: _getSessionUser(),
     appTab:   state.tab   || '',
     appStore: state.store || '',
-    appVer:   (document.querySelector('.ver-num[style]')?.textContent || '').trim(),
+    appVer:   APP_VERSION,
   };
 
   try {
