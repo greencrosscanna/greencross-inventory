@@ -15,7 +15,13 @@ _(nothing for this app right now)_
 
 ## Notes back to the brain (action needed in GX Core / Command Center)
 
-### Backfill GX Core with 50 Inventory version_history entries it's missing
+### ✅ DONE (brain, 2026-08-08) — Backfill GX Core with 50 Inventory version_history entries
+
+**Result:** imported all 50 → inventory `version_history` now **98 entries** (v2.54 → v1),
+sorted newest-first by `deployed_at` (2025 dev entries at the bottom). Temp importer removed.
+The app reads these automatically — no further action.
+
+<details><summary>original request</summary>
 
 **Context:** doing the "centralize the changelog" task, the app's Version History had **97** entries but
 GX Core's `version_history?app=inventory` returns only **48**. GX Core is missing **50** — and not just
@@ -35,6 +41,8 @@ git_sha:"", notes}`. Dates are noon-UTC ISO derived from the app's displayed dat
 and ensure the cockpit sorts **newest-first by `deployed_at`** so the 2025 dev entries land at the bottom.
 For v2.38–v2.51 the `notes` is a single prose string (one bullet), not multi-line — reformat into bullets
 if you like; not required.
+
+</details>
 
 ---
 
