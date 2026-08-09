@@ -9,34 +9,7 @@ deploy; the brain owns the shared GX Core seam.
 
 ## Pending
 
-### Auto-record deploys — use the CENTRAL endpoint (no backend action needed)
-
-**STATUS (2026-08-08 — app side wired in `d46bccf`):** Built `deploy.sh` — it ships Inventory and records
-the release to GX Core's `deploy_version` endpoint (deployed_by:"app"), reading the shared secret from
-`.gx_deploy_secret` (now gitignored). VERSION comes from a new `APP_VERSION` constant in index.html.
-**BLOCKED on Sky:** create `.gx_deploy_secret` (untracked) with the shared `GC_DEPLOY_SECRET` value, then
-run one `bash deploy.sh` and confirm a `deployed_by:"app"` row appears via
-`…?action=version_history&app=inventory`. Archive once verified. Brain's original snippet below.
-When you wire auto-record on deploy (so releases post to GX Core's single release-note log without a
-Command Center popup), **do NOT build your own `recordversion` backend action** — the brain hosts one
-shared, secret-gated endpoint for the whole suite. Just curl it from `deploy.sh` after your clasp deploy:
-```
-GXCORE="https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec"
-curl -sL -G "$GXCORE" \
-  --data-urlencode "action=deploy_version" \
-  --data-urlencode "secret=$(cat .gx_deploy_secret)" \
-  --data-urlencode "app=inventory" \
-  --data-urlencode "version=$VERSION" \
-  --data-urlencode "sha=$(git rev-parse --short HEAD)" \
-  --data-urlencode "notes=$GX_NOTES"
-```
-`.gx_deploy_secret` (untracked, never committed) holds the shared deploy secret = GX Core's
-`GC_DEPLOY_SECRET` — ask Sky for the value. Records version-only when `GX_NOTES` is empty; pass
-`GX_NOTES=$'Line 1\nLine 2'` for a notable release. Verify a deploy appears via
-`…?action=version_history&app=inventory` with `deployed_by:"app"`, then archive. (This is deliberately
-simpler than the old per-app pattern — one central brain endpoint, apps just call it.)
-
-**When done:** move to ## Archive with date + commit.
+_(nothing for this app right now)_
 
 ---
 
@@ -48,6 +21,13 @@ _(nothing outstanding)_
 
 ## Archive
 
+- **2026-08-08 — Auto-record deploys via GX Core's central endpoint, commit `d46bccf` (verified).**
+  `deploy.sh` ships Inventory and records each release to GX Core's shared `deploy_version` endpoint
+  (no per-app `recordversion` action). VERSION from the `APP_VERSION` constant; secret read from
+  `.gx_deploy_secret` (untracked/gitignored; it's the shared suite-wide `GC_DEPLOY_SECRET`). Verified
+  end-to-end: ran `bash deploy.sh` → GX Core `version_history` shows **v2.54 as `deployed_by:"app"`,
+  sha `9e658a1`**, upserted (1 row, total still 98 — the endpoint dedupes by version). Going forward:
+  bump `APP_VERSION`, run `bash deploy.sh` (or `GX_NOTES=$'…' bash deploy.sh` for a notable release).
 - **2026-08-08 — Namespace the What's New seen-key, commit `d46bccf`.** `gc_wn_seen` →
   `gc_wn_seen_inventory` (same-origin GX apps share localStorage; the bare key collided with
   Leaderboard). One-time migration seeds the namespaced key from a bare Inventory (v2.x) value; foreign
