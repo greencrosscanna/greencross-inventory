@@ -9,22 +9,14 @@ deploy; the brain owns the shared GX Core seam.
 
 ## Pending
 
-### Namespace the `gc_wn_seen` localStorage key (collision-proofing)
-
-**Why:** all GX apps are served from the SAME origin (`greencrosscanna.github.io`), so localStorage is
-shared across them. This app uses a bare `gc_wn_seen` key for the What's New "last seen version" — which
-**collided** with Leaderboard (Inventory's `v2.54` was suppressing Leaderboard's popup). Leaderboard fixed
-its side (now `gc_wn_seen_performance`). Inventory is currently the only user of the bare key, so nothing's
-broken right now — but namespace it so a *future* same-origin app can't collide with it either.
-
-**Do:** rename this app's What's New seen-key `gc_wn_seen` → **`gc_wn_seen_inventory`** at both the read
-(`checkWhatsNew`) and write sites. Optional one-time migration: if `gc_wn_seen_inventory` is unset but
-`gc_wn_seen` looks like an Inventory version (starts `v2.`), seed the new key from it so users don't
-re-see old What's New. Verify + deploy.
-
-**When done:** move to ## Archive with date + commit.
-
 ### Auto-record deploys — use the CENTRAL endpoint (no backend action needed)
+
+**STATUS (2026-08-08 — app side wired in `d46bccf`):** Built `deploy.sh` — it ships Inventory and records
+the release to GX Core's `deploy_version` endpoint (deployed_by:"app"), reading the shared secret from
+`.gx_deploy_secret` (now gitignored). VERSION comes from a new `APP_VERSION` constant in index.html.
+**BLOCKED on Sky:** create `.gx_deploy_secret` (untracked) with the shared `GC_DEPLOY_SECRET` value, then
+run one `bash deploy.sh` and confirm a `deployed_by:"app"` row appears via
+`…?action=version_history&app=inventory`. Archive once verified. Brain's original snippet below.
 When you wire auto-record on deploy (so releases post to GX Core's single release-note log without a
 Command Center popup), **do NOT build your own `recordversion` backend action** — the brain hosts one
 shared, secret-gated endpoint for the whole suite. Just curl it from `deploy.sh` after your clasp deploy:
@@ -56,6 +48,12 @@ _(nothing outstanding)_
 
 ## Archive
 
+- **2026-08-08 — Namespace the What's New seen-key, commit `d46bccf`.** `gc_wn_seen` →
+  `gc_wn_seen_inventory` (same-origin GX apps share localStorage; the bare key collided with
+  Leaderboard). One-time migration seeds the namespaced key from a bare Inventory (v2.x) value; foreign
+  versions and an already-set key are left alone. Verified all four cases in preview. (Also added the
+  `APP_VERSION` constant and pointed bug-report `appVer` at it, since the version had only lived in the
+  deleted static ver-rows.)
 - **2026-08-08 — Deep history backfilled into GX Core (brain).** The 50 entries GX Core was missing
   (v2.38–v2.51 + pre-launch v1–v36) were imported by the Command Center. Inventory `version_history` now
   returns **98** entries (v2.54 → v1), sorted newest-first by `deployed_at`. Verified from the app's live
