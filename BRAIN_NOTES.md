@@ -24,6 +24,28 @@ re-see old What's New. Verify + deploy.
 
 **When done:** move to ## Archive with date + commit.
 
+### Auto-record deploys — use the CENTRAL endpoint (no backend action needed)
+When you wire auto-record on deploy (so releases post to GX Core's single release-note log without a
+Command Center popup), **do NOT build your own `recordversion` backend action** — the brain hosts one
+shared, secret-gated endpoint for the whole suite. Just curl it from `deploy.sh` after your clasp deploy:
+```
+GXCORE="https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec"
+curl -sL -G "$GXCORE" \
+  --data-urlencode "action=deploy_version" \
+  --data-urlencode "secret=$(cat .gx_deploy_secret)" \
+  --data-urlencode "app=inventory" \
+  --data-urlencode "version=$VERSION" \
+  --data-urlencode "sha=$(git rev-parse --short HEAD)" \
+  --data-urlencode "notes=$GX_NOTES"
+```
+`.gx_deploy_secret` (untracked, never committed) holds the shared deploy secret = GX Core's
+`GC_DEPLOY_SECRET` — ask Sky for the value. Records version-only when `GX_NOTES` is empty; pass
+`GX_NOTES=$'Line 1\nLine 2'` for a notable release. Verify a deploy appears via
+`…?action=version_history&app=inventory` with `deployed_by:"app"`, then archive. (This is deliberately
+simpler than the old per-app pattern — one central brain endpoint, apps just call it.)
+
+**When done:** move to ## Archive with date + commit.
+
 ---
 
 ## Notes back to the brain (action needed in GX Core / Command Center)
