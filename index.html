@@ -7337,7 +7337,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.54';
+const APP_VERSION = 'v2.55';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
@@ -7429,8 +7429,22 @@ function compareVersions(a, b) {
 function checkWhatsNew() {
   if (!CHANGELOG_DATA.length) return;   // GX Core fetch failed/empty → skip the popup, don't block the app
   const seen = localStorage.getItem(LS.WN_SEEN) || '';
-  // Find entries newer than what was last seen
-  const unseen = CHANGELOG_DATA.filter(c => compareVersions(c.v, seen) > 0);
+  // CHANGELOG_DATA is sorted newest-first by deploy DATE (GX Core's order). "Unseen" = everything ABOVE
+  // the last-seen version in that list. We use array position, NOT version-number math: the history now
+  // mixes schemes (dotted v2.54 alongside old integer builds like v36), and numeric compare wrongly ranks
+  // v36 > v2.54. Date order is authoritative.
+  const seenIdx = seen ? CHANGELOG_DATA.findIndex(c => c.v === seen) : -1;
+  if (seenIdx === 0) return;                       // already caught up to the newest release
+  let unseen;
+  if (seenIdx > 0) {
+    unseen = CHANGELOG_DATA.slice(0, seenIdx);     // entries newer than the one last seen
+  } else if (!seen) {
+    // First run on this browser: don't dump the whole history — mark newest as seen, show nothing.
+    localStorage.setItem(LS.WN_SEEN, CHANGELOG_DATA[0].v);
+    return;
+  } else {
+    unseen = CHANGELOG_DATA.slice(0, 1);           // seen version no longer in the list → show only latest
+  }
   if (!unseen.length) return;
   showWhatsNew(unseen);
 }
