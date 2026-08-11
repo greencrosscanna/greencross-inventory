@@ -4615,30 +4615,20 @@ function requireAuth_(params) {
 // can never lock anyone out. Tokens are signed with the shared GC_SESSION_SECRET, so a token
 // issued by either path validates identically in requireAuth_/validateSessionToken_.
 function loginUser(params) {
+  // GX Core shared sign-on is the SOLE authority. The legacy local password fallback
+  // (_loginUserLocal_ + the gc_users Script Property) was retired 2026-08-10 once every
+  // Inventory user was provisioned in GX Core — a GX Core rejection is now final, and old
+  // local passwords no longer work. Sessions still validate via requireAuth_/validateSessionToken_
+  // (GX Core signs tokens with the shared GC_SESSION_SECRET).
   try {
     if (typeof GXCore !== 'undefined' && GXCore && GXCore.login) {
-      const r = GXCore.login(params.user, params.pass, 'inventory');
-      if (r && r.ok) return r;                    // GX Core authenticated + granted access
-      const local = _loginUserLocal_(params);     // GX Core rejected — try local so a missing
-      if (local && local.ok) return local;        // import can't lock out an otherwise-valid user
-      return r;                                   // both rejected → surface GX Core's message
+      return GXCore.login(params.user, params.pass, 'inventory');
     }
+    return { ok: false, error: 'Login unavailable — shared sign-on not reachable.' };
   } catch (e) {
-    _logGasError('loginUser/GXCore', e.message);  // library/permission issue → local keeps login up
+    _logGasError('loginUser/GXCore', e.message);
+    return { ok: false, error: 'Login temporarily unavailable — please try again shortly.' };
   }
-  return _loginUserLocal_(params);
-}
-
-function _loginUserLocal_(params) {
-  if (!params.user || !params.pass) return { ok: false, error: 'Missing credentials' };
-  const props = PropertiesService.getScriptProperties();
-  const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
-  const key   = String(params.user).toLowerCase().trim();
-  const hash  = hashPass(String(params.pass));
-  if (users[key] && users[key] === hash) {
-    return { ok: true, user: key, token: issueSessionToken_(key), expiresAt: new Date(Date.now() + GC_SESSION_TTL_MS).toISOString() };
-  }
-  return { ok: false, error: 'Invalid username or password' };
 }
 
 // ─── PER-STORE TRANSACTION HISTORY (scanner tap-to-expand) ────────────────────
@@ -4706,24 +4696,6 @@ function getStoreTxHistory(params) {
   return { store, name, days, rows };
 }
 
-// Run once from GAS editor to seed users (never exposed as HTTP action)
-function setupUsers_() {
-  const props = PropertiesService.getScriptProperties();
-  const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
-  // Add users here — run from the GAS script editor, not via HTTP
-  // users['username'] = hashPass('temporary-password');
-  props.setProperty(GC_USERS_KEY, JSON.stringify(users));
-  Logger.log('Users: ' + JSON.stringify(Object.keys(users)));
-}
-
-// Run from clasp/GAS editor only. This is intentionally not routed through doGet.
-function setUserPassword_(user, pass) {
-  if (!user || !pass) throw new Error('Usage: setUserPassword_(user, pass)');
-  const props = PropertiesService.getScriptProperties();
-  const users = JSON.parse(props.getProperty(GC_USERS_KEY) || '{}');
-  const key = String(user).toLowerCase().trim();
-  users[key] = hashPass(String(pass));
-  props.setProperty(GC_USERS_KEY, JSON.stringify(users));
-  Logger.log('Saved user: ' + key);
-  return { ok: true, user: key };
-}
+// (Legacy local-user seeders setupUsers_/setUserPassword_ removed 2026-08-10 — GX Core is the
+// sole sign-on authority; the gc_users Script Property is no longer read or written. The orphaned
+// helpers hashPass/issueSessionToken_ remain defined but unused and can be cleaned up later.)
