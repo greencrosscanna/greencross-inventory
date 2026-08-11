@@ -30,11 +30,43 @@ const SHEET_GIDS = {
   sublet: 1274502465,
 };
 
-// Reorder defaults — current team-confirmed vendor replenishment window is 7 days.
-const LEAD_TIME_DAYS    = 7;
-const SAFETY_STOCK_DAYS = 7;
-const REORDER_BUFFER    = LEAD_TIME_DAYS + SAFETY_STOCK_DAYS; // 14 days
-const STANDARD_VENDOR_LEAD_DAYS = 7;
+// ── GX Core business config (Phase C) — constants live in GX Core (?action=config); these hardcodes
+// are the offline fallback. Fetched once per 6h via CacheService (no per-request endpoint hit).
+const GX_CORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
+function gxLoadConfig_() {
+  try {
+    const cache = CacheService.getScriptCache();
+    const hit = cache.get('gx_cfg');
+    if (hit) return JSON.parse(hit);
+    const resp = UrlFetchApp.fetch(GX_CORE_EXEC_URL + '?action=config', { muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) {
+      const j = JSON.parse(resp.getContentText());
+      if (j && j.ok && j.config) {
+        const cfg = {};
+        Object.keys(j.config).forEach(k => { cfg[k.replace(/^cfg\./, '')] = j.config[k]; });
+        cache.put('gx_cfg', JSON.stringify(cfg), 6 * 3600);
+        return cfg;
+      }
+    }
+  } catch (e) { /* offline → use hardcode fallbacks below */ }
+  return {};
+}
+const _GX_CFG = gxLoadConfig_();
+function gxCfgNum_(key, fallback) {
+  const raw = _GX_CFG[key], v = Number(raw);
+  return (raw !== '' && raw != null && isFinite(v)) ? v : fallback;
+}
+
+// Reorder defaults — sourced from GX Core config, hardcodes as fallback (team-confirmed 7-day window).
+const LEAD_TIME_DAYS    = gxCfgNum_('invLeadDays', 7);
+const SAFETY_STOCK_DAYS = gxCfgNum_('invSafetyDays', 7);
+const REORDER_BUFFER    = gxCfgNum_('invReorderTargetDays', LEAD_TIME_DAYS + SAFETY_STOCK_DAYS); // 14 days
+const STANDARD_VENDOR_LEAD_DAYS = gxCfgNum_('invLeadDays', 7);
+// DOH status thresholds + bulk-flower MOQ — also from GX Core config (fallback = prior hardcodes).
+const DOH_CRITICAL_DAYS = gxCfgNum_('invDohCriticalDays', 3);
+const DOH_LOW_DAYS      = gxCfgNum_('invDohLowDays', 7);
+const DOH_WATCH_DAYS    = gxCfgNum_('invDohWatchDays', 14);
+const BULK_FLOWER_MOQ_G = gxCfgNum_('invBulkFlowerMoqG', 227);
 const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
 const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1022,7 +1054,7 @@ function loadExistingDecisionDonors_(targetSet) {
 
 function buildDecisionFeedRows(targetStores) {
   const generatedAt = new Date().toISOString();
-  const velMap = buildVelocityMap();
+  const velMap = getVelocityMap();
   const operationalSnapshot = readOperationalSnapshot_('inventory_bundle_v1');
   const operationalInventoryByStore = {};
   if (operationalSnapshot && operationalSnapshot.inventory) {
@@ -1063,7 +1095,7 @@ function buildDecisionFeedRows(targetStores) {
       const v7 = vel.vel7 || 0;
       const primaryVel = v14 > 0 ? v14 : (v30 > 0 ? v30 : v7);
       const doh = p.qty === 0 ? 0 : (primaryVel > 0 ? Math.round((p.qty / primaryVel) * 10) / 10 : null);
-      const status = p.qty === 0 ? 'oos' : (doh == null ? 'slow' : (doh < 3 ? 'critical' : doh < 7 ? 'low' : doh < 14 ? 'watch' : 'ok'));
+      const status = p.qty === 0 ? 'oos' : (doh == null ? 'slow' : (doh < DOH_CRITICAL_DAYS ? 'critical' : doh < DOH_LOW_DAYS ? 'low' : doh < DOH_WATCH_DAYS ? 'watch' : 'ok'));
       const full = {
         ...p,
         store,
@@ -1120,8 +1152,8 @@ function buildDecisionFeedRows(targetStores) {
     let minOrderQty = (override && override.minOrderQty) || rule.minOrderQty || 1;
     let orderMultiple = (override && override.orderMultiple) || rule.orderMultiple || 1;
     if (/bulk cannabis flower/i.test(String(p.category || ''))) {
-      minOrderQty = Math.max(minOrderQty, 227);
-      orderMultiple = Math.max(orderMultiple, 227);
+      minOrderQty = Math.max(minOrderQty, BULK_FLOWER_MOQ_G);
+      orderMultiple = Math.max(orderMultiple, BULK_FLOWER_MOQ_G);
     }
     const transferFirst = (override && override.transferFirst) || rule.ruleName.toLowerCase().indexOf('transfer first') >= 0;
     const overstock = override && override.overstock;
@@ -2094,6 +2126,50 @@ function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
 
 // Read the Vel Cache sheet and compute velocity map.
 // Rows from 91–180 days are retained in the sheet solely for hasSalesHistory detection.
+// Phase C: velocity now comes from GX Core's shared, self-maintaining velocity_summary cache
+// (GXCore.getVelocity, v50 — reads a precomputed summary, ~3.4s all stores) instead of this app's
+// local Vel Cache (which ran ~3 days stale). Returns the SAME shape as buildVelocityMap:
+// velMap[appStoreName][productName] = { qty7..qty90, vel7..vel90, brand, category, sku, hasSalesHistory }.
+// Falls back to the local build if the shared cache is empty/unreachable so DOH/reorder never break.
+function getVelocityMap() {
+  // GX store_id (slug, e.g. 'bend','portland-rd') → app store name (dutchie_name, == our STORES entries)
+  const slugToName = {};
+  try {
+    (GXCore.getStores() || []).forEach(s => {
+      const id = String(s.store_id || '').trim().toLowerCase();
+      const nm = String(s.dutchie_name || '').trim();
+      if (id && nm) slugToName[id] = nm;
+    });
+  } catch (e) { _logGasError('getVelocityMap/getStores', e.message); }
+
+  const velMap = {};
+  try {
+    const rows = GXCore.getVelocity('') || [];   // all stores, one fast summary read
+    for (const r of rows) {
+      const store = slugToName[String(r.store || '').trim().toLowerCase()];
+      if (!store) continue;
+      const name = String(r.product_name || '').trim();
+      if (!name || name === 'Unknown') continue;
+      (velMap[store] || (velMap[store] = {}))[name] = {
+        qty7: r.qty7 || 0, qty14: r.qty14 || 0, qty21: r.qty21 || 0, qty28: r.qty28 || 0, qty30: r.qty30 || 0, qty90: r.qty90 || 0,
+        vel7: r.vel7 || 0, vel14: r.vel14 || 0, vel21: r.vel21 || 0, vel28: r.vel28 || 0, vel30: r.vel30 || 0, vel90: r.vel90 || 0,
+        brand: r.brand || '', category: r.category || '', sku: r.sku || '', hasSalesHistory: !!r.hasSalesHistory,
+      };
+    }
+  } catch (e) { _logGasError('getVelocityMap/getVelocity', e.message); }
+
+  // Total-failure fallback only: if the shared cache gave us nothing, use the local build so DOH/reorder
+  // never break. (We do NOT auto-run the ~50s local build per missing store — a missing store degrades
+  // gracefully; missing stores are logged so we'd notice a data gap.)
+  if (!Object.keys(velMap).length) {
+    _logGasError('getVelocityMap', 'shared velocity cache empty — falling back to local build');
+    try { return buildVelocityMap(); } catch (e) { _logGasError('getVelocityMap/fallback', e.message); return {}; }
+  }
+  const missing = STORES.filter(s => !velMap[s]);
+  if (missing.length) _logGasError('getVelocityMap', 'no shared velocity for: ' + missing.join(', '));
+  return velMap;
+}
+
 function buildVelocityMap() {
   const sheet = getVelSheet();
   const lastRow = sheet.getLastRow();
@@ -3018,7 +3094,7 @@ function getVelocityEndpoint(params) {
   let payload = cached && cached.lastSynced === lastSynced ? cached : null;
 
   if (!payload) {
-    const velMap    = buildVelocityMap();
+    const velMap    = getVelocityMap();
     const nameToSku = buildNameSkuFromSnapshot();
     // Attach snapshot-sourced SKUs to velocity entries
     for (const store of Object.keys(velMap)) {
@@ -3577,7 +3653,7 @@ function getLiveInventory(params) {
   const targetStores   = requestedStore === 'all' ? STORES : [requestedStore];
 
   // Load velocity map once (one sheet read)
-  const velMap = buildVelocityMap();
+  const velMap = getVelocityMap();
 
   const allProducts = [];
 
@@ -3616,7 +3692,7 @@ function getLiveInventory(params) {
         status = 'oos';
       } else if (primaryVel > 0) {
         doh    = Math.round((p.qty / primaryVel) * 10) / 10;
-        status = doh < 3 ? 'critical' : doh < 7 ? 'low' : doh < 14 ? 'watch' : 'ok';
+        status = doh < DOH_CRITICAL_DAYS ? 'critical' : doh < DOH_LOW_DAYS ? 'low' : doh < DOH_WATCH_DAYS ? 'watch' : 'ok';
       } else {
         status = 'slow'; // has stock, no recent sales
       }
