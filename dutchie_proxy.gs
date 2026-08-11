@@ -221,7 +221,6 @@ function doGet(e) {
     if (params.action === 'clearerrors')       return jsonOut(clearGasErrors());
     if (params.action === 'schedulewarmcaches') return jsonOut(scheduleOperationalWarmRun());
     if (params.action === 'installwarmtrigger') return jsonOut(setupOperationalCacheTrigger());
-    if (params.action === 'installtrigger') return jsonOut(installVelocityTrigger());
     if (params.action === 'triggerstatus')  return jsonOut(getTriggerStatus());
     if (params.action === 'velreset')       return jsonOut(resetVelSyncDate());
     if (params.action === 'velresyncfrom')  return jsonOut(velResyncFrom(params));
@@ -2977,18 +2976,9 @@ function getTriggerStatus() {
   };
 }
 
-function installVelocityTrigger() {
-  // Remove any existing velocity sync triggers first
-  ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === 'syncVelocityCache') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('syncVelocityCache')
-    .timeBased()
-    .everyHours(1)
-    .create();
-  Logger.log('Hourly syncVelocityCache trigger installed.');
-  return { ok: true, message: 'Hourly syncVelocityCache trigger installed.' };
-}
+// Phase C: local velocity sync retired — the hourly syncVelocityCache trigger was deleted and the
+// installer removed (velocity is owned by GX Core's shared cache). syncVelocityCache remains only as
+// a manual tool (?action=velsync) to refresh the local buildVelocityMap fallback if ever needed.
 
 // ─── QUARANTINE / SAMPLE VIEWER ───────────────────────────────────────────────
 // Returns items currently in quarantine or sample rooms across one or all stores.
@@ -4206,21 +4196,15 @@ function velGapAudit() {
 function warmVelocityOnly() {
   const started = new Date();
   const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
+  // Phase C: local velocity sync is retired — velocity is sourced from GX Core's shared cache.
+  // This warm just pre-populates the getVelocityEndpoint cache (which now reads GX Core) so page
+  // loads stay fast. It no longer runs syncVelocityCache or the local gap audit.
   try {
-    result.velocity = syncVelocityCache();
     getVelocityEndpoint({ force: '1' });
   } catch (err) {
-    result.errors.push('velocity: ' + err.message);
+    result.errors.push('velocity warm: ' + err.message);
     result.ok = false;
     _logGasError('warmVelocityOnly', err.message);
-  }
-  // Self-heal any multi-day hole in the window (non-fatal; runs after the forward sync).
-  try {
-    const props = PropertiesService.getScriptProperties();
-    result.gapAudit = auditAndFillVelGaps_(props, buildProductIdDict());
-  } catch (err) {
-    result.errors.push('gap audit: ' + err.message);
-    _logGasError('auditAndFillVelGaps_', err.message);
   }
   result.finishedAt      = new Date().toISOString();
   result.durationSeconds = Math.round((new Date() - started) / 1000);
