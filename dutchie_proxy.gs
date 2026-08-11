@@ -3087,9 +3087,12 @@ function updateSkuDict(ss, products) {
 
 // Velocity API endpoint — returns velocity map (or filtered to one store)
 function getVelocityEndpoint(params) {
+  // Phase C: velocity is sourced live from GX Core's shared cache (auto-refreshed ~6h). velSyncDate
+  // is the RETIRED local sync's high-water mark — kept only as a stable cache-invalidation key, NOT a
+  // freshness signal (the frontend reads velSource to label the indicator).
   const lastSynced = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'velmap_v2';
+  const cacheKey = 'velmap_v3';
   const cached = params.force === '1' ? null : _readChunkedJsonCache(cache, cacheKey);
   let payload = cached && cached.lastSynced === lastSynced ? cached : null;
 
@@ -3104,12 +3107,12 @@ function getVelocityEndpoint(params) {
         }
       }
     }
-    payload = { stores: velMap, lastSynced };
+    payload = { stores: velMap, lastSynced, velSource: 'gxcore' };
     _putChunkedJsonCache(cache, cacheKey, payload, OPERATIONAL_CACHE_TTL);
   }
 
   if (params.store && params.store !== 'all') {
-    return { store: params.store, products: payload.stores[params.store] || {}, lastSynced };
+    return { store: params.store, products: payload.stores[params.store] || {}, lastSynced, velSource: payload.velSource || 'gxcore' };
   }
   return payload;
 }

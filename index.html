@@ -3664,7 +3664,7 @@ function renderBetaFeed() {
       const cls = issue.type === 'Revenue' || issue.type === 'Logic' ? 'risk' : issue.type === 'Freshness' ? 'stale' : 'why';
       return `<span class="beta-reason ${cls}">${escapeHtml(issue.type)}: ${escapeHtml(issue.text)}</span>`;
     }).join('');
-    const doh = r.doh == null || Number.isNaN(r.doh) ? '—' : (r.doh < 1 ? '<1d' : r.doh.toFixed(1) + 'd');
+    const doh = r.doh == null || Number.isNaN(r.doh) ? '—' : (r.doh < 1 ? '<1d' : Math.floor(r.doh) + 'd');
     const reasonHtml = String(r.reasonCodes || '').split(',').filter(Boolean).map(code => {
       const clean = escapeHtml(code.trim());
       return `<span class="beta-reason ${betaReasonClass(code)}">${clean}</span>`;
@@ -4365,9 +4365,17 @@ async function loadInventoryData() {
     }
     // Show last-synced timestamp with staleness warning
     const lastSynced = state.velocityData.lastSynced;
+    const velSource  = state.velocityData.velSource;
     const syncLabel = document.getElementById('velSyncLabel');
     if (syncLabel) {
-      if (lastSynced) {
+      if (velSource === 'gxcore') {
+        // Phase C: velocity is read live from the Green Cross shared cache (auto-refreshed ~6h),
+        // so the old local "last synced" age no longer applies.
+        syncLabel.textContent = 'Auto · current';
+        syncLabel.style.display = '';
+        syncLabel.style.color   = 'var(--green)';
+        syncLabel.title = 'Velocity now comes from the Green Cross shared cache — auto-refreshed about every 6 hours, always current. No manual sync needed.';
+      } else if (lastSynced) {
         const agoMs  = Date.now() - new Date(lastSynced).getTime();
         const agoMin = Math.round(agoMs / 60000);
         const agoHr  = agoMs / 3600000;
@@ -5051,7 +5059,7 @@ function renderRestockPanel(candidates, selectedStore) {
     const rVel = c.vel90; // Portland Rd daily velocity (90-day avg)
     const donorHtml = c.donors.slice(0, 3).map(d => {
       const storeLabel = storeDisplay(d.store);
-      const dohTxt = d.doh < 999 ? `${Math.round(d.doh)}d` : '—';
+      const dohTxt = d.doh < 999 ? `${Math.floor(d.doh)}d` : '—';
 
       // Build a transfer suggestion and register it
       const days    = transferDays(d.store, selectedStore);
@@ -5400,7 +5408,7 @@ function renderInventory() {
       if (p.vel90 > 0) return '>30d';
       return 'OUT';
     }
-    return p.doh === null ? '—' : p.doh < 1 ? '&lt;1d' : p.doh.toFixed(1) + 'd';
+    return p.doh === null ? '—' : p.doh < 1 ? '&lt;1d' : Math.floor(p.doh) + 'd';
   }
   function mkStatusPill(p) {
     return state.invFilters.tags.distro
@@ -7146,7 +7154,7 @@ function renderScanResult(products, code, vel) {
   // DOH
   const inStock = products.find(p => p.qty > 0 && p.doh != null);
   const doh = inStock ? inStock.doh : null;
-  const dohTxt = doh != null ? (doh >= 100 ? '100+' : doh.toFixed(1)) : '—';
+  const dohTxt = doh != null ? (doh >= 100 ? '100+' : String(Math.floor(doh))) : '—';
   const dohCls = doh == null ? '' : doh < DOH_LOW ? 'bad' : doh < DOH_WARN ? 'warn' : 'good';
   const sold7Cls  = sold7  > 14 ? 'good' : sold7  > 0 ? 'warn' : '';
   const sold28Cls = sold28 > 40 ? 'good' : sold28 > 0 ? 'warn' : '';
@@ -7173,7 +7181,7 @@ function renderScanResult(products, code, vel) {
   const storeRows = storeProducts
     .sort((a, b) => (b.qty || 0) - (a.qty || 0))
     .map(p => {
-      const pdoh = p.doh != null ? p.doh.toFixed(1) + 'd' : '—';
+      const pdoh = p.doh != null ? Math.floor(p.doh) + 'd' : '—';
       const qtyTxt = p.qty > 0 ? p.qty : 'OOS';
       const qtyStyle = p.qty > 0 ? '' : 'color:var(--muted)';
       const shortStore = p.store.replace(' - Green Cross Cannabis Emporium','').replace('Green Cross','GX');
