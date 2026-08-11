@@ -1463,7 +1463,7 @@ if (location.protocol === 'file:') {
       <input class="login-input" id="loginUser" type="text" placeholder="Username" autocomplete="username" autofocus>
       <input class="login-input" id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
       <div class="login-error" id="loginError"></div>
-      <button class="login-submit" type="button" onclick="attemptLogin(event)">May the Stock Be With You</button>
+      <button class="login-submit" type="submit">May the Stock Be With You</button>
     </form>
   </div>
 </div>
@@ -9214,8 +9214,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('loginScreen')?.remove();
     init();
   }
-  const form = document.querySelector('.login-form');
-  if (form) form.addEventListener('submit', attemptLogin);
+  // Login submits via the form's inline onsubmit + the type="submit" button (so Enter works);
+  // no extra submit listener here, to avoid firing attemptLogin twice.
 });
 </script>
 </body>
