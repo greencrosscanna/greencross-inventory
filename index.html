@@ -4134,10 +4134,13 @@ function betaActionScoreForProduct(p) {
 }
 
 // ── DOH / status logic (mirrors backend) ─────────────────
-// A product is a "sample" (not sellable inventory) if its name is prefixed "SAMPLE |" or contains "sample".
-function isSampleProduct(p) {
+// Non-inventory line items excluded from the auditable Inventory Value — none are physical sellable
+// stock: samples (SAMPLE | …), rounding adjustments (.01/.02 Rounding), and gift certificates.
+function isNonInventory(p) {
   const n = (p && p.name) || '';
-  return /^SAMPLE\s*\|/i.test(n) || /\bsample\b/i.test(n);
+  return /^SAMPLE\s*\|/i.test(n) || /\bsample\b/i.test(n)
+      || /\brounding\b/i.test(n)
+      || /gift\s*cert/i.test(n);
 }
 
 function enrichProduct(p, storeName, velMap) {
@@ -5223,7 +5226,7 @@ function renderInventory() {
   // (not sellable stock). Store filter only — NOT reduced by hide/flag/category filters. This reconciles
   // to Dutchie's own inventory valuation.
   const totalInvValue = state.inventoryData
-    .filter(p => (state.store === 'All' || p.store === state.store) && !isSampleProduct(p) && !p.costEstimated)
+    .filter(p => (state.store === 'All' || p.store === state.store) && !isNonInventory(p) && !p.costEstimated)
     .reduce((sum, p) => sum + (Number(p.qty) || 0) * (Number(p.unitCost) || 0), 0);
   let totalMissedRevenue = 0;
   let totalLostUnits = 0;
@@ -5969,7 +5972,7 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
   setFinancial('iwpInvValue', totalInvValue > 0 ? fmtK(totalInvValue) : '—');
   // Retail value (qty × unit price) — same auditable scope as cost: store filter, samples excluded.
   const totalInvRetail = (state.inventoryData || [])
-    .filter(p => (state.store === 'All' || p.store === state.store) && !isSampleProduct(p) && !p.costEstimated)
+    .filter(p => (state.store === 'All' || p.store === state.store) && !isNonInventory(p) && !p.costEstimated)
     .reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.unitPrice) || 0), 0);
   setFinancial('iwpInvRetail', totalInvRetail > 0 ? ('retail ' + fmtK(totalInvRetail)) : '');
   // Lost revenue pill — only visible when there's beta data for OOS products
