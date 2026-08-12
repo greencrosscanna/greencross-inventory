@@ -1115,6 +1115,7 @@ function getLostSales(params) {
     Object.keys(products).forEach(name => {
       const v = products[name];
       const sku = String(v.sku || '');
+      if (isNonInventoryName_(name)) return;                                   // samples/testers/rounding/gift certs
       if (inStock[store + '::' + sku] || inStock[store + '::' + name]) return; // still in stock
       if (!(v.qty90 > 0)) return;                                              // never sold here
       const rec = lastMap[store + '::' + (sku || name)] || lastMap[store + '::' + sku] || lastMap[store + '::' + name];
@@ -1185,9 +1186,17 @@ function getLostSales(params) {
 // categories default to CONTINUITY (the safe choice — never silently hides a real loss).
 const SUBSTITUTION_CONFIG_SHEET = 'Substitution Config';
 const SUBSTITUTION_BRAND_SHEET = 'Substitution Brand Targets';
+// Products excluded from the whole model — not sellable varieties, never lost revenue. Room-based samples
+// are already excluded upstream (separate qtySample; p.qty is floor+back only); this catches name-based
+// tester/sample SKUs, rounding, and gift certificates (mirrors the frontend isNonInventory).
+function isNonInventoryName_(name) {
+  const n = String(name || '');
+  return /^SAMPLE\s*\|/i.test(n) || /\bsample\b/i.test(n) || /\brounding\b/i.test(n) || /gift\s*cert/i.test(n);
+}
+
 const SUBSTITUTION_DEFAULTS = { // seed values — Tawny tunes the targets in the sheet
   'Bulk Cannabis Flower': { mode: 'substitutable', groupBy: 'category', target: 40 },
-  'Cannabis Bulk Shake':  { mode: 'substitutable', groupBy: 'category', target: 15 },
+  'Cannabis Bulk Shake':  { mode: 'ignore',        groupBy: 'category', target: 0 }, // not an assortment we manage
   '1g Pre-Roll':          { mode: 'substitutable', groupBy: 'category', target: 20 },
   'Pre-Roll Pack':        { mode: 'substitutable', groupBy: 'category', target: 20 },
   'Extract (Solid)':      { mode: 'substitutable', groupBy: 'category', target: 25 },
@@ -1273,6 +1282,7 @@ function getAssortmentHealth(params) {
   const catSets = {}, brandSets = {};
   STORES.forEach(store => (invByStore[store] || []).forEach(p => {
     if (!(Number(p.qty) > 0)) return;
+    if (isNonInventoryName_(p.name)) return; // samples/testers/rounding/gift certs aren't varieties
     const catL = String(p.category || '').trim().toLowerCase();
     const sku = String(p.sku || p.name || '').trim();
     if (!catL || !sku) return;
