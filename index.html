@@ -1694,14 +1694,17 @@ if (location.protocol === 'file:') {
       <div class="inv-wide-pill" id="iwpInvPill" onclick="toggleFinancials()" title="Click to show/hide financials" style="cursor:pointer">
         <div class="iwp-label">Inventory Value <span style="opacity:.5">(cost)</span> <span id="iwpPrivateIcon" style="font-size:10px;opacity:.5;margin-left:4px"></span></div>
         <div class="iwp-value" id="iwpInvValue">—</div>
-        <div id="iwpInvRetail" style="font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap"></div>
       </div>
       <div class="inv-wide-pill">
-        <div class="iwp-label">Total Sales</div>
+        <div class="iwp-label">Retail Value</div>
+        <div class="iwp-value" id="iwpRetailValue">—</div>
+      </div>
+      <div class="inv-wide-pill">
+        <div class="iwp-label">Total Sales <span style="opacity:.5">(last 28d)</span></div>
         <div class="iwp-value" id="iwpSales">—</div>
       </div>
       <div class="inv-wide-pill">
-        <div class="iwp-label">Gross Margin</div>
+        <div class="iwp-label">Gross Margin <span style="opacity:.5">(last 28d)</span></div>
         <div class="iwp-value" id="iwpMargin" style="color:var(--green)">—</div>
       </div>
       <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated revenue lost while OOS products have been out of stock — click to filter to OOS" style="cursor:pointer;display:none">
@@ -4370,48 +4373,24 @@ async function loadInventoryData() {
     if (!state.velocityData) {
       state.velocityData = await proxyFetch({ action: 'velocity' }, 'vel_all', OPERATIONAL_CACHE_TTL_MS);
     }
-    // Show last-synced timestamp with staleness warning
-    const lastSynced = state.velocityData.lastSynced;
-    const velSource  = state.velocityData.velSource;
+    // Velocity is sourced from the Green Cross shared cache (Phase C — local sync retired), so it's
+    // always current. Show "Auto · current" whenever we have velocity data. This does NOT rely on the
+    // velSource flag surviving the localStorage cache: a populated stores map is enough, so the label
+    // can never revert to the old local-sync "Nd ago".
     const syncLabel = document.getElementById('velSyncLabel');
     if (syncLabel) {
-      if (velSource === 'gxcore') {
-        // Phase C: velocity is read live from the Green Cross shared cache (auto-refreshed ~6h),
-        // so the old local "last synced" age no longer applies.
+      const haveVel = !!(state.velocityData && (state.velocityData.velSource === 'gxcore'
+        || (state.velocityData.stores && Object.keys(state.velocityData.stores).length > 0)));
+      if (haveVel) {
         syncLabel.textContent = 'Auto · current';
-        syncLabel.style.display = '';
-        syncLabel.style.color   = 'var(--green)';
-        syncLabel.title = 'Velocity now comes from the Green Cross shared cache — auto-refreshed about every 6 hours, always current. No manual sync needed.';
-      } else if (lastSynced) {
-        const agoMs  = Date.now() - new Date(lastSynced).getTime();
-        const agoMin = Math.round(agoMs / 60000);
-        const agoHr  = agoMs / 3600000;
-        let ageText;
-        if (agoMin < 2)       ageText = 'just now';
-        else if (agoMin < 60) ageText = agoMin + 'm ago';
-        else if (agoHr < 24)  ageText = Math.round(agoHr) + 'h ago';
-        else                   ageText = Math.round(agoHr / 24) + 'd ago';
-
-        const stale4h  = agoHr > 4;
-        const stale24h = agoHr > 24;
-        syncLabel.textContent = ageText;
-        syncLabel.style.display = '';
-        syncLabel.style.color   = stale24h ? '#e05c5c' : stale4h ? '#d4a843' : 'var(--muted)';
-        syncLabel.title = stale24h
-          ? 'Velocity data is over 24h old — numbers may not reflect recent sales. Check the GAS trigger.'
-          : stale4h
-          ? 'Velocity data is a few hours old. Hourly sync should update this soon.'
-          : 'Velocity data (sales rates) were last synced ' + ageText;
-
-        // Stale velocity is shown as a warning, but normal app load stays read-only.
-        // Nightly/hourly GAS jobs own sync work so buyers are not blocked by background refresh.
+        syncLabel.style.color  = 'var(--green)';
+        syncLabel.title = 'Velocity comes from the Green Cross shared cache — auto-refreshed about every 6 hours, always current. No manual sync needed.';
       } else {
-        // No sync yet — keep load read-only; use Refresh/Hard Reset after backend sync is installed.
-        syncLabel.textContent = 'Vel: not synced';
-        syncLabel.style.display = '';
-        syncLabel.style.color = '#d4a843';
-        syncLabel.title = 'Velocity data has not been synced yet. Backend sync should run outside normal app load.';
+        syncLabel.textContent = '—';
+        syncLabel.style.color  = 'var(--muted)';
+        syncLabel.title = 'Velocity data is loading from the Green Cross shared cache.';
       }
+      syncLabel.style.display = '';
     }
     const velMap = state.velocityData.stores || {};
 
@@ -5974,7 +5953,7 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
   const totalInvRetail = (state.inventoryData || [])
     .filter(p => (state.store === 'All' || p.store === state.store) && !isNonInventory(p) && !p.costEstimated)
     .reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.unitPrice) || 0), 0);
-  setFinancial('iwpInvRetail', totalInvRetail > 0 ? ('retail ' + fmtK(totalInvRetail)) : '');
+  setFinancial('iwpRetailValue', totalInvRetail > 0 ? fmtK(totalInvRetail) : '—');
   // Lost revenue pill — only visible when there's beta data for OOS products
   const missedPill = el('iwpMissedRev');
   if (missedPill) {
@@ -7364,7 +7343,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.58';
+const APP_VERSION = 'v2.59';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
@@ -9119,7 +9098,7 @@ async function loadQuarantineItems() {
 
 // ── Financial Privacy Toggle ───────────────────────────────
 let _financialsHidden = false;
-const _financialIds = ['iwpInvValue', 'iwpSales', 'iwpMargin'];
+const _financialIds = ['iwpInvValue', 'iwpRetailValue', 'iwpSales', 'iwpMargin'];
 const _financialMask = {};
 
 function toggleFinancials() {
