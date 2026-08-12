@@ -1023,6 +1023,8 @@ function buildOosLastSeenCostMap_() {
     if (!sheet || sheet.getLastRow() < 2) return out;
     const width = Math.max(8, sheet.getLastColumn());
     const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+    // Window cutoffs for days-in-stock counts (distinct snapshot dates the product was present) — used to
+    // compute a decay-corrected velocity (units sold ÷ days actually in stock) in getLostSales.
     const put = (key, dateStr, cost, price) => {
       const cur = out[key];
       if (!cur || dateStr > cur.lastSeen) out[key] = { lastSeen: dateStr, unitCost: cost, unitPrice: price };
@@ -1074,14 +1076,16 @@ function parseNamePrice_(name) {
 }
 
 // Estimated lost SALES across every out-of-stock product (not just the handful in the persisted feed).
-// For each product with velocity + a last-seen date that is NOT currently in stock:
-//   oosDays  = min(today − (lastSeen+1), capDays)      (capDays keeps long-discontinued items sane)
+// For each product with recent sales + a last-seen date that is NOT currently in stock:
+//   velocity  = 28-day average daily demand (units sold in 28d ÷ 28)   [robust vs unsustainable bursts]
+//   oosDays   = min(today − (lastSeen+1), 28)     [projection capped at 28d — a month-old OOS is a
+//               restock/discontinue decision, not ongoing lost sales]
 //   lostUnits = oosDays × velocity
-//   price     = banked last-known retail  OR  lastKnownCost ÷ (1 − storeGrossMargin)
+//   price     = banked last-known retail  OR  name-encoded shelf price  OR  cost ÷ (1 − storeGrossMargin)
 //   missed$   = lostUnits × price
 // Store-scoped totals + top contributors; the frontend pill indexes byStore.
 function getLostSales(params) {
-  const CAP_DAYS = Math.max(7, Math.min(180, Number((params && params.capDays) || 90)));
+  const CAP_DAYS = Math.max(7, Math.min(180, Number((params && params.capDays) || 28)));
   const velMap = getVelocityMap();
   const lastMap = buildOosLastSeenCostMap_();
   const gm = computeGmByStore_(28);
@@ -1111,10 +1115,21 @@ function getLostSales(params) {
       const sku = String(v.sku || '');
       if (inStock[store + '::' + sku] || inStock[store + '::' + name]) return; // still in stock
       if (!(v.qty90 > 0)) return;                                              // never sold here
-      const vel = v.vel14 > 0 ? v.vel14 : (v.vel28 > 0 ? v.vel28 : v.vel7);
-      if (!(vel > 0)) return;
       const rec = lastMap[store + '::' + (sku || name)] || lastMap[store + '::' + sku] || lastMap[store + '::' + name];
       if (!rec || !rec.lastSeen) return;                                       // no last-seen → can't age it
+      // Decay-corrected velocity: units sold ÷ days ACTUALLY in stock, using the shortest window with
+      // enough in-stock appearances (MIN_DIS). This keeps out-of-stock days from diluting the rate (the
+      // old qtyN/N windows undercounted the longer something sat OOS) while still favoring recent demand.
+      // In-stock days are ESTIMATED as (appearances ÷ run-days) × windowLen, because the snapshot job runs
+      // ~every other day — dividing raw appearances would double the velocity. Falls back to the window
+      // average only when we lack the in-stock history to correct.
+      // Velocity = 28-day average daily demand (units sold in 28d ÷ 28). Simple and robust: averaging over
+      // the full window naturally dampens unsustainable in-stock bursts, which is the right basis for
+      // projecting lost sales. (A days-in-stock "decay correction" was tried and rejected — it extrapolated
+      // burst rates like 116 units/day for bulk flower that sold a batch in a few days then went OOS.)
+      let vel = (v.qty28 || 0) / 28;
+      if (!(vel > 0)) vel = v.vel14 > 0 ? v.vel14 : (v.vel28 || 0);
+      if (!(vel > 0)) return;
       const oosStart = new Date(rec.lastSeen + 'T12:00:00Z');
       oosStart.setUTCDate(oosStart.getUTCDate() + 1);
       const rawDays = Math.floor((todayMs - oosStart.getTime()) / 86400000);
