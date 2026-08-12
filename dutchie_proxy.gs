@@ -4015,34 +4015,98 @@ function getLeafLinkOrders() {
 // ─── NIGHTLY SNAPSHOT ─────────────────────────────────────────────────────────
 // Called by time-based trigger. Appends one row per product per store to the
 // Inv Snapshot sheet, then purges entries older than 90 days.
+// Nightly inventory snapshot — the source of truth for OOS/last-seen/price history and (going forward)
+// the substitution-model breadth signal. HARDENED so it never throws: an unhandled exception on a
+// time-based trigger makes GAS silently auto-DISABLE it, which is what caused the multi-week snapshot
+// gaps (Jul 2026). Every step is now wrapped, it self-heals its own trigger, it's idempotent per day
+// (safe to run twice), and it prefers the already-warmed operational bundle over 6 live Dutchie calls
+// (fewer external calls = fewer timeouts). Records health to SNAPSHOT_STATUS for monitoring.
 function snapshotInventory() {
-  const ss    = SpreadsheetApp.openById(getInvDataSpreadsheetId());
-  const sheet = getOrCreateSnapshotSheet(ss);
-  const today = new Date().toISOString().slice(0, 10);
+  const status = { startedAt: new Date().toISOString(), date: '', source: '', stores: {}, rowsWritten: 0, errors: [] };
+  try {
+    ensureSnapshotTrigger_(); // keep our own nightly trigger alive on every healthy run
+    const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
+    const sheet = getOrCreateSnapshotSheet(ss);
+    const today = new Date().toISOString().slice(0, 10);
+    status.date = today;
 
-  for (const store of STORES) {
-    let invResult;
+    // Idempotency: skip stores already captured today, so a second run (trigger + manual) can't dup rows.
+    const doneToday = {};
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const tail = Math.min(lastRow - 1, 15000); // recent rows only — today's rows are always near the end
+      const recent = sheet.getRange(lastRow - tail + 1, 1, tail, 2).getValues();
+      for (const r of recent) {
+        const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10);
+        if (d === today) doneToday[String(r[1] || '').trim()] = true;
+      }
+    }
+
+    // Prefer the warmed operational bundle (refreshed ~hourly) to avoid 6 live Dutchie calls; the fresh
+    // bundle is in-stock products with the fields we need. Fall back to live getInventory per store.
+    const bundleByStore = {};
     try {
-      invResult = getInventory({ store });
-    } catch (err) {
-      Logger.log('Snapshot error for ' + store + ': ' + err.message);
-      continue;
-    }
-    if (invResult.error || !invResult.products) continue;
+      const bundle = readOperationalSnapshot_('inventory_bundle_v1');
+      if (bundle && bundle.generatedAt && (Date.now() - Date.parse(bundle.generatedAt)) < 25 * 3600 * 1000 && bundle.inventory) {
+        bundle.inventory.forEach(st => { if (st && st.store && st.products) bundleByStore[st.store] = st.products; });
+      }
+    } catch (e) { status.errors.push('bundle: ' + (e && e.message)); }
+    status.source = Object.keys(bundleByStore).length ? 'bundle' : 'live';
 
-    const inStock = invResult.products.filter(p => p.qty > 0);
-    // Col 9 (unitPrice) banks the real last-known RETAIL price while a product is in stock, so lost-sales
-    // revenue can be computed exactly once a product goes OOS (before ~2 weeks of history accrues, the
-    // lost-sales endpoint falls back to cost ÷ (1 − gross margin)).
-    const rows = inStock.map(p => [today, store, p.name, p.brand, p.category, p.sku, p.qty, p.value, Number(p.unitPrice || 0)]);
-
-    if (rows.length > 0) {
-      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 9).setValues(rows);
+    for (const store of STORES) {
+      if (doneToday[store]) { status.stores[store] = 'already'; continue; }
+      try {
+        let products = bundleByStore[store];
+        if (!products) {
+          const inv = getInventory({ store });
+          products = (inv && !inv.error && inv.products) ? inv.products : null;
+        }
+        if (!products) { status.stores[store] = 'no data'; continue; }
+        const inStock = products.filter(p => Number(p.qty) > 0);
+        // Col 9 (unitPrice) banks the real last-known RETAIL price while in stock, so lost-sales revenue
+        // can be computed once a product goes OOS.
+        const rows = inStock.map(p => [today, store, p.name, p.brand, p.category, p.sku, p.qty,
+          (p.value != null ? p.value : (Number(p.qty) || 0) * (Number(p.unitCost) || 0)), Number(p.unitPrice || 0)]);
+        if (rows.length) { sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 9).setValues(rows); status.rowsWritten += rows.length; }
+        status.stores[store] = rows.length;
+        try { updateSkuDict(ss, products); } catch (e) { status.errors.push('skuDict ' + store + ': ' + (e && e.message)); }
+      } catch (e) {
+        status.stores[store] = 'error'; status.errors.push(store + ': ' + (e && e.message));
+      }
     }
-    updateSkuDict(ss, invResult.products); // persist name→sku for all products, including zero-qty
+    try { purgeOldSnapshots(sheet); } catch (e) { status.errors.push('purge: ' + (e && e.message)); }
+  } catch (e) {
+    status.errors.push('fatal: ' + (e && e.message));
   }
+  status.finishedAt = new Date().toISOString();
+  try { PropertiesService.getScriptProperties().setProperty('SNAPSHOT_STATUS', JSON.stringify(status)); } catch (e) {}
+  return status;
+}
 
-  purgeOldSnapshots(sheet);
+// Idempotent: (re)create the nightly snapshot trigger only if it's missing. Called from healthy snapshot
+// runs AND from the warm triggers, so a snapshot trigger that GAS disables gets revived by an independent
+// still-alive trigger within a day. Never throws.
+function ensureSnapshotTrigger_() {
+  try {
+    const has = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'snapshotInventory');
+    if (!has) ScriptApp.newTrigger('snapshotInventory').timeBased().everyDays(1).atHour(2).create();
+    return has;
+  } catch (e) { return false; }
+}
+
+// Snapshot pipeline health for monitoring (surfaced via getOperationalSnapshotStatus).
+function snapshotHealth_() {
+  const out = { triggerInstalled: false, lastRunDate: '', ageDays: null, source: '', rowsWritten: 0, errorCount: 0, finishedAt: '' };
+  try { out.triggerInstalled = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'snapshotInventory'); } catch (e) {}
+  try {
+    const s = JSON.parse(PropertiesService.getScriptProperties().getProperty('SNAPSHOT_STATUS') || 'null');
+    if (s) {
+      out.lastRunDate = s.date || ''; out.source = s.source || ''; out.rowsWritten = s.rowsWritten || 0;
+      out.errorCount = (s.errors || []).length; out.finishedAt = s.finishedAt || '';
+      if (s.date) out.ageDays = Math.floor((Date.now() - Date.parse(s.date + 'T00:00:00Z')) / 86400000);
+    }
+  } catch (e) {}
+  return out;
 }
 
 function getOrCreateSnapshotSheet(ss) {
@@ -4150,6 +4214,7 @@ function getOperationalSnapshotStatus() {
       bytes: 0,
       warmTriggerInstalled,
       warmStatus: getOperationalWarmStatus_(),
+      snapshotHealth: snapshotHealth_(),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -4166,6 +4231,7 @@ function getOperationalSnapshotStatus() {
     bytes,
     warmTriggerInstalled,
     warmStatus: getOperationalWarmStatus_(),
+    snapshotHealth: snapshotHealth_(),
     checkedAt: new Date().toISOString(),
   };
 }
@@ -4364,6 +4430,7 @@ function velGapAudit() {
 function warmVelocityOnly() {
   const started = new Date();
   const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
+  try { ensureSnapshotTrigger_(); } catch (e) {} // cross-heal: revive the snapshot trigger if GAS disabled it
   // Phase C: local velocity sync is retired — velocity is sourced from GX Core's shared cache.
   // This warm just pre-populates the getVelocityEndpoint cache (which now reads GX Core) so page
   // loads stay fast. It no longer runs syncVelocityCache or the local gap audit.
@@ -4385,6 +4452,7 @@ function warmVelocityOnly() {
 function warmBundleOnly() {
   const started = new Date();
   const result  = { ok: true, startedAt: started.toISOString(), errors: [] };
+  try { ensureSnapshotTrigger_(); } catch (e) {} // cross-heal: revive the snapshot trigger if GAS disabled it
   try {
     const bundle = buildOperationalBundle_(true);
     writeOperationalSnapshot_('inventory_bundle_v1', bundle);
