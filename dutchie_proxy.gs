@@ -1100,7 +1100,7 @@ function getLostSales(params) {
 
   const todayMs = Date.now();
   let total = 0, totalUnits = 0, bankedRev = 0, namedRev = 0, estRev = 0, counted = 0;
-  const byStore = {}, byStoreUnits = {}, top = [];
+  const byStore = {}, byStoreUnits = {}, byProduct = {}, top = [];
   STORES.forEach(s => { byStore[s] = 0; byStoreUnits[s] = 0; });
 
   Object.keys(velMap).forEach(store => {
@@ -1133,6 +1133,11 @@ function getLostSales(params) {
       total += missed; totalUnits += lostUnits; counted++;
       if (src === 'banked') bankedRev += missed; else if (src === 'name') namedRev += missed; else estRev += missed;
       if (store in byStore) { byStore[store] += missed; byStoreUnits[store] += lostUnits; }
+      if (missed > 0) { // per-product loss for the Value column (keyed by sku and name for robust FE lookup)
+        const mr = Math.round(missed);
+        if (sku) byProduct[store + '::' + sku] = mr;
+        byProduct[store + '::' + name] = mr;
+      }
       top.push({ store: store, name: name, sku: sku, oosDays: oosDays, vel: Math.round(vel * 100) / 100,
         lostUnits: lostUnits, price: Math.round(price * 100) / 100, priceSrc: src, missed: Math.round(missed) });
     });
@@ -1143,7 +1148,7 @@ function getLostSales(params) {
   return {
     ok: true, generatedAt: new Date().toISOString(), capDays: CAP_DAYS,
     total: Math.round(total), totalUnits: Math.round(totalUnits * 10) / 10, oosCounted: counted,
-    byStore: byStore, byStoreUnits: byStoreUnits,
+    byStore: byStore, byStoreUnits: byStoreUnits, byProduct: byProduct,
     gmByStore: gm.byStore, gmAll: Math.round(gm.all * 1000) / 1000,
     priceMix: total > 0 ? {
       exact: Math.round(((bankedRev + namedRev) / total) * 100),  // banked real price + name-encoded shelf price

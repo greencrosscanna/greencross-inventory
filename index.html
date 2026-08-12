@@ -4599,14 +4599,19 @@ async function loadInventoryData() {
         const ls = await proxyFetch({ action: 'lostsales' }, 'inv_lostsales_v1', 30 * 60 * 1000);
         if (ls && ls.ok) {
           state.lostSales = ls;
-          // Refresh just the pill cell without a full re-render (mirrors the financial overlay above).
-          const missed = state.store === 'All' ? Number(ls.total || 0) : Number((ls.byStore || {})[state.store] || 0);
-          const units  = state.store === 'All' ? Number(ls.totalUnits || 0) : Number((ls.byStoreUnits || {})[state.store] || 0);
-          const node = document.getElementById('iwpMissedRevVal');
-          if (node) {
-            const val = missed > 0 ? fmtFull(missed) : (units > 0 ? Math.round(units) + 'u' : '—');
-            if (_financialsHidden && val !== '—') { _financialMask['iwpMissedRevVal'] = val; node.textContent = '••••••'; }
-            else node.textContent = val;
+          // Re-render so both the pill AND the per-row Value cells (OOS loss as red negatives) pick up the
+          // now-loaded estimate. Falls back to a direct pill update if we're not on the inventory tab.
+          if (state.tab === 'inventory') {
+            renderInventory();
+          } else {
+            const missed = state.store === 'All' ? Number(ls.total || 0) : Number((ls.byStore || {})[state.store] || 0);
+            const units  = state.store === 'All' ? Number(ls.totalUnits || 0) : Number((ls.byStoreUnits || {})[state.store] || 0);
+            const node = document.getElementById('iwpMissedRevVal');
+            if (node) {
+              const val = missed > 0 ? fmtFull(missed) : (units > 0 ? Math.round(units) + 'u' : '—');
+              if (_financialsHidden && val !== '—') { _financialMask['iwpMissedRevVal'] = val; node.textContent = '••••••'; }
+              else node.textContent = val;
+            }
           }
         }
       } catch(e) { /* lost-revenue overlay is optional */ }
@@ -5810,6 +5815,30 @@ function renderInventory() {
     const label = formatOrderQty(qtyProduct, effectiveQty);
     return `<span class="reorder-qty">+${label}</span>`;
   }
+  // Per-product lost-sales estimate (backend ?action=lostsales byProduct map). Only OOS products carry
+  // a loss. Keyed by sku then name so it matches however the row was sourced (live inventory or injected).
+  function lostForProduct(p) {
+    const ls = state.lostSales;
+    if (!ls || !ls.ok || !ls.byProduct || !p || p.status !== 'oos') return 0;
+    const bp = ls.byProduct;
+    const bySku = p.sku ? bp[p.store + '::' + p.sku] : undefined;
+    return Number(bySku != null ? bySku : (bp[p.store + '::' + p.name] || 0)) || 0;
+  }
+  const fmtLoss = n => '-' + Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  // Value cell: real on-hand value when in stock; for out-of-stock rows, the estimated lost revenue as a
+  // red negative (so clicking the Lost Revenue pill → OOS shows where the money is leaking).
+  function mkValCell(p) {
+    if (p && p.value > 0) return p.value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    const loss = lostForProduct(p);
+    if (loss > 0) return `<span style="color:var(--red)" title="Est. sales lost while out of stock">${fmtLoss(loss)}</span>`;
+    return '—';
+  }
+  function mkAggValCell(agg, items) {
+    if (agg && agg.value > 0) return agg.value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    let loss = 0; for (const p of (items || [])) loss += lostForProduct(p);
+    if (loss > 0) return `<span style="color:var(--red)" title="Est. sales lost while out of stock (all stores)">${fmtLoss(loss)}</span>`;
+    return '—';
+  }
   function mkFlatRow(p) {
     const fkEsc = flagKey(p).replace(/'/g, "\\'");
     return `<tr>
@@ -5823,7 +5852,7 @@ function renderInventory() {
       <td title="${p.category}">${fmtCat(p.category)}</td>
       <td>${p.brand}</td>
       <td class="num">${mkQtyCell(p)}</td>
-      <td class="num val-cell" style="color:var(--muted);font-size:12px">${p.value > 0 ? p.value.toLocaleString('en-US',{style:'currency',currency:'USD'}) : '—'}</td>
+      <td class="num val-cell" style="color:var(--muted);font-size:12px">${mkValCell(p)}</td>
       <td class="num"><span class="doh-val doh-${p.status}">${mkDohTxt(p)}</span></td>
       <td class="num">${mkVelCell(p)}</td>
       <td class="num">${mkReorderCell(p)}</td>
@@ -5857,7 +5886,7 @@ function renderInventory() {
       <td title="${agg.category}">${fmtCat(agg.category)}</td>
       <td>${agg.brand}</td>
       <td class="num">${aggQtyCell}</td>
-      <td class="num val-cell" style="color:var(--muted);font-size:12px">${agg.value > 0 ? agg.value.toLocaleString('en-US',{style:'currency',currency:'USD'}) : '—'}</td>
+      <td class="num val-cell" style="color:var(--muted);font-size:12px">${mkAggValCell(agg, items)}</td>
       <td class="num"><span class="doh-val doh-${agg.status}">${mkDohTxt(agg)}</span></td>
       <td class="num">${mkVelCell(agg)}</td>
       <td class="num">${mkReorderCell(agg, key)}</td>
@@ -5898,7 +5927,7 @@ function renderInventory() {
         <td></td>
         <td></td>
         <td class="num">${mkQtyCell(p)}</td>
-        <td class="num val-cell" style="color:var(--muted);font-size:12px">${p.value > 0 ? p.value.toLocaleString('en-US',{style:'currency',currency:'USD'}) : '—'}</td>
+        <td class="num val-cell" style="color:var(--muted);font-size:12px">${mkValCell(p)}</td>
         <td class="num"><span class="doh-val doh-${p.status}">${mkDohTxt(p)}</span></td>
         <td class="num">${mkVelCell(p)}</td>
         <td class="num">${mkReorderCell(p, null, true)}${txPill}</td>
@@ -7375,7 +7404,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.62';
+const APP_VERSION = 'v2.63';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
