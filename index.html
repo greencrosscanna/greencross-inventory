@@ -2122,7 +2122,7 @@ function cacheSet(key, data, ttlMs) {
   // needed in-memory during the session; stripping them saves ~550KB in localStorage.
   let toStore = data;
   if (key === 'vel_all' && data && data.stores) {
-    const slim = { lastSynced: data.lastSynced, stores: {} };
+    const slim = { lastSynced: data.lastSynced, velSource: data.velSource, stores: {} };
     for (const [store, products] of Object.entries(data.stores)) {
       slim.stores[store] = {};
       for (const [name, v] of Object.entries(products)) {
