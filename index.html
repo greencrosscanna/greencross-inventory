@@ -4134,6 +4134,12 @@ function betaActionScoreForProduct(p) {
 }
 
 // ── DOH / status logic (mirrors backend) ─────────────────
+// A product is a "sample" (not sellable inventory) if its name is prefixed "SAMPLE |" or contains "sample".
+function isSampleProduct(p) {
+  const n = (p && p.name) || '';
+  return /^SAMPLE\s*\|/i.test(n) || /\bsample\b/i.test(n);
+}
+
 function enrichProduct(p, storeName, velMap) {
   const vel  = velocityEntryForProduct(p, storeName, velMap);
   const v7   = vel.vel7  || 0;
@@ -4514,6 +4520,7 @@ async function loadInventoryData() {
       if (fallbackCost > 0) {
         p.unitCost = fallbackCost;
         p.value = Math.round(p.qty * fallbackCost * 100) / 100;
+        p.costEstimated = true; // flag: cost was guessed from a peer (Dutchie has none) — excluded from the auditable pill
       }
     }
 
@@ -5211,11 +5218,13 @@ function renderInventory() {
   });
   const counts = { oos: 0, critical: 0, low: 0, watch: 0, ok: 0, slow: 0 };
   const totalVal = { oos: 0, critical: 0, low: 0, watch: 0, ok: 0, slow: 0 };
-  // "Inventory Value" pill = the TRUE total on-hand value @ cost for the current store scope — filtered
-  // by store only, NOT reduced by hide/flag/category/shake/sample filters (those only hide rows from view).
+  // "Inventory Value" pill = AUDITABLE total on-hand value @ cost for the current store scope: real
+  // Dutchie unit cost only (qty × unitCost — no estimated costs for cost-less items), samples excluded
+  // (not sellable stock). Store filter only — NOT reduced by hide/flag/category filters. This reconciles
+  // to Dutchie's own inventory valuation.
   const totalInvValue = state.inventoryData
-    .filter(p => state.store === 'All' || p.store === state.store)
-    .reduce((sum, p) => sum + (p.value || 0), 0);
+    .filter(p => (state.store === 'All' || p.store === state.store) && !isSampleProduct(p) && !p.costEstimated)
+    .reduce((sum, p) => sum + (Number(p.qty) || 0) * (Number(p.unitCost) || 0), 0);
   let totalMissedRevenue = 0;
   let totalLostUnits = 0;
   for (const p of storeScoped) {
@@ -5958,9 +5967,9 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
     else node.textContent = val;
   };
   setFinancial('iwpInvValue', totalInvValue > 0 ? fmtK(totalInvValue) : '—');
-  // Retail value (qty × unit price) for the same store scope — shown small under the cost total.
+  // Retail value (qty × unit price) — same auditable scope as cost: store filter, samples excluded.
   const totalInvRetail = (state.inventoryData || [])
-    .filter(p => state.store === 'All' || p.store === state.store)
+    .filter(p => (state.store === 'All' || p.store === state.store) && !isSampleProduct(p) && !p.costEstimated)
     .reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.unitPrice) || 0), 0);
   setFinancial('iwpInvRetail', totalInvRetail > 0 ? ('retail ' + fmtK(totalInvRetail)) : '');
   // Lost revenue pill — only visible when there's beta data for OOS products
@@ -7352,7 +7361,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.57';
+const APP_VERSION = 'v2.58';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
