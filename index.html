@@ -1692,8 +1692,9 @@ if (location.protocol === 'file:') {
   <div class="inv-summary-bar" id="invSummaryBar">
     <div class="inv-header-grid">
       <div class="inv-wide-pill" id="iwpInvPill" onclick="toggleFinancials()" title="Click to show/hide financials" style="cursor:pointer">
-        <div class="iwp-label">Inventory Value <span id="iwpPrivateIcon" style="font-size:10px;opacity:.5;margin-left:4px"></span></div>
+        <div class="iwp-label">Inventory Value <span style="opacity:.5">(cost)</span> <span id="iwpPrivateIcon" style="font-size:10px;opacity:.5;margin-left:4px"></span></div>
         <div class="iwp-value" id="iwpInvValue">—</div>
+        <div id="iwpInvRetail" style="font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap"></div>
       </div>
       <div class="inv-wide-pill">
         <div class="iwp-label">Total Sales</div>
@@ -5957,6 +5958,11 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
     else node.textContent = val;
   };
   setFinancial('iwpInvValue', totalInvValue > 0 ? fmtK(totalInvValue) : '—');
+  // Retail value (qty × unit price) for the same store scope — shown small under the cost total.
+  const totalInvRetail = (state.inventoryData || [])
+    .filter(p => state.store === 'All' || p.store === state.store)
+    .reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.unitPrice) || 0), 0);
+  setFinancial('iwpInvRetail', totalInvRetail > 0 ? ('retail ' + fmtK(totalInvRetail)) : '');
   // Lost revenue pill — only visible when there's beta data for OOS products
   const missedPill = el('iwpMissedRev');
   if (missedPill) {
