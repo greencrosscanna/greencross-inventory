@@ -2152,7 +2152,7 @@ function getVelocityMap() {
       (velMap[store] || (velMap[store] = {}))[name] = {
         qty7: r.qty7 || 0, qty14: r.qty14 || 0, qty21: r.qty21 || 0, qty28: r.qty28 || 0, qty30: r.qty30 || 0, qty90: r.qty90 || 0,
         vel7: r.vel7 || 0, vel14: r.vel14 || 0, vel21: r.vel21 || 0, vel28: r.vel28 || 0, vel30: r.vel30 || 0, vel90: r.vel90 || 0,
-        brand: r.brand || '', category: r.category || '', sku: r.sku || '', hasSalesHistory: !!r.hasSalesHistory,
+        brand: String(r.brand || ''), category: String(r.category || ''), sku: String(r.sku || ''), hasSalesHistory: !!r.hasSalesHistory,
       };
     }
   } catch (e) { _logGasError('getVelocityMap/getVelocity', e.message); }
@@ -3082,7 +3082,7 @@ function getVelocityEndpoint(params) {
   // freshness signal (the frontend reads velSource to label the indicator).
   const lastSynced = PropertiesService.getScriptProperties().getProperty('velSyncDate') || null;
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'velmap_v3';
+  const cacheKey = 'velmap_v4'; // bumped: drop cached maps that had numeric SKUs before stringify fix
   const cached = params.force === '1' ? null : _readChunkedJsonCache(cache, cacheKey);
   let payload = cached && cached.lastSynced === lastSynced ? cached : null;
 

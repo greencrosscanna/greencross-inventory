@@ -4935,9 +4935,10 @@ function computeTransferSuggestions(items) {
 }
 
 function buildGroups(sorted) {
+  // NB: group keys are coerced to String — a numeric SKU (e.g. all-digit) would otherwise break key.replace().
   const seen = new Map();
   for (const p of sorted) {
-    const key = p.sku || p.name;
+    const key = String(p.sku || p.name || '');
     if (!seen.has(key)) seen.set(key, []);
     seen.get(key).push(p);
   }
@@ -5331,7 +5332,7 @@ function renderInventory() {
   }
   const allGroups = groupMode
     ? buildGroups(sorted).map(g => ({ ...g, suggestions: null, hasTransferHint: groupHasBetaTransferHint(g.items), mayHaveLocalTransfer: groupMayHaveLocalTransfer(g.items) }))
-    : sorted.map(p => ({ key: p.sku || p.name, items: [p], suggestions: [] }));
+    : sorted.map(p => ({ key: String(p.sku || p.name || ''), items: [p], suggestions: [] }));
   function suggestionsForGroup(g) {
     if (!groupMode || !g || !g.items || g.items.length <= 1) return [];
     if (Array.isArray(g.suggestions)) return g.suggestions;
