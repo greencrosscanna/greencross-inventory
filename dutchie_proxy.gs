@@ -273,6 +273,8 @@ function doGet(e) {
     if (params.action === 'cogs')           return jsonOut(getCOGS(params));
     if (params.action === 'sales')          return jsonOut(getSales(params));
     if (params.action === 'lostsales')      return jsonOut(getLostSales(params));
+    if (params.action === 'assortment')     return jsonOut(getAssortmentHealth(params));
+    if (params.action === 'assortmentconfig') return jsonOut(getSubstitutionConfig_());
     if (params.action === 'storetxhistory') return jsonOut(getStoreTxHistory(params));
     if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
@@ -1171,6 +1173,143 @@ function getLostSales(params) {
     } : { exact: 0, estimated: 0 },
     top: top.slice(0, 25),
   };
+}
+
+// ─── SUBSTITUTION / ASSORTMENT MODEL ────────────────────────────────────────────
+// Two kinds of out-of-stock (Wave 3): CONTINUITY SKUs (specific product customers want by name —
+// Strawberry Kiwi Gummy) where an OOS = real lost revenue; and SUBSTITUTABLE categories (flower strains,
+// Fatty/infused pre-rolls) where a single SKU OOS is just rotation — the customer swaps within the group,
+// so what matters is BREADTH (enough active varieties), not any one SKU. Substitutable groups are managed
+// either at the CATEGORY level (flower: N total strains, brand-agnostic) or the BRAND level (infused
+// pre-rolls: 10 Mule, 5 Meraki — brand-concentrated). Config is Tawny-editable via two sheets; unconfigured
+// categories default to CONTINUITY (the safe choice — never silently hides a real loss).
+const SUBSTITUTION_CONFIG_SHEET = 'Substitution Config';
+const SUBSTITUTION_BRAND_SHEET = 'Substitution Brand Targets';
+const SUBSTITUTION_DEFAULTS = { // seed values — Tawny tunes the targets in the sheet
+  'Bulk Cannabis Flower': { mode: 'substitutable', groupBy: 'category', target: 40 },
+  'Cannabis Bulk Shake':  { mode: 'substitutable', groupBy: 'category', target: 15 },
+  '1g Pre-Roll':          { mode: 'substitutable', groupBy: 'category', target: 20 },
+  'Pre-Roll Pack':        { mode: 'substitutable', groupBy: 'category', target: 20 },
+  'Extract (Solid)':      { mode: 'substitutable', groupBy: 'category', target: 25 },
+  'Extract (Liquid)':     { mode: 'substitutable', groupBy: 'category', target: 25 },
+  'Concentrate':          { mode: 'substitutable', groupBy: 'category', target: 15 },
+  'Blunts':               { mode: 'substitutable', groupBy: 'category', target: 10 },
+  'Infused Pre-roll':     { mode: 'substitutable', groupBy: 'brand',    target: 5 }, // default per-brand floor
+};
+const SUBSTITUTION_BRAND_DEFAULTS = {
+  'Infused Pre-roll': { 'Mule Extracts': 10, 'Meraki Gardens': 5 },
+};
+
+// Read (and first-time seed) the substitution config. Returns { categories:{catLower:{category,mode,groupBy,
+// target}}, brandTargets:{catLower:{brandLower:{brand,target}}} }. Sheets override code defaults.
+function getSubstitutionConfig_() {
+  const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
+  let cs = ss.getSheetByName(SUBSTITUTION_CONFIG_SHEET);
+  if (!cs) {
+    cs = ss.insertSheet(SUBSTITUTION_CONFIG_SHEET);
+    cs.getRange(1, 1, 1, 4).setValues([['category', 'mode', 'groupBy', 'target']]);
+    const rows = Object.keys(SUBSTITUTION_DEFAULTS).map(cat => { const d = SUBSTITUTION_DEFAULTS[cat]; return [cat, d.mode, d.groupBy, d.target]; });
+    if (rows.length) cs.getRange(2, 1, rows.length, 4).setValues(rows);
+    cs.setFrozenRows(1);
+  }
+  let bs = ss.getSheetByName(SUBSTITUTION_BRAND_SHEET);
+  if (!bs) {
+    bs = ss.insertSheet(SUBSTITUTION_BRAND_SHEET);
+    bs.getRange(1, 1, 1, 3).setValues([['category', 'brand', 'target']]);
+    const rows = [];
+    Object.keys(SUBSTITUTION_BRAND_DEFAULTS).forEach(cat => Object.keys(SUBSTITUTION_BRAND_DEFAULTS[cat]).forEach(brand => rows.push([cat, brand, SUBSTITUTION_BRAND_DEFAULTS[cat][brand]])));
+    if (rows.length) bs.getRange(2, 1, rows.length, 3).setValues(rows);
+    bs.setFrozenRows(1);
+  }
+  const categories = {};
+  if (cs.getLastRow() >= 2) cs.getRange(2, 1, cs.getLastRow() - 1, 4).getValues().forEach(r => {
+    const cat = String(r[0] || '').trim(); if (!cat) return;
+    categories[cat.toLowerCase()] = { category: cat, mode: String(r[1] || 'continuity').trim().toLowerCase(), groupBy: String(r[2] || 'category').trim().toLowerCase(), target: Number(r[3] || 0) };
+  });
+  const brandTargets = {};
+  if (bs.getLastRow() >= 2) bs.getRange(2, 1, bs.getLastRow() - 1, 3).getValues().forEach(r => {
+    const cat = String(r[0] || '').trim(), brand = String(r[1] || '').trim(); if (!cat || !brand) return;
+    (brandTargets[cat.toLowerCase()] || (brandTargets[cat.toLowerCase()] = {}))[brand.toLowerCase()] = { brand: brand, target: Number(r[2] || 0) };
+  });
+  return { categories: categories, brandTargets: brandTargets };
+}
+
+// Assortment health: per store, per substitutable group, active variety count (distinct in-stock SKUs) vs
+// target, with a status. This is the breadth guardrail — the input for the grouping view and for
+// reclassifying the Lost Revenue pill (a substitutable group at/above target contributes $0).
+function getAssortmentHealth(params) {
+  const cfg = getSubstitutionConfig_();
+  // Current active varieties from the latest daily snapshot — complete for all 6 stores in one fast tail
+  // read (today's rows are appended at the end). This is the hardened snapshot foundation; the operational
+  // bundle is sometimes partially built (missing stores), so we don't depend on it here.
+  const invByStore = {};
+  let source = 'snapshot', latest = '';
+  try {
+    const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
+    const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
+    if (sheet && sheet.getLastRow() > 1) {
+      const lastRow = sheet.getLastRow();
+      const tail = Math.min(lastRow - 1, 15000);
+      const rows = sheet.getRange(lastRow - tail + 1, 1, tail, 7).getValues(); // 7 cols → includes qty (col 7)
+      rows.forEach(r => { const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10); if (d > latest) latest = d; });
+      rows.forEach(r => {
+        const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10);
+        if (d !== latest) return;
+        const store = String(r[1] || '').trim();
+        if (!store) return;
+        (invByStore[store] || (invByStore[store] = [])).push({ name: String(r[2] || ''), brand: String(r[3] || ''), category: String(r[4] || ''), sku: String(r[5] || ''), qty: Number(r[6] || 0) });
+      });
+    }
+  } catch (e) {}
+  // Fallback: if the snapshot sheet was somehow empty, try the operational bundle.
+  if (!Object.keys(invByStore).length) {
+    source = 'bundle';
+    try {
+      const bundle = readOperationalSnapshot_('inventory_bundle_v1');
+      if (bundle && bundle.inventory) bundle.inventory.forEach(st => { if (st && st.store && st.products) invByStore[st.store] = st.products; });
+    } catch (e) {}
+  }
+  // distinct in-stock SKUs per (category,store) and per (category,brand,store)
+  const catSets = {}, brandSets = {};
+  STORES.forEach(store => (invByStore[store] || []).forEach(p => {
+    if (!(Number(p.qty) > 0)) return;
+    const catL = String(p.category || '').trim().toLowerCase();
+    const sku = String(p.sku || p.name || '').trim();
+    if (!catL || !sku) return;
+    const c = cfg.categories[catL];
+    if (!c || c.mode !== 'substitutable') return;
+    if (c.groupBy === 'brand') {
+      const brandL = String(p.brand || '').trim().toLowerCase();
+      const b = brandSets[catL] || (brandSets[catL] = {});
+      const bb = b[brandL] || (b[brandL] = {});
+      (bb[store] || (bb[store] = {}))[sku] = 1;
+    } else {
+      const cc = catSets[catL] || (catSets[catL] = {});
+      (cc[store] || (cc[store] = {}))[sku] = 1;
+    }
+  }));
+  const statusOf = (active, target) => target <= 0 ? 'ok' : (active >= target ? 'ok' : (active >= Math.ceil(target * 0.6) ? 'short' : 'critical'));
+  const groups = [];
+  Object.keys(cfg.categories).forEach(catL => {
+    const c = cfg.categories[catL];
+    if (c.mode !== 'substitutable') return;
+    if (c.groupBy === 'brand') {
+      const bt = cfg.brandTargets[catL] || {};
+      Object.keys(bt).forEach(brandL => {
+        const target = bt[brandL].target, byStore = {}, statusByStore = {};
+        STORES.forEach(s => { const n = Object.keys((brandSets[catL] && brandSets[catL][brandL] && brandSets[catL][brandL][s]) || {}).length; byStore[s] = n; statusByStore[s] = statusOf(n, target); });
+        groups.push({ category: c.category, groupBy: 'brand', group: bt[brandL].brand, label: c.category + ' — ' + bt[brandL].brand, target: target, byStore: byStore, statusByStore: statusByStore });
+      });
+    } else {
+      const target = c.target, byStore = {}, statusByStore = {};
+      STORES.forEach(s => { const n = Object.keys((catSets[catL] && catSets[catL][s]) || {}).length; byStore[s] = n; statusByStore[s] = statusOf(n, target); });
+      groups.push({ category: c.category, groupBy: 'category', group: '', label: c.category, target: target, byStore: byStore, statusByStore: statusByStore });
+    }
+  });
+  const summary = {};
+  STORES.forEach(s => { summary[s] = { ok: 0, short: 0, critical: 0 }; });
+  groups.forEach(g => STORES.forEach(s => { summary[s][g.statusByStore[s]]++; }));
+  return { ok: true, generatedAt: new Date().toISOString(), source: source, asOf: latest, stores: STORES, groups: groups, summary: summary };
 }
 
 function transferDays_(a, b) {
