@@ -888,6 +888,23 @@ if (location.protocol === 'file:') {
   .grp-child td { background: rgba(0,0,0,.18); }
   .grp-toggle { display:inline-block; width:14px; text-align:center; color:var(--muted); font-size:10px; margin-right:3px; transition:transform .15s; user-select:none; }
   .grp-toggle.open { transform:rotate(90deg); color:var(--text); }
+  /* Assortment / grouping view */
+  #groupToggleBtn.active { border-color:var(--green); color:var(--green); background:rgba(29,158,117,.1); }
+  .assort-note { font-size:12px; color:var(--muted); margin:2px 2px 10px; line-height:1.4; }
+  .assort-foot { font-size:11px; color:var(--muted); margin:10px 2px 2px; }
+  .assort-wrap { overflow-x:auto; }
+  .assort-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .assort-table th, .assort-table td { padding:6px 10px; border-bottom:1px solid var(--border); text-align:center; white-space:nowrap; }
+  .assort-table th:first-child, .assort-table td:first-child { text-align:left; }
+  .assort-table thead th { color:var(--muted); font-weight:600; }
+  .assort-cathead td { color:var(--text); font-weight:700; background:rgba(255,255,255,.03); font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+  .assort-grouprow-cat { color:var(--text); font-weight:600; }
+  .assort-grouprow-brand { color:var(--muted); padding-left:22px !important; }
+  .assort-tgt { color:var(--muted); font-size:11px; }
+  .assort-cell { font-variant-numeric:tabular-nums; font-weight:700; border-radius:5px; padding:2px 9px; display:inline-block; min-width:30px; }
+  .assort-ok { color:var(--green); }
+  .assort-short { color:var(--amber); background:rgba(245,180,60,.14); }
+  .assort-critical { color:var(--red); background:rgba(240,90,90,.16); }
   .grp-store-dots { display:flex; gap:3px; align-items:center; flex-wrap:wrap; }
   .grp-store-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 
@@ -1790,6 +1807,7 @@ if (location.protocol === 'file:') {
     <select class="inv-select" id="invCategory"><option value="">All Categories</option></select>
     <select class="inv-select" id="invBrand"><option value="">All Brands</option></select>
     <select class="inv-select" id="invVendor"><option value="">All Vendors</option></select>
+    <button class="cat-toggle-btn" id="groupToggleBtn" onclick="toggleAssortmentView()" title="See substitutable categories (flower strains, Fatty pre-rolls) as groups with variety-count vs target — for breadth purchasing decisions">⊞ Grouping</button>
     <button class="cat-toggle-btn" id="catToggleBtn" onclick="toggleCatExcludeRow()">Hide categories</button>
     <button class="inv-clear-filters-btn" id="invClearFilters" onclick="clearAllInvFilters()" title="Clear all filters" style="display:none">✕ Clear</button>
   </div>
@@ -5163,8 +5181,60 @@ function renderRestockPanel(candidates, selectedStore) {
     </div>`;
 }
 
+// ── Assortment / grouping view (substitution model breadth guardrail) ──────────
+function toggleAssortmentView() {
+  state.assortmentView = !state.assortmentView;
+  const btn = document.getElementById('groupToggleBtn');
+  if (btn) btn.classList.toggle('active', state.assortmentView);
+  if (state.assortmentView && !state.assortment) loadAssortment();
+  renderInventory();
+}
+
+async function loadAssortment() {
+  try {
+    const res = await proxyFetch({ action: 'assortment' }, 'inv_assortment_v1', 15 * 60 * 1000);
+    if (res && res.ok) { state.assortment = res; if (state.assortmentView) renderInventory(); }
+  } catch (e) { /* optional overlay */ }
+}
+
+function renderAssortmentView(el) {
+  const a = state.assortment;
+  if (!a) { el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading assortment…</div>'; return; }
+  const stores = a.stores || [];
+  const statusClass = s => s === 'critical' ? 'assort-critical' : (s === 'short' ? 'assort-short' : 'assort-ok');
+  let lastCat = '';
+  const body = (a.groups || []).map(g => {
+    const isBrand = g.groupBy === 'brand';
+    const catHead = (isBrand && g.category !== lastCat)
+      ? `<tr class="assort-cathead"><td colspan="${stores.length + 2}">${escapeHtml(g.category)}</td></tr>` : '';
+    if (isBrand) lastCat = g.category; else lastCat = '';
+    const label = isBrand ? g.group : g.category;
+    const cells = stores.map(s => {
+      const v = (g.byStore || {})[s] || 0;
+      return `<td><span class="assort-cell ${statusClass((g.statusByStore || {})[s])}">${v}</span></td>`;
+    }).join('');
+    return catHead + `<tr>
+      <td class="${isBrand ? 'assort-grouprow-brand' : 'assort-grouprow-cat'}">${escapeHtml(label)}</td>
+      <td class="assort-tgt">≥${g.target}</td>
+      ${cells}
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="assort-note">Substitutable groups — active variety count per store vs target.
+      <span style="color:var(--green)">green</span> = healthy (customers substitute → not lost revenue),
+      <span style="color:var(--amber)">amber</span>/<span style="color:var(--red)">red</span> = thin, real stock-out risk.
+      Continuity items (edibles, cartridges, hardware) are managed item-by-item — toggle Grouping off to see them.</div>
+    <div class="assort-wrap"><table class="assort-table">
+      <thead><tr><th>Group</th><th>Target</th>${stores.map(s => `<th>${escapeHtml(s)}</th>`).join('')}</tr></thead>
+      <tbody>${body || `<tr><td colspan="${stores.length + 2}" style="color:var(--muted);padding:16px">No substitutable groups configured.</td></tr>`}</tbody>
+    </table></div>
+    <div class="assort-foot">As of ${escapeHtml(a.asOf || '—')} · Tawny tunes modes &amp; targets in the “Substitution Config” and “Substitution Brand Targets” sheets.</div>`;
+}
+
 function renderInventory() {
   const el = document.getElementById('inventoryContent');
+  if (!el) return;
+  if (state.assortmentView) { renderAssortmentView(el); return; } // grouping toggle → breadth view
   if (!state.inventoryData) return;
   const flagged = getFlaggedSet();
 
@@ -7404,7 +7474,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.66';
+const APP_VERSION = 'v2.67';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
