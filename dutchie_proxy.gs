@@ -1093,19 +1093,32 @@ function getLostSales(params) {
   const gm = computeGmByStore_(28);
 
   // In-stock exclusion set from the live operational snapshot (store::sku / store::name for qty>0).
+  // In-stock set + substitutable-group breadth from the latest snapshot (reliable for all stores; the
+  // operational bundle is sometimes only partially built). Breadth drives the substitution discount below.
+  const cfg = getSubstitutionConfig_();
+  const snap = readLatestSnapshotInventory_();
   const inStock = {};
-  try {
-    const snap = readOperationalSnapshot_('inventory_bundle_v1');
-    (snap && snap.inventory || []).forEach(st => (st.products || []).forEach(p => {
-      if (!(Number(p.qty || 0) > 0)) return;
-      const store = st.store || p.store;
-      if (p.sku) inStock[store + '::' + String(p.sku)] = true;
-      if (p.name) inStock[store + '::' + String(p.name)] = true;
-    }));
-  } catch (e) { _logGasError('getLostSales/inStock', e.message); }
+  STORES.forEach(store => (snap.invByStore[store] || []).forEach(p => {
+    if (!(Number(p.qty || 0) > 0)) return;
+    if (p.sku) inStock[store + '::' + String(p.sku)] = true;
+    if (p.name) inStock[store + '::' + String(p.name)] = true;
+  }));
+  if (!Object.keys(inStock).length) { // fallback for OOS detection only, if the snapshot was empty
+    try {
+      const bundle = readOperationalSnapshot_('inventory_bundle_v1');
+      (bundle && bundle.inventory || []).forEach(st => (st.products || []).forEach(p => {
+        if (!(Number(p.qty || 0) > 0)) return; const store = st.store || p.store;
+        if (p.sku) inStock[store + '::' + String(p.sku)] = true;
+        if (p.name) inStock[store + '::' + String(p.name)] = true;
+      }));
+    } catch (e) { _logGasError('getLostSales/inStock', e && e.message); }
+  }
+  const sets = assortmentActiveSets_(snap.invByStore, cfg);
+  const catCnt = (catL, store) => Object.keys((sets.catSets[catL] && sets.catSets[catL][store]) || {}).length;
+  const brandCnt = (catL, bl, store) => Object.keys((sets.brandSets[catL] && sets.brandSets[catL][bl] && sets.brandSets[catL][bl][store]) || {}).length;
 
   const todayMs = Date.now();
-  let total = 0, totalUnits = 0, bankedRev = 0, namedRev = 0, estRev = 0, counted = 0;
+  let total = 0, grossTotal = 0, totalUnits = 0, bankedRev = 0, namedRev = 0, estRev = 0, counted = 0;
   const byStore = {}, byStoreUnits = {}, byProduct = {}, top = [];
   STORES.forEach(s => { byStore[s] = 0; byStoreUnits[s] = 0; });
 
@@ -1147,17 +1160,39 @@ function getLostSales(params) {
       else if (named > 0)  { price = named;  src = 'name'; }
       else if (cost > 0)   { price = cost / (1 - storeGm); src = 'margin'; }
       else                 { price = 0; src = 'none'; }
-      const missed = Math.round(lostUnits * price * 100) / 100;
-      total += missed; totalUnits += lostUnits; counted++;
+      const missedFull = Math.round(lostUnits * price * 100) / 100;
+      grossTotal += missedFull;
+      // Substitution discount: in a SUBSTITUTABLE group an OOS SKU only loses the fraction of demand that
+      // can't substitute to an in-stock variety — keep = 1 − min(1, activeVarieties/target). Healthy group
+      // (active ≥ target) → keep ≈ 0 → ~$0 lost. Continuity/unconfigured → keep 1 (full). Ignore → skipped.
+      const catL = String(v.category || '').trim().toLowerCase();
+      const c = cfg.categories[catL];
+      let keep = 1;
+      if (c) {
+        if (c.mode === 'ignore') return;
+        if (c.mode === 'substitutable') {
+          if (c.groupBy === 'brand') {
+            const bl = String(v.brand || '').trim().toLowerCase();
+            const bt = (cfg.brandTargets[catL] || {})[bl];
+            keep = bt ? (bt.target > 0 ? 1 - Math.min(1, brandCnt(catL, bl, store) / bt.target) : 0) : 0; // untracked brand → fully substitutable
+          } else {
+            keep = c.target > 0 ? 1 - Math.min(1, catCnt(catL, store) / c.target) : 0;
+          }
+        }
+      }
+      if (keep <= 0) return; // fully substituted → contributes nothing
+      const missed = Math.round(missedFull * keep * 100) / 100;
+      const unitsKept = Math.round(lostUnits * keep * 10) / 10;
+      total += missed; totalUnits += unitsKept; counted++;
       if (src === 'banked') bankedRev += missed; else if (src === 'name') namedRev += missed; else estRev += missed;
-      if (store in byStore) { byStore[store] += missed; byStoreUnits[store] += lostUnits; }
+      if (store in byStore) { byStore[store] += missed; byStoreUnits[store] += unitsKept; }
       if (missed > 0) { // per-product loss for the Value column (keyed by sku and name for robust FE lookup)
         const mr = Math.round(missed);
         if (sku) byProduct[store + '::' + sku] = mr;
         byProduct[store + '::' + name] = mr;
       }
       top.push({ store: store, name: name, sku: sku, oosDays: oosDays, vel: Math.round(vel * 100) / 100,
-        lostUnits: lostUnits, price: Math.round(price * 100) / 100, priceSrc: src, missed: Math.round(missed) });
+        lostUnits: unitsKept, price: Math.round(price * 100) / 100, priceSrc: src, keep: Math.round(keep * 100) / 100, missed: Math.round(missed) });
     });
   });
 
@@ -1166,6 +1201,8 @@ function getLostSales(params) {
   return {
     ok: true, generatedAt: new Date().toISOString(), capDays: CAP_DAYS,
     total: Math.round(total), totalUnits: Math.round(totalUnits * 10) / 10, oosCounted: counted,
+    grossTotal: Math.round(grossTotal), substitutionSavings: Math.round(grossTotal - total), // before/after the substitution discount
+    asOf: snap.asOf,
     byStore: byStore, byStoreUnits: byStoreUnits, byProduct: byProduct,
     gmByStore: gm.byStore, gmAll: Math.round(gm.all * 1000) / 1000,
     priceMix: total > 0 ? {
@@ -1246,13 +1283,11 @@ function getSubstitutionConfig_() {
 // Assortment health: per store, per substitutable group, active variety count (distinct in-stock SKUs) vs
 // target, with a status. This is the breadth guardrail — the input for the grouping view and for
 // reclassifying the Lost Revenue pill (a substitutable group at/above target contributes $0).
-function getAssortmentHealth(params) {
-  const cfg = getSubstitutionConfig_();
-  // Current active varieties from the latest daily snapshot — complete for all 6 stores in one fast tail
-  // read (today's rows are appended at the end). This is the hardened snapshot foundation; the operational
-  // bundle is sometimes partially built (missing stores), so we don't depend on it here.
-  const invByStore = {};
-  let source = 'snapshot', latest = '';
+// Latest daily snapshot as in-stock products per store — complete for all 6 stores in one fast tail read
+// (today's rows are appended at the end). The hardened snapshot foundation; we don't use the operational
+// bundle here because it's sometimes only partially built. Returns { asOf, invByStore }.
+function readLatestSnapshotInventory_() {
+  const invByStore = {}; let latest = '';
   try {
     const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
     const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
@@ -1264,40 +1299,48 @@ function getAssortmentHealth(params) {
       rows.forEach(r => {
         const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10);
         if (d !== latest) return;
-        const store = String(r[1] || '').trim();
-        if (!store) return;
+        const store = String(r[1] || '').trim(); if (!store) return;
         (invByStore[store] || (invByStore[store] = [])).push({ name: String(r[2] || ''), brand: String(r[3] || ''), category: String(r[4] || ''), sku: String(r[5] || ''), qty: Number(r[6] || 0) });
       });
     }
-  } catch (e) {}
-  // Fallback: if the snapshot sheet was somehow empty, try the operational bundle.
-  if (!Object.keys(invByStore).length) {
-    source = 'bundle';
-    try {
-      const bundle = readOperationalSnapshot_('inventory_bundle_v1');
-      if (bundle && bundle.inventory) bundle.inventory.forEach(st => { if (st && st.store && st.products) invByStore[st.store] = st.products; });
-    } catch (e) {}
-  }
-  // distinct in-stock SKUs per (category,store) and per (category,brand,store)
+  } catch (e) { _logGasError('readLatestSnapshotInventory_', e && e.message); }
+  return { asOf: latest, invByStore: invByStore };
+}
+
+// Distinct in-stock SKUs per substitutable group. Returns { catSets:{catL:{store:{sku:1}}},
+// brandSets:{catL:{brandL:{store:{sku:1}}}} } — samples/non-inventory excluded. Shared by the assortment
+// health engine and the lost-revenue substitution discount so both see the same breadth.
+function assortmentActiveSets_(invByStore, cfg) {
   const catSets = {}, brandSets = {};
   STORES.forEach(store => (invByStore[store] || []).forEach(p => {
     if (!(Number(p.qty) > 0)) return;
-    if (isNonInventoryName_(p.name)) return; // samples/testers/rounding/gift certs aren't varieties
+    if (isNonInventoryName_(p.name)) return;
     const catL = String(p.category || '').trim().toLowerCase();
     const sku = String(p.sku || p.name || '').trim();
     if (!catL || !sku) return;
     const c = cfg.categories[catL];
     if (!c || c.mode !== 'substitutable') return;
     if (c.groupBy === 'brand') {
-      const brandL = String(p.brand || '').trim().toLowerCase();
-      const b = brandSets[catL] || (brandSets[catL] = {});
-      const bb = b[brandL] || (b[brandL] = {});
-      (bb[store] || (bb[store] = {}))[sku] = 1;
+      const bl = String(p.brand || '').trim().toLowerCase();
+      (((brandSets[catL] || (brandSets[catL] = {}))[bl] || (brandSets[catL][bl] = {}))[store] || (brandSets[catL][bl][store] = {}))[sku] = 1;
     } else {
-      const cc = catSets[catL] || (catSets[catL] = {});
-      (cc[store] || (cc[store] = {}))[sku] = 1;
+      ((catSets[catL] || (catSets[catL] = {}))[store] || (catSets[catL][store] = {}))[sku] = 1;
     }
   }));
+  return { catSets: catSets, brandSets: brandSets };
+}
+
+function getAssortmentHealth(params) {
+  const cfg = getSubstitutionConfig_();
+  const snap = readLatestSnapshotInventory_();
+  let invByStore = snap.invByStore, source = 'snapshot';
+  const latest = snap.asOf;
+  if (!Object.keys(invByStore).length) { // fallback: operational bundle
+    source = 'bundle'; invByStore = {};
+    try { const bundle = readOperationalSnapshot_('inventory_bundle_v1'); if (bundle && bundle.inventory) bundle.inventory.forEach(st => { if (st && st.store && st.products) invByStore[st.store] = st.products; }); } catch (e) {}
+  }
+  const sets = assortmentActiveSets_(invByStore, cfg);
+  const catSets = sets.catSets, brandSets = sets.brandSets;
   const statusOf = (active, target) => target <= 0 ? 'ok' : (active >= target ? 'ok' : (active >= Math.ceil(target * 0.6) ? 'short' : 'critical'));
   const groups = [];
   Object.keys(cfg.categories).forEach(catL => {

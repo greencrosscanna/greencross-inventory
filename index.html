@@ -1710,7 +1710,7 @@ if (location.protocol === 'file:') {
         <div class="iwp-label">Gross Margin <span style="opacity:.5">(last 28d)</span></div>
         <div class="iwp-value" id="iwpMargin" style="color:var(--green)">—</div>
       </div>
-      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated sales lost to stock-outs: for every out-of-stock product, days-out-of-stock × 28-day average daily demand × price (real shelf price where known, otherwise cost ÷ gross margin). Days-out is capped at 28 per item. An estimate today — it sharpens as real prices bank. Click to filter to OOS. Keep it low!" style="cursor:pointer">
+      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated sales lost to stock-outs. For staple products (edibles, cartridges, hardware): days-out-of-stock × 28-day average daily demand × price (real shelf price where known, otherwise cost ÷ gross margin), capped at 28 days per item. For substitutable groups (flower strains, Fatty pre-rolls) a single stock-out only counts to the extent the group has fallen below its target variety count — a well-stocked group counts ~$0 because customers switch to another strain/flavor. An estimate that sharpens as real prices bank. Click to filter to OOS. Keep it low!" style="cursor:pointer">
         <div class="iwp-label" style="color:var(--red)">Lost Revenue</div>
         <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)">—</div>
       </div>
@@ -7404,7 +7404,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.65';
+const APP_VERSION = 'v2.66';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
