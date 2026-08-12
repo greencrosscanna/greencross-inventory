@@ -5210,13 +5210,16 @@ function renderInventory() {
   });
   const counts = { oos: 0, critical: 0, low: 0, watch: 0, ok: 0, slow: 0 };
   const totalVal = { oos: 0, critical: 0, low: 0, watch: 0, ok: 0, slow: 0 };
-  let totalInvValue = 0;
+  // "Inventory Value" pill = the TRUE total on-hand value @ cost for the current store scope — filtered
+  // by store only, NOT reduced by hide/flag/category/shake/sample filters (those only hide rows from view).
+  const totalInvValue = state.inventoryData
+    .filter(p => state.store === 'All' || p.store === state.store)
+    .reduce((sum, p) => sum + (p.value || 0), 0);
   let totalMissedRevenue = 0;
   let totalLostUnits = 0;
   for (const p of storeScoped) {
     counts[p.status]++;
     totalVal[p.status] += p.value || 0;
-    totalInvValue += p.value || 0;
     if (p.status === 'oos') {
       const d = betaDecisionForProduct(p);
       if (d) { totalMissedRevenue += Number(d.missedRevenue || 0); totalLostUnits += Number(d.lostUnits || 0); }
@@ -7343,7 +7346,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.56';
+const APP_VERSION = 'v2.57';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
