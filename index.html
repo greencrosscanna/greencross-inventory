@@ -1710,7 +1710,7 @@ if (location.protocol === 'file:') {
         <div class="iwp-label">Gross Margin <span style="opacity:.5">(last 28d)</span></div>
         <div class="iwp-value" id="iwpMargin" style="color:var(--green)">—</div>
       </div>
-      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated revenue lost while OOS products have been out of stock — click to filter to OOS" style="cursor:pointer;display:none">
+      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated revenue lost while OOS products have been out of stock — click to filter to OOS. Keep it low!" style="cursor:pointer">
         <div class="iwp-label" style="color:var(--red)">Lost Revenue</div>
         <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)">—</div>
       </div>
@@ -5965,14 +5965,15 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
   // Lost revenue pill — only visible when there's beta data for OOS products
   const missedPill = el('iwpMissedRev');
   if (missedPill) {
+    // Always visible in the top row — the goal is to keep this number low. Shows the $ estimate when
+    // available, lost units if we have velocity but no price, and — while the estimate is still loading.
+    missedPill.style.display = '';
     if (totalMissedRevenue > 0) {
       setFinancial('iwpMissedRevVal', fmtFull(totalMissedRevenue));
-      missedPill.style.display = '';
     } else if (totalLostUnits > 0) {
       const node = el('iwpMissedRevVal'); if (node) node.textContent = Math.round(totalLostUnits) + 'u';
-      missedPill.style.display = '';
     } else {
-      missedPill.style.display = 'none';
+      setFinancial('iwpMissedRevVal', '—');
     }
   }
   const _sData = state.inv28Sales || state.salesData;
@@ -7351,7 +7352,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.60';
+const APP_VERSION = 'v2.61';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
