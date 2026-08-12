@@ -1572,9 +1572,6 @@ if (location.protocol === 'file:') {
       <div class="settings-row">
         <button class="settings-btn-sm" id="installWarmTriggerBtn" onclick="installWarmTriggerNow()" style="flex:1;text-align:center">Install Nightly Trigger</button>
       </div>
-      <div class="settings-row">
-        <button class="settings-btn-sm" id="velBackfillBtn" onclick="triggerVelBackfillNow()" style="flex:1;text-align:center">Trigger Velocity Backfill</button>
-      </div>
       <div class="settings-row" id="gasErrorRow" style="display:none">
         <span class="settings-label" style="color:var(--amber)">⚠ GAS Errors</span>
         <span id="gasErrorCount" style="font-size:11px;color:var(--amber)"></span>
@@ -7832,30 +7829,7 @@ async function installWarmTriggerNow() {
   }
 }
 
-async function triggerVelBackfillNow() {
-  const btn = document.getElementById('velBackfillBtn');
-  const oldText = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  try {
-    const result = await withTimeout(proxyFetch({ action: 'velbackfill' }), 30000, 'Vel backfill');
-    if (btn) btn.textContent = result.ok ? '✓ Backfill running' : ('Error: ' + (result.message || 'unknown'));
-    if (result.ok) {
-      // Poll status briefly so the user gets feedback
-      setTimeout(async () => {
-        try {
-          const st = await proxyFetch({ action: 'velbackfillstatus' });
-          if (btn) btn.title = st.status || '';
-        } catch {}
-      }, 5000);
-    }
-  } catch(e) {
-    if (btn) btn.textContent = 'Failed: ' + (e.message || 'error');
-  } finally {
-    setTimeout(() => {
-      if (btn) { btn.disabled = false; btn.textContent = oldText || 'Trigger Velocity Backfill'; }
-    }, 6000);
-  }
-}
+// (triggerVelBackfillNow removed — local velocity backfill retired; velocity is owned by GX Core.)
 
 // ── Category aliases ─────────────────────────────────────
 function getCatAliases() {
