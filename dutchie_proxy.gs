@@ -272,6 +272,7 @@ function doGet(e) {
     // COGS / sales dashboard
     if (params.action === 'cogs')           return jsonOut(getCOGS(params));
     if (params.action === 'sales')          return jsonOut(getSales(params));
+    if (params.action === 'lostsales')      return jsonOut(getLostSales(params));
     if (params.action === 'storetxhistory') return jsonOut(getStoreTxHistory(params));
     if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
@@ -1008,6 +1009,148 @@ function estimateLostSales_(p, lastSeenMap, velocity) {
 
 function productKey_(p) {
   return String(p.sku || p.name || '').trim();
+}
+
+// Single pass over the daily 'Inv Snapshot' history → per (store,key) the LATEST-dated record's
+// { lastSeen (YYYY-MM-DD), unitCost (value/qty), unitPrice }. Keys: store::sku, store::name, and
+// store::(sku||name). unitPrice is 0 for rows written before price-banking began (col 9). Powers the
+// lost-sales estimate: unitCost is real; unitPrice becomes real once ~2 weeks of history accrues.
+function buildOosLastSeenCostMap_() {
+  const out = {};
+  try {
+    const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
+    const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return out;
+    const width = Math.max(8, sheet.getLastColumn());
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+    const put = (key, dateStr, cost, price) => {
+      const cur = out[key];
+      if (!cur || dateStr > cur.lastSeen) out[key] = { lastSeen: dateStr, unitCost: cost, unitPrice: price };
+    };
+    for (const row of data) {
+      const store = String(row[1] || '').trim();
+      const name = String(row[2] || '').trim(), sku = String(row[5] || '').trim();
+      if (!store || (!name && !sku)) continue;
+      const dateRaw = row[0];
+      const dateStr = dateRaw instanceof Date ? dateRaw.toISOString().slice(0, 10) : String(dateRaw).slice(0, 10);
+      const qty = Number(row[6] || 0), value = Number(row[7] || 0);
+      const cost = qty > 0 ? Math.round((value / qty) * 100) / 100 : 0;
+      const price = Number(row[8] || 0);
+      if (sku) put(store + '::' + sku, dateStr, cost, price);
+      if (name) put(store + '::' + name, dateStr, cost, price);
+      put(store + '::' + (sku || name), dateStr, cost, price);
+    }
+  } catch (err) {
+    _logGasError('buildOosLastSeenCostMap_', err.message);
+  }
+  return out;
+}
+
+// Gross margin % per store over the last `days` (default 28), from the income sheet (sales & COGS) —
+// the same basis as the app's Gross Margin pill. Returns { byStore:{store:gm}, all:gm } with gm in [0,1).
+function computeGmByStore_(days) {
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - (days || 28) * 86400000).toISOString().slice(0, 10);
+  const acc = {}; let sAll = 0, cAll = 0;
+  const bump = (store, s, c) => { const e = acc[store] || (acc[store] = { s: 0, c: 0 }); e.s += s; e.c += c; };
+  try { (getSales({ from, to }).data || []).forEach(r => { bump(r.store, Number(r.sales || 0), 0); sAll += Number(r.sales || 0); }); }
+  catch (e) { _logGasError('computeGmByStore_/sales', e.message); }
+  try { (getCOGS({ from, to }).data || []).forEach(r => { bump(r.store, 0, Number(r.cogs || 0)); cAll += Number(r.cogs || 0); }); }
+  catch (e) { _logGasError('computeGmByStore_/cogs', e.message); }
+  const gm = (s, c) => (s > 0 ? Math.max(0, Math.min(0.95, (s - c) / s)) : 0);
+  const byStore = {};
+  Object.keys(acc).forEach(st => { byStore[st] = gm(acc[st].s, acc[st].c); });
+  return { byStore: byStore, all: gm(sAll, cAll) };
+}
+
+// Green Cross encodes the shelf price in many product names ("$200 | Puffco…", "$2.00 | Raw…").
+// When present it's the EXACT retail price — better than any estimate — so we prefer it over the
+// margin fallback. Bulk flower (sold by weight) has no such prefix and falls through to the estimate.
+function parseNamePrice_(name) {
+  const m = String(name || '').match(/^\s*\$\s*([\d,]+(?:\.\d{1,2})?)/);
+  if (!m) return 0;
+  const v = Number(m[1].replace(/,/g, ''));
+  return v > 0 && v < 100000 ? v : 0;
+}
+
+// Estimated lost SALES across every out-of-stock product (not just the handful in the persisted feed).
+// For each product with velocity + a last-seen date that is NOT currently in stock:
+//   oosDays  = min(today − (lastSeen+1), capDays)      (capDays keeps long-discontinued items sane)
+//   lostUnits = oosDays × velocity
+//   price     = banked last-known retail  OR  lastKnownCost ÷ (1 − storeGrossMargin)
+//   missed$   = lostUnits × price
+// Store-scoped totals + top contributors; the frontend pill indexes byStore.
+function getLostSales(params) {
+  const CAP_DAYS = Math.max(7, Math.min(180, Number((params && params.capDays) || 90)));
+  const velMap = getVelocityMap();
+  const lastMap = buildOosLastSeenCostMap_();
+  const gm = computeGmByStore_(28);
+
+  // In-stock exclusion set from the live operational snapshot (store::sku / store::name for qty>0).
+  const inStock = {};
+  try {
+    const snap = readOperationalSnapshot_('inventory_bundle_v1');
+    (snap && snap.inventory || []).forEach(st => (st.products || []).forEach(p => {
+      if (!(Number(p.qty || 0) > 0)) return;
+      const store = st.store || p.store;
+      if (p.sku) inStock[store + '::' + String(p.sku)] = true;
+      if (p.name) inStock[store + '::' + String(p.name)] = true;
+    }));
+  } catch (e) { _logGasError('getLostSales/inStock', e.message); }
+
+  const todayMs = Date.now();
+  let total = 0, totalUnits = 0, bankedRev = 0, namedRev = 0, estRev = 0, counted = 0;
+  const byStore = {}, byStoreUnits = {}, top = [];
+  STORES.forEach(s => { byStore[s] = 0; byStoreUnits[s] = 0; });
+
+  Object.keys(velMap).forEach(store => {
+    const storeGm = (store in gm.byStore) ? gm.byStore[store] : gm.all;
+    const products = velMap[store] || {};
+    Object.keys(products).forEach(name => {
+      const v = products[name];
+      const sku = String(v.sku || '');
+      if (inStock[store + '::' + sku] || inStock[store + '::' + name]) return; // still in stock
+      if (!(v.qty90 > 0)) return;                                              // never sold here
+      const vel = v.vel14 > 0 ? v.vel14 : (v.vel28 > 0 ? v.vel28 : v.vel7);
+      if (!(vel > 0)) return;
+      const rec = lastMap[store + '::' + (sku || name)] || lastMap[store + '::' + sku] || lastMap[store + '::' + name];
+      if (!rec || !rec.lastSeen) return;                                       // no last-seen → can't age it
+      const oosStart = new Date(rec.lastSeen + 'T12:00:00Z');
+      oosStart.setUTCDate(oosStart.getUTCDate() + 1);
+      const rawDays = Math.floor((todayMs - oosStart.getTime()) / 86400000);
+      const oosDays = Math.max(0, Math.min(CAP_DAYS, rawDays));
+      if (oosDays <= 0) return;
+      const lostUnits = Math.round(oosDays * vel * 10) / 10;
+      const banked = Number(rec.unitPrice || 0);
+      const named = parseNamePrice_(name);
+      const cost = Number(rec.unitCost || 0);
+      let price, src;
+      if (banked > 0)      { price = banked; src = 'banked'; }
+      else if (named > 0)  { price = named;  src = 'name'; }
+      else if (cost > 0)   { price = cost / (1 - storeGm); src = 'margin'; }
+      else                 { price = 0; src = 'none'; }
+      const missed = Math.round(lostUnits * price * 100) / 100;
+      total += missed; totalUnits += lostUnits; counted++;
+      if (src === 'banked') bankedRev += missed; else if (src === 'name') namedRev += missed; else estRev += missed;
+      if (store in byStore) { byStore[store] += missed; byStoreUnits[store] += lostUnits; }
+      top.push({ store: store, name: name, sku: sku, oosDays: oosDays, vel: Math.round(vel * 100) / 100,
+        lostUnits: lostUnits, price: Math.round(price * 100) / 100, priceSrc: src, missed: Math.round(missed) });
+    });
+  });
+
+  Object.keys(byStore).forEach(s => { byStore[s] = Math.round(byStore[s]); byStoreUnits[s] = Math.round(byStoreUnits[s] * 10) / 10; });
+  top.sort((a, b) => b.missed - a.missed);
+  return {
+    ok: true, generatedAt: new Date().toISOString(), capDays: CAP_DAYS,
+    total: Math.round(total), totalUnits: Math.round(totalUnits * 10) / 10, oosCounted: counted,
+    byStore: byStore, byStoreUnits: byStoreUnits,
+    gmByStore: gm.byStore, gmAll: Math.round(gm.all * 1000) / 1000,
+    priceMix: total > 0 ? {
+      exact: Math.round(((bankedRev + namedRev) / total) * 100),  // banked real price + name-encoded shelf price
+      estimated: Math.round((estRev / total) * 100),               // cost ÷ (1 − gross margin)
+    } : { exact: 0, estimated: 0 },
+    top: top.slice(0, 25),
+  };
 }
 
 function transferDays_(a, b) {
@@ -3868,10 +4011,13 @@ function snapshotInventory() {
     if (invResult.error || !invResult.products) continue;
 
     const inStock = invResult.products.filter(p => p.qty > 0);
-    const rows = inStock.map(p => [today, store, p.name, p.brand, p.category, p.sku, p.qty, p.value]);
+    // Col 9 (unitPrice) banks the real last-known RETAIL price while a product is in stock, so lost-sales
+    // revenue can be computed exactly once a product goes OOS (before ~2 weeks of history accrues, the
+    // lost-sales endpoint falls back to cost ÷ (1 − gross margin)).
+    const rows = inStock.map(p => [today, store, p.name, p.brand, p.category, p.sku, p.qty, p.value, Number(p.unitPrice || 0)]);
 
     if (rows.length > 0) {
-      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 8).setValues(rows);
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 9).setValues(rows);
     }
     updateSkuDict(ss, invResult.products); // persist name→sku for all products, including zero-qty
   }
@@ -3883,10 +4029,12 @@ function getOrCreateSnapshotSheet(ss) {
   let sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(SNAPSHOT_SHEET_NAME);
-    sheet.getRange(1, 1, 1, 8).setValues([[
-      'date', 'store', 'productName', 'brand', 'category', 'sku', 'qty', 'value'
+    sheet.getRange(1, 1, 1, 9).setValues([[
+      'date', 'store', 'productName', 'brand', 'category', 'sku', 'qty', 'value', 'unitPrice'
     ]]);
     sheet.setFrozenRows(1);
+  } else if (sheet.getLastColumn() < 9) {
+    sheet.getRange(1, 9).setValue('unitPrice'); // label the newly-added price column on the pre-existing sheet
   }
   return sheet;
 }

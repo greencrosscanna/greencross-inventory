@@ -1710,7 +1710,7 @@ if (location.protocol === 'file:') {
         <div class="iwp-label">Gross Margin <span style="opacity:.5">(last 28d)</span></div>
         <div class="iwp-value" id="iwpMargin" style="color:var(--green)">—</div>
       </div>
-      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated revenue lost while OOS products have been out of stock — click to filter to OOS. Keep it low!" style="cursor:pointer">
+      <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated sales lost to stock-outs: for every out-of-stock product, days-out-of-stock × recent daily velocity × price (real shelf price where known, otherwise cost ÷ gross margin), capped at 90 days per item. An estimate today — it sharpens as real prices bank. Click to filter to OOS. Keep it low!" style="cursor:pointer">
         <div class="iwp-label" style="color:var(--red)">Lost Revenue</div>
         <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)">—</div>
       </div>
@@ -4591,6 +4591,26 @@ async function loadInventoryData() {
         setF('iwpMargin', tS > 0 ? fmtPct((tS - tC) / tS) : '—');
       } catch(e) { /* financial overlay is optional */ }
     })();
+
+    // Lost-revenue estimate for the pill — backend computes it across ALL out-of-stocks (velocity ×
+    // days-out × price), not just the persisted feed. Store-scoped totals; the pill indexes byStore.
+    (async () => {
+      try {
+        const ls = await proxyFetch({ action: 'lostsales' }, 'inv_lostsales_v1', 30 * 60 * 1000);
+        if (ls && ls.ok) {
+          state.lostSales = ls;
+          // Refresh just the pill cell without a full re-render (mirrors the financial overlay above).
+          const missed = state.store === 'All' ? Number(ls.total || 0) : Number((ls.byStore || {})[state.store] || 0);
+          const units  = state.store === 'All' ? Number(ls.totalUnits || 0) : Number((ls.byStoreUnits || {})[state.store] || 0);
+          const node = document.getElementById('iwpMissedRevVal');
+          if (node) {
+            const val = missed > 0 ? fmtFull(missed) : (units > 0 ? Math.round(units) + 'u' : '—');
+            if (_financialsHidden && val !== '—') { _financialMask['iwpMissedRevVal'] = val; node.textContent = '••••••'; }
+            else node.textContent = val;
+          }
+        }
+      } catch(e) { /* lost-revenue overlay is optional */ }
+    })();
   } catch (err) {
     clearInterval(_quoteTimer);
     el.innerHTML = `<div class="state-msg error-msg">Error: ${err.message}</div>`;
@@ -5215,15 +5235,18 @@ function renderInventory() {
   const totalInvValue = state.inventoryData
     .filter(p => (state.store === 'All' || p.store === state.store) && !isNonInventory(p) && !p.costEstimated)
     .reduce((sum, p) => sum + (Number(p.qty) || 0) * (Number(p.unitCost) || 0), 0);
-  let totalMissedRevenue = 0;
-  let totalLostUnits = 0;
   for (const p of storeScoped) {
     counts[p.status]++;
     totalVal[p.status] += p.value || 0;
-    if (p.status === 'oos') {
-      const d = betaDecisionForProduct(p);
-      if (d) { totalMissedRevenue += Number(d.missedRevenue || 0); totalLostUnits += Number(d.lostUnits || 0); }
-    }
+  }
+  // Lost revenue comes from the backend ?action=lostsales estimate — every OOS product with velocity +
+  // a last-seen date (min(daysOut,90) × velocity × price), not just the handful in the persisted feed.
+  // Keyed by store so it tracks the store filter. See the state.lostSales loader in loadInventory.
+  let totalMissedRevenue = 0, totalLostUnits = 0;
+  const _ls = state.lostSales;
+  if (_ls && _ls.ok) {
+    if (state.store === 'All') { totalMissedRevenue = Number(_ls.total || 0); totalLostUnits = Number(_ls.totalUnits || 0); }
+    else { totalMissedRevenue = Number((_ls.byStore || {})[state.store] || 0); totalLostUnits = Number((_ls.byStoreUnits || {})[state.store] || 0); }
   }
   const needsReorder = storeScoped.filter(p => p.reorderQty > 0).length;
   const atRiskVal = (totalVal.oos || 0) + (totalVal.critical || 0) + (totalVal.low || 0);
@@ -5962,7 +5985,7 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
     .filter(p => (state.store === 'All' || p.store === state.store) && !isNonInventory(p) && !p.costEstimated)
     .reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.unitPrice) || 0), 0);
   setFinancial('iwpRetailValue', totalInvRetail > 0 ? fmtFull(totalInvRetail) : '—');
-  // Lost revenue pill — only visible when there's beta data for OOS products
+  // Lost revenue pill — backend ?action=lostsales estimate (see state.lostSales loader)
   const missedPill = el('iwpMissedRev');
   if (missedPill) {
     // Always visible in the top row — the goal is to keep this number low. Shows the $ estimate when
@@ -7352,7 +7375,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.61';
+const APP_VERSION = 'v2.62';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
