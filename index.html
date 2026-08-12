@@ -1181,15 +1181,16 @@ if (location.protocol === 'file:') {
   .inv-summary-bar { display: none; padding: 8px 16px 0; }
   .inv-summary-bar.visible { display: block; }
   .inv-header-grid {
-    display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-bottom: 6px;
+    display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px;
   }
+  .inv-wide-row, .inv-status-row { display: flex; gap: 6px; }
+  .inv-wide-row > .inv-wide-pill, .inv-status-row > .inv-status-pill { flex: 1 1 0; min-width: 0; }
   .inv-wide-pill {
-    grid-column: span 2;
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 8px 14px;
   }
-  .iwp-label { font-size: 9px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
-  .iwp-value { font-size: 20px; font-weight: 700; line-height: 1.1; }
+  .iwp-label { font-size: 9px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .iwp-value { font-size: 19px; font-weight: 700; line-height: 1.1; white-space: nowrap; }
   .inv-status-pill {
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 7px 10px;
@@ -1202,9 +1203,10 @@ if (location.protocol === 'file:') {
   .isp-sub   { font-size: 9px; color: var(--muted); }
 
   @media (max-width: 600px) {
-    .inv-header-grid { grid-template-columns: repeat(3, 1fr); gap: 4px; }
-    .inv-wide-pill   { grid-column: span 1; padding: 7px 10px; }
-    .iwp-value       { font-size: 17px; }
+    .inv-wide-row, .inv-status-row { flex-wrap: wrap; gap: 4px; }
+    .inv-wide-row > .inv-wide-pill     { flex: 1 1 45%; padding: 7px 10px; }
+    .inv-status-row > .inv-status-pill { flex: 1 1 28%; }
+    .iwp-value       { font-size: 16px; }
     .inv-status-pill { padding: 6px 8px; text-align: center; }
     .isp-label       { text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .isp-count       { font-size: 17px; text-align: center; }
@@ -1691,6 +1693,7 @@ if (location.protocol === 'file:') {
   <!-- Inventory summary bar: wide stat pills + status pills (inventory tab only) -->
   <div class="inv-summary-bar" id="invSummaryBar">
     <div class="inv-header-grid">
+      <div class="inv-wide-row">
       <div class="inv-wide-pill" id="iwpInvPill" onclick="toggleFinancials()" title="Click to show/hide financials" style="cursor:pointer">
         <div class="iwp-label">Inventory Value <span style="opacity:.5">(cost)</span> <span id="iwpPrivateIcon" style="font-size:10px;opacity:.5;margin-left:4px"></span></div>
         <div class="iwp-value" id="iwpInvValue">—</div>
@@ -1711,6 +1714,8 @@ if (location.protocol === 'file:') {
         <div class="iwp-label" style="color:var(--red)">Lost Revenue</div>
         <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)">—</div>
       </div>
+      </div>
+      <div class="inv-status-row">
       <button class="inv-status-pill" data-status="oos" onclick="invFilterStatus('oos')" style="color:var(--red)">
         <span class="isp-label">Out of Stock</span>
         <span class="isp-count" id="ispOos">—</span>
@@ -1735,6 +1740,7 @@ if (location.protocol === 'file:') {
         <span class="isp-label">Need Reorder</span>
         <span class="isp-count" id="ispReorder">—</span>
       </button>
+      </div>
     </div>
   </div>
 
@@ -2021,6 +2027,8 @@ function fmtK(n) {
   if (Math.abs(n) >= 1000) return '$' + (n / 1000).toFixed(1) + 'k';
   return '$' + n.toFixed(0);
 }
+// Full dollar amount with thousands separators (for the summary pills) — e.g. $563,543.
+function fmtFull(n) { return '$' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
 function fmtD(n) { return '$' + Math.abs(n).toFixed(2); }
 function fmtPct(n) { return (n * 100).toFixed(1) + '%'; }
 function fmtDate(s) {
@@ -4579,7 +4587,7 @@ async function loadInventoryData() {
         const sRows = filterByStore(state.inv28Sales, 'store');
         const cRows = filterByStore(state.inv28Cogs,  'store');
         const tS = sumBy(sRows, 'sales'), tC = sumBy(cRows, 'cogs');
-        setF('iwpSales',  tS > 0 ? fmtK(tS) : '—');
+        setF('iwpSales',  tS > 0 ? fmtFull(tS) : '—');
         setF('iwpMargin', tS > 0 ? fmtPct((tS - tC) / tS) : '—');
       } catch(e) { /* financial overlay is optional */ }
     })();
@@ -5948,17 +5956,17 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
     if (_financialsHidden && val !== '—') { _financialMask[id] = val; node.textContent = '••••••'; }
     else node.textContent = val;
   };
-  setFinancial('iwpInvValue', totalInvValue > 0 ? fmtK(totalInvValue) : '—');
+  setFinancial('iwpInvValue', totalInvValue > 0 ? fmtFull(totalInvValue) : '—');
   // Retail value (qty × unit price) — same auditable scope as cost: store filter, samples excluded.
   const totalInvRetail = (state.inventoryData || [])
     .filter(p => (state.store === 'All' || p.store === state.store) && !isNonInventory(p) && !p.costEstimated)
     .reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.unitPrice) || 0), 0);
-  setFinancial('iwpRetailValue', totalInvRetail > 0 ? fmtK(totalInvRetail) : '—');
+  setFinancial('iwpRetailValue', totalInvRetail > 0 ? fmtFull(totalInvRetail) : '—');
   // Lost revenue pill — only visible when there's beta data for OOS products
   const missedPill = el('iwpMissedRev');
   if (missedPill) {
     if (totalMissedRevenue > 0) {
-      setFinancial('iwpMissedRevVal', fmtK(totalMissedRevenue));
+      setFinancial('iwpMissedRevVal', fmtFull(totalMissedRevenue));
       missedPill.style.display = '';
     } else if (totalLostUnits > 0) {
       const node = el('iwpMissedRevVal'); if (node) node.textContent = Math.round(totalLostUnits) + 'u';
@@ -5973,7 +5981,7 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
     const sRows = filterByStore(_sData, 'store');
     const cRows = filterByStore(_cData,  'store');
     const tS = sumBy(sRows, 'sales'), tC = sumBy(cRows, 'cogs');
-    setFinancial('iwpSales',  tS > 0 ? fmtK(tS) : '—');
+    setFinancial('iwpSales',  tS > 0 ? fmtFull(tS) : '—');
     setFinancial('iwpMargin', tS > 0 ? fmtPct((tS - tC) / tS) : '—');
   }
   // Status counts
@@ -7343,7 +7351,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.59';
+const APP_VERSION = 'v2.60';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
