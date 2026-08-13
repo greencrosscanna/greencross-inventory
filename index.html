@@ -7787,7 +7787,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.74';
+const APP_VERSION = 'v2.75';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
@@ -7827,7 +7827,16 @@ function fmtVerDate(iso) {
 
 async function loadChangelog() {
   migrateWnSeenKey_();
-  CHANGELOG_DATA = await fetchVersionHistory();
+  // GX Core's webapp intermittently serves a Drive "unable to open the file" HTML page instead of the
+  // JSONP payload (a 200, so script.onerror never fires — the 8s timeout just resolves []). A single miss
+  // used to leave Version History AND What's New blank for the whole session with no retry. Retry a few
+  // times with backoff until we get a non-empty list. Verified: a failed load recovers on the next call.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    CHANGELOG_DATA = await fetchVersionHistory();
+    if (CHANGELOG_DATA.length) break;
+    renderVersionHistory();                                  // keep the "loading…" note visible meanwhile
+    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));  // 1.5s → 3s → 4.5s
+  }
   renderVersionHistory();
   checkWhatsNew();
 }
