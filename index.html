@@ -5181,54 +5181,124 @@ function renderRestockPanel(candidates, selectedStore) {
     </div>`;
 }
 
-// ── Assortment / grouping view (substitution model breadth guardrail) ──────────
+// ── Grouping view: collapse SKUs into substitutable groups with a combined velocity + GROUP DOH ─────
+// A rotating group (e.g. all Mule infused pre-rolls at a store) is one purchasing decision, not 26. The
+// group's true sell-through = sum of every member's 28-day rate (dead strains' demand counts — it moves to
+// the group); group DOH = active on-hand ÷ that rate → when to reorder the group.
 function toggleAssortmentView() {
   state.assortmentView = !state.assortmentView;
   const btn = document.getElementById('groupToggleBtn');
   if (btn) btn.classList.toggle('active', state.assortmentView);
-  if (state.assortmentView && !state.assortment) loadAssortment();
+  if (state.assortmentView && !state.subConfig) loadSubConfig();
   renderInventory();
 }
 
-async function loadAssortment() {
+async function loadSubConfig() {
+  if (state._subConfigLoading) return;
+  state._subConfigLoading = true;
   try {
-    const res = await proxyFetch({ action: 'assortment' }, 'inv_assortment_v1', 15 * 60 * 1000);
-    if (res && res.ok) { state.assortment = res; if (state.assortmentView) renderInventory(); }
-  } catch (e) { /* optional overlay */ }
+    const res = await proxyFetch({ action: 'assortmentconfig' }, 'inv_subconfig_v1', 30 * 60 * 1000);
+    if (res && res.categories) { state.subConfig = res; if (state.assortmentView) renderInventory(); }
+  } catch (e) { /* optional */ }
+  finally { state._subConfigLoading = false; }
+}
+
+// Group key for a product per the substitution config; null = not grouped (continuity/ignore/unconfigured).
+function groupKeyForProduct_(p, cfg) {
+  const catL = String(p.category || '').trim().toLowerCase();
+  const c = cfg.categories ? cfg.categories[catL] : null;
+  if (!c || c.mode !== 'substitutable') return null;
+  if (c.groupBy === 'brand') {
+    const brand = String(p.brand || '').trim() || '(no brand)';
+    return { key: p.store + '||' + p.category + '||b||' + brand, label: brand, sub: p.category };
+  }
+  return { key: p.store + '||' + p.category + '||c', label: p.category, sub: 'all brands' };
 }
 
 function renderAssortmentView(el) {
-  const a = state.assortment;
-  if (!a) { el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading assortment…</div>'; return; }
-  const stores = a.stores || [];
-  const statusClass = s => s === 'critical' ? 'assort-critical' : (s === 'short' ? 'assort-short' : 'assort-ok');
-  let lastCat = '';
-  const body = (a.groups || []).map(g => {
-    const isBrand = g.groupBy === 'brand';
-    const catHead = (isBrand && g.category !== lastCat)
-      ? `<tr class="assort-cathead"><td colspan="${stores.length + 2}">${escapeHtml(g.category)}</td></tr>` : '';
-    if (isBrand) lastCat = g.category; else lastCat = '';
-    const label = isBrand ? g.group : g.category;
-    const cells = stores.map(s => {
-      const v = (g.byStore || {})[s] || 0;
-      return `<td><span class="assort-cell ${statusClass((g.statusByStore || {})[s])}">${v}</span></td>`;
-    }).join('');
-    return catHead + `<tr>
-      <td class="${isBrand ? 'assort-grouprow-brand' : 'assort-grouprow-cat'}">${escapeHtml(label)}</td>
-      <td class="assort-tgt">≥${g.target}</td>
-      ${cells}
+  if (!state.inventoryData) { el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading…</div>'; return; }
+  const cfg = state.subConfig;
+  if (!cfg) { el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading groups…</div>'; loadSubConfig(); return; }
+  const flagged = getFlaggedSet();
+  const products = sortInventory(filterInventory(state.inventoryData, flagged));
+  const money0 = n => (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  const money2 = n => (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  const num = n => (Math.round(Number(n) || 0)).toLocaleString('en-US');
+
+  // Partition into substitutable groups vs individual (continuity) products
+  const groups = new Map(); const singles = [];
+  for (const p of products) {
+    const gk = groupKeyForProduct_(p, cfg);
+    if (!gk) { singles.push(p); continue; }
+    let g = groups.get(gk.key);
+    if (!g) { g = { key: gk.key, label: gk.label, sub: gk.sub, store: p.store, cat: p.category, members: [] }; groups.set(gk.key, g); }
+    g.members.push(p);
+  }
+  const STATUS_ORDER = { oos: 0, critical: 1, low: 2, watch: 3, ok: 4, slow: 5 };
+  const groupStatus = (doh, onHand) => !(onHand > 0) ? 'oos' : (doh == null ? 'ok' : (doh < DOH_CRITICAL ? 'critical' : doh < DOH_LOW ? 'low' : doh < DOH_WATCH ? 'watch' : 'ok'));
+
+  // Shared row builder for a single product (group member or standalone)
+  const productRow = (m, child) => {
+    const fkEsc = flagKey(m).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const mDoh = m.status === 'oos' ? 'OUT' : (m.doh == null ? '—' : m.doh + 'd');
+    const mVel = (Number(m.vel28) || 0) > 0 ? Number(m.vel28).toFixed(2) : ((Number(m.vel7) || 0) > 0 ? Number(m.vel7).toFixed(2) : '');
+    return `<tr class="${child ? 'grp-child' : ''}">
+      <td><span class="status-dot status-${m.status}">${STATUS_LABELS[m.status] || m.status}</span></td>
+      <td class="name-cell"${child ? ' style="padding-left:28px"' : ''}><div class="prod-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div><div class="prod-brand">${escapeHtml(m.sku || '')}</div></td>
+      <td style="color:${storeColor(m.store)}">${escapeHtml(storeDisplay(m.store))}</td>
+      <td>${escapeHtml(m.category || '')}</td>
+      <td>${escapeHtml(m.brand || '')}</td>
+      <td class="num">${num(m.qty || 0)}</td>
+      <td class="num val-cell" style="color:var(--muted);font-size:12px">${(Number(m.value) || 0) > 0 ? money2(m.value) : '—'}</td>
+      <td class="num"><span class="doh-val doh-${m.status}">${mDoh}</span></td>
+      <td class="num">${mVel ? mVel + '<span style="font-size:10px;color:var(--muted)">/d</span>' : '—'}</td>
+      <td class="num"></td>
+      <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(m)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button></td>
     </tr>`;
-  }).join('');
+  };
+
+  const groupArr = [...groups.values()].map(g => {
+    let onHand = 0, val = 0, groupVel = 0, active = 0;
+    for (const m of g.members) {
+      groupVel += Number(m.vel28) || 0;
+      if (Number(m.qty) > 0) { onHand += Number(m.qty) || 0; val += Number(m.value) || 0; active++; }
+    }
+    const doh = groupVel > 0 ? Math.round(onHand / groupVel * 10) / 10 : null;
+    return { g, onHand, val, groupVel: Math.round(groupVel * 100) / 100, active, total: g.members.length, doh, status: groupStatus(doh, onHand) };
+  }).sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || (a.doh == null ? 9999 : a.doh) - (b.doh == null ? 9999 : b.doh));
+
+  const rows = [];
+  for (const gr of groupArr) {
+    const g = gr.g;
+    const expanded = state.expandedGroups.has(g.key);
+    const escKey = g.key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    rows.push(`<tr class="grp-parent" onclick="toggleGroup('${escKey}')">
+      <td><span class="status-dot status-${gr.status}">${STATUS_LABELS[gr.status] || gr.status}</span></td>
+      <td class="name-cell"><div class="prod-name"><span class="grp-toggle${expanded ? ' open' : ''}">▶</span>${escapeHtml(g.label)}</div>
+        <div class="prod-brand">${escapeHtml(g.sub)} · ${gr.active}/${gr.total} in stock</div></td>
+      <td style="color:${storeColor(g.store)}">${escapeHtml(storeDisplay(g.store))}</td>
+      <td>${escapeHtml(g.cat)}</td>
+      <td>${escapeHtml(g.label)}</td>
+      <td class="num">${num(gr.onHand)}</td>
+      <td class="num val-cell" style="color:var(--muted);font-size:12px">${gr.val > 0 ? money0(gr.val) : '—'}</td>
+      <td class="num"><span class="doh-val doh-${gr.status}" title="Group days-of-supply = ${num(gr.onHand)} on hand ÷ ${gr.groupVel}/d combined velocity">${gr.doh == null ? '—' : gr.doh + 'd'}</span></td>
+      <td class="num">${gr.groupVel > 0 ? gr.groupVel.toFixed(2) + '<span style="font-size:10px;color:var(--muted)">/d</span>' : '—'}</td>
+      <td class="num"></td>
+      <td></td>
+    </tr>`);
+    if (expanded) for (const m of g.members) rows.push(productRow(m, true));
+  }
+  const singleRows = singles.map(p => productRow(p, false)).join('');
+  const singleHead = singles.length ? `<tr class="assort-cathead"><td colspan="11">Individually-managed (continuity) products — ${singles.length}</td></tr>` : '';
+
   el.innerHTML = `
-    <div class="assort-note">Substitutable groups — active variety count per store vs target.
-      <span style="color:var(--green)">green</span> = healthy (customers substitute → not lost revenue),
-      <span style="color:var(--amber)">amber</span>/<span style="color:var(--red)">red</span> = thin, real stock-out risk.
-      Continuity items (edibles, cartridges, hardware) are managed item-by-item — toggle Grouping off to see them.</div>
-    <div class="assort-wrap"><table class="assort-table">
-      <thead><tr><th>Group</th><th>Target</th>${stores.map(s => `<th>${escapeHtml(s)}</th>`).join('')}</tr></thead>
-      <tbody>${body || `<tr><td colspan="${stores.length + 2}" style="color:var(--muted);padding:16px">No substitutable groups configured.</td></tr>`}</tbody>
-    </table></div>
-    <div class="assort-foot">As of ${escapeHtml(a.asOf || '—')} · Tawny tunes modes &amp; targets in the “Substitution Config” and “Substitution Brand Targets” sheets.</div>`;
+    <div class="assort-note"><b>Grouped view.</b> Substitutable categories (flower strains, Fatty/infused pre-rolls) are collapsed into one row per group.
+      <b>Group DOH</b> = combined on-hand ÷ combined 28-day velocity of <i>all</i> member SKUs — dead strains' demand still counts because it moves to the group.
+      Click a group to expand its SKUs (hide/flag the ones that won't return; their velocity still feeds the group). Toggle Grouping off for full item-by-item detail.</div>
+    <div class="inv-table-wrap"><table class="inv-table">
+      <thead><tr><th>Status</th><th>Group / Product</th><th>Store</th><th>Category</th><th>Brand</th><th>On Hand</th><th>Value</th><th>Group DOH</th><th>Velocity 28d</th><th></th><th></th></tr></thead>
+      <tbody>${rows.join('') || (singles.length ? '' : `<tr><td colspan="11" style="color:var(--muted);padding:16px">No substitutable groups in the current filter.</td></tr>`)}${singleHead}${singleRows}</tbody>
+    </table></div>`;
 }
 
 function renderInventory() {
@@ -7474,7 +7544,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.67';
+const APP_VERSION = 'v2.68';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
