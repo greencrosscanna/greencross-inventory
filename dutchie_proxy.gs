@@ -235,6 +235,8 @@ function doGet(e) {
     if (params.action === 'getstate')          return jsonOut(getSharedState(params));
     if (params.action === 'sharedkill')        return jsonOut(sharedKill(params));
     if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params));
+    if (params.action === 'sharedretire')      return jsonOut(sharedRetire(params));
+    if (params.action === 'sharedunretire')    return jsonOut(sharedUnretire(params));
     if (params.action === 'sharedflag')        return jsonOut(sharedFlag(params));
     if (params.action === 'salesdiag')      return jsonOut(getSalesHistoryDiagnostics());
     if (params.action === 'apiexplore')     return jsonOut(exploreApi(params));
@@ -4873,6 +4875,7 @@ function backfillSkuDict() {
 // ── Shared State (hidden items & flags synced across users) ───────────────────
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
+const SHARED_RETIRED_KEY = 'gc_shared_retired'; // items queued for manual retirement in Dutchie
 
 function isBetaRequest_(params) {
   return params && (params.beta === '1' || params.mode === 'beta' || getDataMode() === 'beta');
@@ -4893,10 +4896,11 @@ function getOrCreateSharedStateSheet_() {
 
 function readBetaSharedState_() {
   const sheet = getOrCreateSharedStateSheet_();
-  if (sheet.getLastRow() < 2) return { killed: {}, flagged: {} };
+  if (sheet.getLastRow() < 2) return { killed: {}, flagged: {}, retired: {} };
   const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
   const killed = {};
   const flagged = {};
+  const retired = {};
   for (const row of values) {
     const type = String(row[0] || '').trim();
     const key = String(row[1] || '').trim();
@@ -4906,8 +4910,9 @@ function readBetaSharedState_() {
     const rec = { ts: Number((v && v.ts) || valueJson || 0) || 0, by: String((v && v.by) || '') };
     if (type === 'killed') killed[key] = rec;          // { ts, by } — was a bare ts number before
     else if (type === 'flagged') flagged[key] = rec;   // { ts, by } — was a keys array before
+    else if (type === 'retired') retired[key] = rec;   // { ts, by } — queued for Dutchie retirement
   }
-  return { killed, flagged };
+  return { killed, flagged, retired };
 }
 
 function upsertBetaSharedState_(type, key, valueObj, notes) {
@@ -4947,6 +4952,7 @@ function getSharedState(params) {
   return {
     killed:  JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}'),
     flagged: flagged,
+    retired: JSON.parse(props.getProperty(SHARED_RETIRED_KEY) || '{}'),
   };
 }
 
@@ -4979,6 +4985,38 @@ function sharedUnkill(params) {
   delete obj[key];
   props.setProperty(SHARED_KILLED_KEY, JSON.stringify(obj));
   return { ok: true, killed: Object.keys(obj).length };
+}
+
+// Retire = queued for manual retirement in Dutchie (a stronger Hide). Same { ts, by } shape as killed.
+function sharedRetire(params) {
+  const key = params.key;
+  const ts = params.ts;
+  const by = String(params.by || '');
+  if (!key) return { ok: false, error: 'missing key' };
+  const val = { ts: parseInt(ts) || Date.now(), by: by };
+  if (isBetaRequest_(params)) {
+    upsertBetaSharedState_('retired', key, val, 'queued for Dutchie retirement' + (by ? ' by ' + by : ''));
+    return { ok: true, mode: 'beta' };
+  }
+  const props = PropertiesService.getScriptProperties();
+  const obj = JSON.parse(props.getProperty(SHARED_RETIRED_KEY) || '{}');
+  obj[key] = val;
+  props.setProperty(SHARED_RETIRED_KEY, JSON.stringify(obj));
+  return { ok: true, retired: Object.keys(obj).length };
+}
+
+function sharedUnretire(params) {
+  const key = params.key;
+  if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    deleteBetaSharedState_('retired', key);
+    return { ok: true, mode: 'beta' };
+  }
+  const props = PropertiesService.getScriptProperties();
+  const obj = JSON.parse(props.getProperty(SHARED_RETIRED_KEY) || '{}');
+  delete obj[key];
+  props.setProperty(SHARED_RETIRED_KEY, JSON.stringify(obj));
+  return { ok: true, retired: Object.keys(obj).length };
 }
 
 function sharedFlag(params) {

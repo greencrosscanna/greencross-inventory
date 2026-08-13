@@ -871,7 +871,7 @@ if (location.protocol === 'file:') {
     width: 62px;
   }
   .inv-table th:last-child { width: 62px; }
-  .flag-row-btn, .kill-row-btn {
+  .flag-row-btn, .kill-row-btn, .retire-row-btn {
     background: none; border: none; cursor: pointer; padding: 4px 6px;
     color: var(--muted); font-size: 13px; opacity: 0.45;
     transition: opacity .15s, color .15s; line-height: 1;
@@ -881,6 +881,7 @@ if (location.protocol === 'file:') {
   .flag-row-btn.is-flagged { opacity: 1; color: var(--red); }
   .kill-row-btn:hover { opacity: 1; color: var(--amber); }
   .kill-row-btn.is-killed { opacity: 1; color: var(--amber); }
+  .retire-row-btn:hover { opacity: 1; color: var(--red); }
 
   /* ── Group rows (SKU grouping) ── */
   .grp-parent td { cursor: pointer; }
@@ -2113,6 +2114,7 @@ const LS = {
   FLAGS:               'gc_flags',
   RESTOCK_SKIP_PFX:    'gc_restock_skip_',   // prefix — append product key
   KILLED:              'gc_killed',
+  RETIRED:             'gc_retired',            // items queued for manual retirement in Dutchie
   CAMERA_DENIED:       'gc_camera_denied',
   TRANSFER_MIN_QTY:    'gc_transfer_min_qty',
   FATTY_MIN_QTY:       'gc_fatty_min_qty',
@@ -2937,7 +2939,50 @@ function renderFlags() {
             <strong>${g.name}</strong>${multi ? ` <span style="background:rgba(245,180,60,.18);color:var(--amber);font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px">${stores.length} stores</span>` : ''}<br>
             <span style="color:var(--muted);font-size:11px">${g.sku ? g.sku + ' · ' : ''}${fmtCat(g.cat)} · ${storeLabel}</span>${ml ? '<br>' + ml : ''}
           </div>
+          <button class="flag-row-btn" onclick="retireHiddenGroup(event,'${gidEsc}')" title="Retire — move to the Dutchie retire worklist" style="color:var(--red);opacity:1;font-size:14px">⊘</button>
           <button class="flag-row-btn" onclick="resurrectHiddenGroup(event,'${gidEsc}')" title="Restore ${multi ? 'all ' + keys.length + ' stores' : 'to inventory'}" style="color:var(--green);opacity:1;font-size:16px">↩</button>
+        </div>`;
+      }
+      html += '</div>';
+    }
+  }
+
+  // ── To Retire in Dutchie — worklist (grouped by SKU), with when + who + CSV export ──
+  const retiredObj = getRetiredObj();
+  if (Object.keys(retiredObj).length > 0 && state.inventoryData) {
+    const sf = state.store;
+    const retItems = state.inventoryData.filter(p => flagKey(p) in retiredObj && (sf === 'All' || p.store === sf));
+    if (retItems.length > 0) {
+      _retireGroupKeys = {};
+      const groups = {};
+      for (const p of retItems) {
+        const gid = String(p.sku || p.name);
+        (groups[gid] || (groups[gid] = { name: p.name, sku: p.sku, cat: p.category, items: [] })).items.push(p);
+      }
+      const gids = Object.keys(groups);
+      html += `<div class="section-label" style="margin-top:${html ? '20px' : '0'};display:flex;justify-content:space-between;align-items:center">
+          <span>To Retire in Dutchie — ${gids.length} SKU${gids.length !== 1 ? 's' : ''}</span>
+          <button onclick="exportRetireList()" class="cat-toggle-btn" style="font-size:11px" title="Download a CSV worklist to retire these in Dutchie">⬇ Export CSV</button>
+        </div>
+        <div class="card">`;
+      for (const gid of gids) {
+        const g = groups[gid];
+        const keys = g.items.map(p => flagKey(p));
+        const gidEsc = gid.replace(/[^a-zA-Z0-9]/g, '_') + '__' + keys.length;
+        _retireGroupKeys[gidEsc] = keys;
+        let mrTs = 0, mrBy = '';
+        for (const p of g.items) { const m = retiredObj[flagKey(p)]; const t = killedTs(m); if (t >= mrTs) { mrTs = t; mrBy = killedBy(m); } }
+        const stores = g.items.map(p => p.store);
+        const multi = stores.length > 1;
+        const storeLabel = multi ? `${stores.length} stores: ${stores.map(s => storeDisplay(s)).join(', ')}` : storeDisplay(stores[0]);
+        const ml = _metaLine('retired', mrTs, mrBy);
+        html += `<div class="flag-item" style="align-items:center;opacity:.72">
+          <div class="flag-icon" style="color:var(--red)">⊘</div>
+          <div class="flag-text" style="flex:1">
+            <strong>${g.name}</strong>${multi ? ` <span style="background:rgba(240,90,90,.16);color:var(--red);font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px">${stores.length} stores</span>` : ''}<br>
+            <span style="color:var(--muted);font-size:11px">${g.sku ? g.sku + ' · ' : ''}${fmtCat(g.cat)} · ${storeLabel}</span>${ml ? '<br>' + ml : ''}
+          </div>
+          <button class="flag-row-btn" onclick="unretireGroup(event,'${gidEsc}')" title="Undo retire — restore to inventory" style="color:var(--green);opacity:1;font-size:16px">↩</button>
         </div>`;
       }
       html += '</div>';
@@ -4287,13 +4332,14 @@ function filterInventory(products, flagged) {
   const anyTag = tags.dead || tags.hot || tags.new || tags.distro;
   const fl = flagged || getFlaggedSet();
   const killed = getKilledObj();
-
+  const retired = getRetiredObj();
 
   return products.filter(p => {
     if (/\bshake\b/i.test(p.name) || p.category === 'Cannabis Bulk Shake') return false;
     if (/^SAMPLE\s*\|/i.test(p.name) || /\bsample\b/i.test(p.name)) return false;
     if (p.qty === 0 && (p.qtyDistro || 0) === 0 && (p.qtySample || 0) > 0) return false;
     if (fl.has(flagKey(p))) return false;
+    if (isRetired(retired, flagKey(p), p)) return false; // queued for Dutchie retirement → out of inventory
     if (isKilled(killed, flagKey(p), p)) return false;
     if (store !== 'All' && p.store !== store) return false;
     if (state.excludedCats.size && state.excludedCats.has(p.category)) return false;
@@ -4751,6 +4797,46 @@ function resurrectHiddenGroup(e, gid) {
   renderFlags();
   renderInventory();
 }
+function retireHiddenGroup(e, gid) { // promote a Hidden group → Retire worklist (from the Flags tab)
+  if (e) e.stopPropagation();
+  const keys = _hiddenGroupKeys[gid] || [];
+  const ts = Date.now(), by = _killerName();
+  const r = getRetiredObj(), k = getKilledObj();
+  for (const key of keys) {
+    r[key] = { ts, by };
+    if (k[key]) { delete k[key]; fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); }
+    fetch(sharedStateQuery('sharedretire', { key, ts, by })).catch(() => {});
+  }
+  saveRetiredSet(r); saveKilledSet(k);
+  renderFlags(); renderInventory();
+}
+let _retireGroupKeys = {};
+function unretireGroup(e, gid) {
+  if (e) e.stopPropagation();
+  const keys = _retireGroupKeys[gid] || [];
+  const obj = getRetiredObj();
+  for (const key of keys) { delete obj[key]; fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {}); }
+  saveRetiredSet(obj);
+  renderFlags();
+  renderInventory();
+}
+// CSV worklist of everything queued for Dutchie retirement — Tawny works down this inside Dutchie.
+function exportRetireList() {
+  const retiredObj = getRetiredObj();
+  const rows = [['SKU', 'Product', 'Store', 'Category', 'Retired', 'By']];
+  (state.inventoryData || []).forEach(p => {
+    const key = flagKey(p);
+    if (!(key in retiredObj)) return;
+    const m = retiredObj[key];
+    rows.push([p.sku || '', p.name || '', storeDisplay(p.store), p.category || '', _flagWhen(killedTs(m)), _flagWho(killedBy(m))]);
+  });
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'retire-in-dutchie-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 
 // ── Restock dismiss (per-store, persisted in localStorage) ───────────────────
 function getRestockDismissed(store) {
@@ -4790,6 +4876,11 @@ async function syncSharedState() {
       const prev = localStorage.getItem(LS.FLAGS);
       const next = JSON.stringify(data.flagged);
       if (prev !== next) { localStorage.setItem(LS.FLAGS, next); changed = true; }
+    }
+    if (data.retired) {
+      const prev = localStorage.getItem(LS.RETIRED);
+      const next = JSON.stringify(data.retired);
+      if (prev !== next) { localStorage.setItem(LS.RETIRED, next); changed = true; }
     }
     if (changed && state.inventoryData) {
       renderInventory();
@@ -4841,6 +4932,48 @@ function resurrectItem(e, key) {
   saveKilledSet(obj);
   fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {});
   renderFlags();
+}
+// ── Retire = a stronger Hide: removes from inventory AND queues for manual retirement in Dutchie ──
+function getRetiredObj() { try { const raw = JSON.parse(localStorage.getItem(LS.RETIRED) || '{}'); return Array.isArray(raw) ? raw.reduce((o, k) => (o[k] = 0, o), {}) : raw; } catch { return {}; } }
+function saveRetiredSet(obj) { localStorage.setItem(LS.RETIRED, JSON.stringify(obj)); }
+function isRetired(retiredObj, key, product) {
+  if (!(key in retiredObj)) return false;
+  const at = killedTs(retiredObj[key]); // auto-un-retire if it comes back in stock after the retire date
+  if (at > 0 && product && product.qty > 0 && product.lastMod && new Date(product.lastMod).getTime() > at) {
+    delete retiredObj[key]; saveRetiredSet(retiredObj); fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {}); return false;
+  }
+  return true;
+}
+function retireItem(e, key) {
+  if (e) e.stopPropagation();
+  const ts = Date.now(), by = _killerName();
+  const r = getRetiredObj(); r[key] = { ts, by }; saveRetiredSet(r);
+  const k = getKilledObj(); if (k[key]) { delete k[key]; saveKilledSet(k); fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); } // promote Hidden → Retire
+  fetch(sharedStateQuery('sharedretire', { key, ts, by })).catch(() => {});
+  renderInventory();
+  if (state.tab === 'flags') renderFlags();
+}
+function unretireItem(e, key) {
+  if (e) e.stopPropagation();
+  const r = getRetiredObj(); delete r[key]; saveRetiredSet(r);
+  fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {});
+  renderInventory();
+  if (state.tab === 'flags') renderFlags();
+}
+function retireGroup(event, gKey) {
+  if (event) event.stopPropagation();
+  const items = _groupMap[gKey] || [];
+  const ts = Date.now(), by = _killerName();
+  const r = getRetiredObj(), k = getKilledObj();
+  for (const p of items) {
+    const key = flagKey(p);
+    r[key] = { ts, by };
+    if (k[key]) { delete k[key]; fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); }
+    fetch(sharedStateQuery('sharedretire', { key, ts, by })).catch(() => {});
+  }
+  saveRetiredSet(r); saveKilledSet(k);
+  renderInventory();
+  if (state.tab === 'flags') renderFlags();
 }
 function toggleFlag(e, key) {
   e.stopPropagation();
@@ -5300,7 +5433,7 @@ function renderAssortmentView(el) {
       <td class="num"><span class="doh-val doh-${m.status}">${mDoh}</span></td>
       <td class="num">${mVel ? mVel + '<span style="font-size:10px;color:var(--muted)">/d</span>' : '—'}</td>
       <td class="num"></td>
-      <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(m)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button></td>
+      <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(m)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button><button class="retire-row-btn" onclick="retireItem(event,'${fkEsc}')" title="Retire — remove & queue for Dutchie retirement">⊘</button></td>
     </tr>`;
   };
 
@@ -5408,11 +5541,13 @@ function renderInventory() {
   // Summary counts — always from full store-scoped data (ignores status/tag/search filters)
   // so pill numbers stay stable when a filter is active.
   const _killed = getKilledObj();
+  const _retired = getRetiredObj();
   const storeScoped = state.inventoryData.filter(p => {
     if (/\bshake\b/i.test(p.name) || p.category === 'Cannabis Bulk Shake') return false;
     if (/^SAMPLE\s*\|/i.test(p.name) || /\bsample\b/i.test(p.name)) return false;
     if (p.qty === 0 && (p.qtyDistro || 0) === 0 && (p.qtySample || 0) > 0) return false;
     if (flagged.has(flagKey(p))) return false;
+    if (isRetired(_retired, flagKey(p), p)) return false;
     if (isKilled(_killed, flagKey(p), p)) return false;
     if (state.store !== 'All' && p.store !== state.store) return false;
     if (state.excludedCats.size && state.excludedCats.has(p.category)) return false;
@@ -6043,7 +6178,7 @@ function renderInventory() {
       <td class="num"><span class="doh-val doh-${p.status}">${mkDohTxt(p)}</span></td>
       <td class="num">${mkVelCell(p)}</td>
       <td class="num">${mkReorderCell(p)}</td>
-      <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(p)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button></td>
+      <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(p)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button><button class="retire-row-btn" onclick="retireItem(event,'${fkEsc}')" title="Retire — remove from inventory & queue for manual Dutchie retirement">⊘</button></td>
     </tr>`;
   }
 
@@ -6077,7 +6212,7 @@ function renderInventory() {
       <td class="num"><span class="doh-val doh-${agg.status}">${mkDohTxt(agg)}</span></td>
       <td class="num">${mkVelCell(agg)}</td>
       <td class="num">${mkReorderCell(agg, key)}</td>
-      <td><button class="kill-row-btn" onclick="killGroup(event,'${escKey}')" title="Hide all stores — reappears if restocked">✕</button><button class="flag-row-btn${items.every(p => flagged.has(flagKey(p))) ? ' is-flagged' : ''}" onclick="flagGroup(event,'${escKey}')" title="Flag all stores for review">⚑</button></td>
+      <td><button class="kill-row-btn" onclick="killGroup(event,'${escKey}')" title="Hide all stores — reappears if restocked">✕</button><button class="flag-row-btn${items.every(p => flagged.has(flagKey(p))) ? ' is-flagged' : ''}" onclick="flagGroup(event,'${escKey}')" title="Flag all stores for review">⚑</button><button class="retire-row-btn" onclick="retireGroup(event,'${escKey}')" title="Retire all stores — remove & queue for Dutchie retirement">⊘</button></td>
     </tr>`;
     if (!expanded) return parentRow;
     // Build per-donor suggestion list (a donor may serve multiple recipients)
@@ -6118,7 +6253,7 @@ function renderInventory() {
         <td class="num"><span class="doh-val doh-${p.status}">${mkDohTxt(p)}</span></td>
         <td class="num">${mkVelCell(p)}</td>
         <td class="num">${mkReorderCell(p, null, true)}${txPill}</td>
-        <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(p)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button></td>
+        <td><button class="kill-row-btn" onclick="killItem(event,'${fkEsc}')" title="Hide — reappears if restocked">✕</button><button class="flag-row-btn${flagged.has(flagKey(p)) ? ' is-flagged' : ''}" onclick="toggleFlag(event,'${fkEsc}')" title="Flag for review">⚑</button><button class="retire-row-btn" onclick="retireItem(event,'${fkEsc}')" title="Retire — remove from inventory & queue for manual Dutchie retirement">⊘</button></td>
       </tr>`;
     }).join('');
     return parentRow + childRows;
@@ -7591,7 +7726,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.69';
+const APP_VERSION = 'v2.70';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
