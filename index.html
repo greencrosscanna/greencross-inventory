@@ -1503,7 +1503,7 @@ if (location.protocol === 'file:') {
         <button class="tab" data-tab="orders" id="tabOrders">Orders <span class="cart-badge" id="cartBadge" style="display:none"></span></button>
         <button class="tab" data-tab="transfers" id="tabTransfers">Transfers <span class="cart-badge" id="transferBadge" style="display:none"></span></button>
         <button class="tab" data-tab="performance">Performance</button>
-        <button class="tab" data-tab="pricetags" id="tabPricetags">Price Tags <span class="cart-badge" id="pricetagsBadge" style="display:none"></span></button>
+        <button class="tab" data-tab="pricetags" id="tabPricetags">Price Cards <span class="cart-badge" id="pricetagsBadge" style="display:none"></span></button>
         <button class="tab" data-tab="flags">Flags</button>
         <button class="tab beta-tab" data-tab="beta" id="betaTabBtn">Beta</button>
         <button class="tab scanner-tab" data-tab="scanner" id="scannerTabBtn" style="display:none;align-items:center;gap:4px">
@@ -1824,7 +1824,7 @@ if (location.protocol === 'file:') {
 
   <!-- ══ PRICE TAGS PANEL (embeds the Price Cards app) ══ -->
   <div class="panel" id="panel-pricetags" style="padding:0">
-    <iframe id="pricetagsFrame" title="Price Tags"
+    <iframe id="pricetagsFrame" title="Price Cards"
             src="https://greencrosscanna.github.io/greencross-price-cards/"
             style="width:100%;height:calc(100vh - 108px);border:0;display:block"
             allow="clipboard-read; clipboard-write"></iframe>
@@ -2871,8 +2871,9 @@ function renderFlags() {
 
   let html = '';
 
-  // ── Manually flagged items ──
-  const flaggedSet = getFlaggedSet();
+  // ── Manually flagged items (with when + who) ──
+  const flaggedObj = getFlaggedObj();
+  const flaggedSet = new Set(Object.keys(flaggedObj));
   if (flaggedSet.size > 0 && state.inventoryData) {
     const storeFilter = state.store;
     const flaggedItems = state.inventoryData.filter(p =>
@@ -2883,12 +2884,14 @@ function renderFlags() {
         <div class="card">`;
       for (const p of flaggedItems) {
         const key = flagKey(p).replace(/'/g, "\\'");
+        const meta = flaggedObj[flagKey(p)] || {};
+        const ml = _metaLine('flagged', meta.ts, meta.by);
         html += `<div class="flag-item" style="align-items:center">
           <div class="flag-icon" style="color:var(--red)">⚑</div>
           <div class="flag-text" style="flex:1">
             <strong>${p.name}</strong>
             <span style="color:${storeColor(p.store)};margin-left:6px;font-size:11px">${storeDisplay(p.store)}</span><br>
-            <span style="color:var(--muted);font-size:11px">${p.sku ? p.sku + ' · ' : ''}${fmtCat(p.category)} · qty ${p.qty}</span>
+            <span style="color:var(--muted);font-size:11px">${p.sku ? p.sku + ' · ' : ''}${fmtCat(p.category)} · qty ${p.qty}</span>${ml ? '<br>' + ml : ''}
           </div>
           <button class="flag-row-btn is-flagged" onclick="toggleFlag(event,'${key}')" title="Unflag">⚑</button>
         </div>`;
@@ -2897,7 +2900,7 @@ function renderFlags() {
     }
   }
 
-  // ── Hidden items ──
+  // ── Hidden items — grouped by SKU (same SKU hidden across stores condenses to one row), with when + who ──
   const killedObj = getKilledObj();
   if (Object.keys(killedObj).length > 0 && state.inventoryData) {
     const storeFilter2 = state.store;
@@ -2905,18 +2908,36 @@ function renderFlags() {
       flagKey(p) in killedObj && (storeFilter2 === 'All' || p.store === storeFilter2)
     );
     if (killedItems.length > 0) {
-      html += `<div class="section-label" style="margin-top:${html ? '20px' : '0'}">Hidden — ${killedItems.length} item${killedItems.length !== 1 ? 's' : ''}</div>
-        <div class="card">`;
+      _hiddenGroupKeys = {};
+      const groups = {};
       for (const p of killedItems) {
-        const key = flagKey(p).replace(/'/g, "\\'");
+        const gid = String(p.sku || p.name);
+        (groups[gid] || (groups[gid] = { name: p.name, sku: p.sku, cat: p.category, items: [] })).items.push(p);
+      }
+      const gids = Object.keys(groups);
+      const storeItems = killedItems.length;
+      html += `<div class="section-label" style="margin-top:${html ? '20px' : '0'}">Hidden — ${gids.length} SKU${gids.length !== 1 ? 's' : ''}${storeItems !== gids.length ? ' · ' + storeItems + ' store-items' : ''}</div>
+        <div class="card">`;
+      for (const gid of gids) {
+        const g = groups[gid];
+        const keys = g.items.map(p => flagKey(p));
+        const gidEsc = gid.replace(/[^a-zA-Z0-9]/g, '_') + '__' + keys.length;
+        _hiddenGroupKeys[gidEsc] = keys;
+        let mrTs = 0, mrBy = '';
+        for (const p of g.items) { const m = killedObj[flagKey(p)]; const t = killedTs(m); if (t >= mrTs) { mrTs = t; mrBy = killedBy(m); } }
+        const stores = g.items.map(p => p.store);
+        const multi = stores.length > 1;
+        const storeLabel = multi
+          ? `hidden from ${stores.length} stores: ${stores.map(s => storeDisplay(s)).join(', ')}`
+          : `${storeDisplay(stores[0])} · qty ${g.items[0].qty}`;
+        const ml = _metaLine('hidden', mrTs, mrBy);
         html += `<div class="flag-item" style="align-items:center;opacity:.65">
           <div class="flag-icon" style="color:var(--amber)">✕</div>
           <div class="flag-text" style="flex:1">
-            <strong>${p.name}</strong>
-            <span style="color:${storeColor(p.store)};margin-left:6px;font-size:11px">${storeDisplay(p.store)}</span><br>
-            <span style="color:var(--muted);font-size:11px">${p.sku ? p.sku + ' · ' : ''}${fmtCat(p.category)} · qty ${p.qty}</span>
+            <strong>${g.name}</strong>${multi ? ` <span style="background:rgba(245,180,60,.18);color:var(--amber);font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px">${stores.length} stores</span>` : ''}<br>
+            <span style="color:var(--muted);font-size:11px">${g.sku ? g.sku + ' · ' : ''}${fmtCat(g.cat)} · ${storeLabel}</span>${ml ? '<br>' + ml : ''}
           </div>
-          <button class="flag-row-btn" onclick="resurrectItem(event,'${key}')" title="Restore to inventory" style="color:var(--green);opacity:1;font-size:16px">↩</button>
+          <button class="flag-row-btn" onclick="resurrectHiddenGroup(event,'${gidEsc}')" title="Restore ${multi ? 'all ' + keys.length + ' stores' : 'to inventory'}" style="color:var(--green);opacity:1;font-size:16px">↩</button>
         </div>`;
       }
       html += '</div>';
@@ -4700,10 +4721,36 @@ function updateCatToggleBtn() {
 // ── Renderer ─────────────────────────────────────────────
 // ── Manual flags ─────────────────────────────────────────
 function flagKey(p) { return (p.sku || p.name) + '|' + p.store; }
-function getFlaggedSet() {
-  try { return new Set(JSON.parse(localStorage.getItem(LS.FLAGS) || '[]')); } catch { return new Set(); }
+// Kill/flag state now records WHO + WHEN: each entry is { ts, by }. Backward-compatible with the old
+// shapes (killed = {key:number}, flagged = [key,...]). _killerName() is the logged-in user at action time.
+function _killerName() { try { return String(_getSessionUser() || ''); } catch { return ''; } }
+function killedTs(v) { return typeof v === 'number' ? v : (v && Number(v.ts)) || 0; }
+function killedBy(v) { return (v && typeof v === 'object' && v.by) ? String(v.by) : ''; }
+function getFlaggedObj() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS.FLAGS) || '{}');
+    const o = {};
+    if (Array.isArray(raw)) { raw.forEach(k => { o[k] = { ts: 0, by: '' }; }); return o; }
+    for (const k in raw) { const v = raw[k]; o[k] = (v && typeof v === 'object') ? { ts: Number(v.ts) || 0, by: String(v.by || '') } : { ts: 0, by: '' }; }
+    return o;
+  } catch { return {}; }
 }
-function saveFlaggedSet(s) { localStorage.setItem(LS.FLAGS, JSON.stringify([...s])); }
+function saveFlaggedObj(o) { localStorage.setItem(LS.FLAGS, JSON.stringify(o)); }
+function getFlaggedSet() { return new Set(Object.keys(getFlaggedObj())); }
+function saveFlaggedSet(s) { const o = getFlaggedObj(), keep = {}; for (const k of s) keep[k] = o[k] || { ts: 0, by: '' }; saveFlaggedObj(keep); }
+function _flagWhen(ts) { const n = Number(ts) || 0; if (!n) return ''; try { return new Date(n).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); } catch { return ''; } }
+function _flagWho(by) { const s = String(by || '').trim(); if (!s || s === 'unknown') return ''; const first = s.split('@')[0].split(/[.\s_]/)[0].trim(); return first ? first.charAt(0).toUpperCase() + first.slice(1) : ''; }
+function _metaLine(verb, ts, by) { const when = _flagWhen(ts), who = _flagWho(by); if (!when && !who) return ''; return `<span style="color:var(--muted);font-size:10px">${verb}${when ? ' ' + when : ''}${who ? ' · by ' + escapeHtml(who) : ''}</span>`; }
+let _hiddenGroupKeys = {};
+function resurrectHiddenGroup(e, gid) {
+  if (e) e.stopPropagation();
+  const keys = _hiddenGroupKeys[gid] || [];
+  const obj = getKilledObj();
+  for (const key of keys) { delete obj[key]; fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); }
+  saveKilledSet(obj);
+  renderFlags();
+  renderInventory();
+}
 
 // ── Restock dismiss (per-store, persisted in localStorage) ───────────────────
 function getRestockDismissed(store) {
@@ -4767,7 +4814,7 @@ function saveKilledSet(obj) { localStorage.setItem(LS.KILLED, JSON.stringify(obj
 function isKilled(killedObj, key, product) {
   if (!(key in killedObj)) return false;
   // Auto-resurrect: if product has qty > 0 and lastMod is after kill timestamp
-  const killedAt = killedObj[key];
+  const killedAt = killedTs(killedObj[key]);
   if (killedAt > 0 && product && product.qty > 0 && product.lastMod) {
     if (new Date(product.lastMod).getTime() > killedAt) {
       delete killedObj[key];
@@ -4780,10 +4827,10 @@ function isKilled(killedObj, key, product) {
 function killItem(e, key) {
   e.stopPropagation();
   const obj = getKilledObj();
-  const ts = Date.now();
-  obj[key] = ts;
+  const ts = Date.now(), by = _killerName();
+  obj[key] = { ts, by };
   saveKilledSet(obj);
-  fetch(sharedStateQuery('sharedkill', { key, ts })).catch(() => {});
+  fetch(sharedStateQuery('sharedkill', { key, ts, by })).catch(() => {});
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }
@@ -4797,10 +4844,10 @@ function resurrectItem(e, key) {
 }
 function toggleFlag(e, key) {
   e.stopPropagation();
-  const s = getFlaggedSet();
-  if (s.has(key)) s.delete(key); else s.add(key);
-  saveFlaggedSet(s);
-  fetch(sharedStateQuery('sharedflag', { key })).catch(() => {});
+  const o = getFlaggedObj();
+  if (o[key]) delete o[key]; else o[key] = { ts: Date.now(), by: _killerName() };
+  saveFlaggedObj(o);
+  fetch(sharedStateQuery('sharedflag', { key, by: _killerName() })).catch(() => {});
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }
@@ -7544,7 +7591,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.68';
+const APP_VERSION = 'v2.69';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
@@ -8954,11 +9001,11 @@ function killGroup(event, gKey) {
   event.stopPropagation();
   const items = _groupMap[gKey] || [];
   const obj = getKilledObj();
-  const ts = Date.now();
+  const ts = Date.now(), by = _killerName();
   for (const p of items) {
     const key = flagKey(p);
-    obj[key] = ts;
-    fetch(sharedStateQuery('sharedkill', { key, ts })).catch(() => {});
+    obj[key] = { ts, by };
+    fetch(sharedStateQuery('sharedkill', { key, ts, by })).catch(() => {});
   }
   saveKilledSet(obj);
   renderInventory();
@@ -8968,14 +9015,15 @@ function killGroup(event, gKey) {
 function flagGroup(event, gKey) {
   event.stopPropagation();
   const items = _groupMap[gKey] || [];
-  const s = getFlaggedSet();
-  const allFlagged = items.length > 0 && items.every(p => s.has(flagKey(p)));
+  const o = getFlaggedObj();
+  const by = _killerName();
+  const allFlagged = items.length > 0 && items.every(p => o[flagKey(p)]);
   for (const p of items) {
     const key = flagKey(p);
-    if (allFlagged) s.delete(key); else s.add(key);
-    fetch(sharedStateQuery('sharedflag', { key })).catch(() => {});
+    if (allFlagged) delete o[key]; else o[key] = { ts: Date.now(), by };
+    fetch(sharedStateQuery('sharedflag', { key, by })).catch(() => {});
   }
-  saveFlaggedSet(s);
+  saveFlaggedObj(o);
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }

@@ -4893,22 +4893,19 @@ function getOrCreateSharedStateSheet_() {
 
 function readBetaSharedState_() {
   const sheet = getOrCreateSharedStateSheet_();
-  if (sheet.getLastRow() < 2) return { killed: {}, flagged: [] };
+  if (sheet.getLastRow() < 2) return { killed: {}, flagged: {} };
   const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
   const killed = {};
-  const flagged = [];
+  const flagged = {};
   for (const row of values) {
     const type = String(row[0] || '').trim();
     const key = String(row[1] || '').trim();
     const valueJson = String(row[2] || '').trim();
     if (!type || !key) continue;
-    if (type === 'killed') {
-      let ts = 0;
-      try { ts = Number(JSON.parse(valueJson).ts || 0); } catch(e) { ts = Number(valueJson || 0); }
-      killed[key] = ts || 0;
-    } else if (type === 'flagged') {
-      flagged.push(key);
-    }
+    let v = {}; try { v = JSON.parse(valueJson) || {}; } catch (e) { v = {}; }
+    const rec = { ts: Number((v && v.ts) || valueJson || 0) || 0, by: String((v && v.by) || '') };
+    if (type === 'killed') killed[key] = rec;          // { ts, by } — was a bare ts number before
+    else if (type === 'flagged') flagged[key] = rec;   // { ts, by } — was a keys array before
   }
   return { killed, flagged };
 }
@@ -4943,23 +4940,29 @@ function deleteBetaSharedState_(type, key) {
 function getSharedState(params) {
   if (isBetaRequest_(params)) return readBetaSharedState_();
   const props = PropertiesService.getScriptProperties();
+  const flaggedRaw = JSON.parse(props.getProperty(SHARED_FLAGGED_KEY) || '{}');
+  const flagged = Array.isArray(flaggedRaw)
+    ? flaggedRaw.reduce(function (a, k) { a[k] = { ts: 0, by: '' }; return a; }, {})
+    : flaggedRaw;
   return {
-    killed:  JSON.parse(props.getProperty(SHARED_KILLED_KEY)  || '{}'),
-    flagged: JSON.parse(props.getProperty(SHARED_FLAGGED_KEY) || '[]'),
+    killed:  JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}'),
+    flagged: flagged,
   };
 }
 
 function sharedKill(params) {
   const key = params.key;
   const ts = params.ts;
+  const by = String(params.by || '');
   if (!key) return { ok: false, error: 'missing key' };
+  const val = { ts: parseInt(ts) || Date.now(), by: by };
   if (isBetaRequest_(params)) {
-    upsertBetaSharedState_('killed', key, { ts: parseInt(ts) || Date.now() }, 'hidden from beta inventory');
+    upsertBetaSharedState_('killed', key, val, 'hidden from beta inventory' + (by ? ' by ' + by : ''));
     return { ok: true, mode: 'beta' };
   }
   const props = PropertiesService.getScriptProperties();
   const obj = JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}');
-  obj[key] = parseInt(ts) || Date.now();
+  obj[key] = val;
   props.setProperty(SHARED_KILLED_KEY, JSON.stringify(obj));
   return { ok: true, killed: Object.keys(obj).length };
 }
@@ -4980,19 +4983,20 @@ function sharedUnkill(params) {
 
 function sharedFlag(params) {
   const key = params.key;
+  const by = String(params.by || '');
   if (!key) return { ok: false, error: 'missing key' };
   if (isBetaRequest_(params)) {
     const state = readBetaSharedState_();
-    if (state.flagged.includes(key)) deleteBetaSharedState_('flagged', key);
-    else upsertBetaSharedState_('flagged', key, { active: true }, 'flagged for beta buyer review');
+    if (state.flagged[key]) deleteBetaSharedState_('flagged', key);
+    else upsertBetaSharedState_('flagged', key, { ts: Date.now(), by: by }, 'flagged for beta buyer review' + (by ? ' by ' + by : ''));
     return { ok: true, mode: 'beta' };
   }
   const props = PropertiesService.getScriptProperties();
-  const arr = JSON.parse(props.getProperty(SHARED_FLAGGED_KEY) || '[]');
-  const s = new Set(arr);
-  if (s.has(key)) s.delete(key); else s.add(key);
-  props.setProperty(SHARED_FLAGGED_KEY, JSON.stringify([...s]));
-  return { ok: true, flagged: s.size };
+  const obj = JSON.parse(props.getProperty(SHARED_FLAGGED_KEY) || '{}');
+  const norm = Array.isArray(obj) ? obj.reduce(function (a, k) { a[k] = { ts: 0, by: '' }; return a; }, {}) : obj;
+  if (norm[key]) delete norm[key]; else norm[key] = { ts: Date.now(), by: by };
+  props.setProperty(SHARED_FLAGGED_KEY, JSON.stringify(norm));
+  return { ok: true, flagged: Object.keys(norm).length };
 }
 
 // ── UPC → Product Name map ────────────────────────────────────────────────────
