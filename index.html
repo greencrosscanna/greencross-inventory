@@ -4811,12 +4811,20 @@ function retireHiddenGroup(e, gid) { // promote a Hidden group → Retire workli
   renderFlags(); renderInventory();
 }
 let _retireGroupKeys = {};
+// Undo retire → moves the item OUT of the retire worklist and INTO Flagged for Review (not straight back
+// to inventory). From the Flagged section, unflagging returns it to inventory.
 function unretireGroup(e, gid) {
   if (e) e.stopPropagation();
   const keys = _retireGroupKeys[gid] || [];
-  const obj = getRetiredObj();
-  for (const key of keys) { delete obj[key]; fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {}); }
-  saveRetiredSet(obj);
+  const r = getRetiredObj(), f = getFlaggedObj();
+  const by = _killerName();
+  for (const key of keys) {
+    delete r[key];
+    if (!f[key]) f[key] = { ts: Date.now(), by }; // land in Flagged for review
+    fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {});
+    fetch(sharedStateQuery('sharedflag', { key, by })).catch(() => {}); // toggle → adds (item wasn't flagged)
+  }
+  saveRetiredSet(r); saveFlaggedObj(f);
   renderFlags();
   renderInventory();
 }
@@ -5155,15 +5163,31 @@ function computeTransferSuggestions(items) {
   return suggestions;
 }
 
+// Size-variant detection: SKUs that are the same product in different sizes (apparel etc.) nest together.
+function _sizeMatch(name) {
+  const n = String(name || '');
+  // spelled sizes, X-forms, XL/2XL… after any of  -  –  |  /  or whitespace
+  let m = n.match(/[\s\-–|/]+((?:xxx|xx|x)-?(?:small|large)|small|medium|large|x-?small|x-?large|xs|xl|xxl|xxxl|[2-6]\s?x-?large|[2-6]\s?xl)\s*$/i);
+  if (m) return m;
+  // bare single letters S/M/L only after a dash/pipe/slash (not a plain space) to avoid false positives
+  return n.match(/[\-–|/]\s*([sml])\s*$/i);
+}
+function sizeBaseName(name) { const n = String(name || ''); const m = _sizeMatch(n); return m ? n.slice(0, m.index).replace(/[\s\-–|/]+$/, '').trim() : n; }
+function sizeSuffix(name) { const m = _sizeMatch(String(name || '')); return m ? (m[1] || m[0]).replace(/^[\s\-–|/]+/, '').trim() : ''; }
+
 function buildGroups(sorted) {
   // NB: group keys are coerced to String — a numeric SKU (e.g. all-digit) would otherwise break key.replace().
+  // Size variants of one product (same base name, different size) group together under the base name;
+  // everything else keeps the old per-SKU (across-store) grouping unchanged.
   const seen = new Map();
   for (const p of sorted) {
-    const key = String(p.sku || p.name || '');
-    if (!seen.has(key)) seen.set(key, []);
-    seen.get(key).push(p);
+    const base = sizeBaseName(p.name);
+    const isSize = !!base && base !== String(p.name || '');
+    const key = isSize ? ('sz::' + base) : String(p.sku || p.name || '');
+    if (!seen.has(key)) seen.set(key, { items: [], sizeBase: isSize ? base : null });
+    seen.get(key).items.push(p);
   }
-  return [...seen.entries()].map(([key, items]) => ({ key, items }));
+  return [...seen.entries()].map(([key, v]) => ({ key, items: v.items, sizeBase: v.sizeBase }));
 }
 
 function aggregateGroup(items) {
@@ -6187,11 +6211,16 @@ function renderInventory() {
     if (!groupMode || items.length === 1) return mkFlatRow(items[0]);
     // Multi-store group
     const agg = aggregateGroup(items);
+    const isSizeGroup = !!group.sizeBase;
+    const groupSizes = isSizeGroup ? [...new Set(items.map(p => sizeSuffix(p.name)).filter(Boolean))] : [];
+    if (isSizeGroup) agg.name = group.sizeBase;
+    const sizeBadge = (isSizeGroup && groupSizes.length > 1) ? ` <span class="tag" style="background:rgba(99,102,241,.15);color:#a5b4fc">${groupSizes.length} sizes</span>` : '';
     const expanded = state.expandedGroups.has(key);
     const shouldLoadTransferDetails = expanded || state.invFilters.tags.transfer || group.hasTransferHint || group.mayHaveLocalTransfer;
     const suggestions = shouldLoadTransferDetails ? suggestionsForGroup(group) : [];
     const escKey = key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const storeDots = items.map(p => `<span class="grp-store-dot" style="background:${storeColor(p.store)}" title="${storeDisplay(p.store)}"></span>`).join('');
+    const dotStores = [...new Set(items.map(p => p.store))];
+    const storeDots = dotStores.map(s => `<span class="grp-store-dot" style="background:${storeColor(s)}" title="${storeDisplay(s)}"></span>`).join('');
     const aggQtyCell = state.invFilters.tags.distro
       ? `<span style="color:#a78bfa">${fmt(agg.qtyDistro||0)}</span>`
       : `<span>${fmt(agg.qty)}</span>`;
@@ -6200,7 +6229,7 @@ function renderInventory() {
     const parentRow = `<tr class="grp-parent" onclick="toggleGroup('${escKey}')">
       <td>${mkStatusPill(agg)}</td>
       <td class="name-cell">
-        <div class="prod-name" title="${agg.name}"><span class="grp-toggle${expanded ? ' open' : ''}">▶</span>${agg.name}${agg.isNew ? '<span class="tag tag-new">New</span>' : ''}${agg.isHot ? '<span class="tag tag-hot">Hot</span>' : ''}${agg.isDead ? '<span class="tag tag-dead">Dead</span>' : ''}${agg.isBackstock ? '<span class="tag tag-back">Back Stock</span>' : ''}${(suggestions.length || group.hasTransferHint) ? '<span style="margin-left:6px;color:var(--green);font-size:12px;font-weight:700;opacity:.85" title="Transfer opportunity available">↔</span>' : ''}${mkLLBadge(agg)}</div>
+        <div class="prod-name" title="${agg.name}"><span class="grp-toggle${expanded ? ' open' : ''}">▶</span>${agg.name}${sizeBadge}${agg.isNew ? '<span class="tag tag-new">New</span>' : ''}${agg.isHot ? '<span class="tag tag-hot">Hot</span>' : ''}${agg.isDead ? '<span class="tag tag-dead">Dead</span>' : ''}${agg.isBackstock ? '<span class="tag tag-back">Back Stock</span>' : ''}${(suggestions.length || group.hasTransferHint) ? '<span style="margin-left:6px;color:var(--green);font-size:12px;font-weight:700;opacity:.85" title="Transfer opportunity available">↔</span>' : ''}${mkLLBadge(agg)}</div>
         <div class="prod-brand" onclick="event.stopPropagation()" style="user-select:text;cursor:text">${agg.sku ? agg.sku + ' · ' : ''}${agg.vendor || agg.brand}</div>
         ${mkGroupBuyerRecLine(items, shouldLoadTransferDetails)}
       </td>
@@ -6242,7 +6271,7 @@ function renderInventory() {
       return `<tr class="grp-child">
         <td>${mkStatusPill(p)}</td>
         <td class="name-cell" style="padding-left:28px">
-          <span style="color:${storeColor(p.store)}">└ ${storeDisplay(p.store)}</span>${txLine}
+          <span style="color:${storeColor(p.store)}">└ ${isSizeGroup ? '<strong>' + escapeHtml(sizeSuffix(p.name) || p.name) + '</strong> · ' : ''}${storeDisplay(p.store)}</span>${txLine}
           ${mkBuyerRecLine(p)}
         </td>
         <td></td>
@@ -7726,7 +7755,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.70';
+const APP_VERSION = 'v2.71';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
