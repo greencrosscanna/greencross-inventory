@@ -4496,18 +4496,38 @@ function buildOperationalBundle_(force) {
     _logGasError('buildRoomDataBatch_', err.message);
   }
 
+  // GUARDRAIL (learned from Leaderboard's Dutchie hardening): a Dutchie glitch can make a store's inventory
+  // fetch fail or come back empty. NEVER persist a partial bundle — that silently halves the app's totals
+  // until someone manually refreshes. Instead, reuse that store's LAST-GOOD products from the previous
+  // bundle so every store always has data, and flag it stale so the tripwire (warmBundleOnly) can alert.
+  let prevByStore = {};
+  try {
+    const prev = readOperationalSnapshot_('inventory_bundle_v1');
+    (prev && prev.inventory || []).forEach(st => { if (st && st.store) prevByStore[st.store] = st; });
+  } catch (e) { _logGasError('buildOperationalBundle_/prev', e && e.message); }
+
+  const staleStores = [];
   for (let i = 0; i < STORES.length; i++) {
     const store = STORES[i];
+    let products = [], error = '';
     try {
       const inv = getInventory({ store, force: force ? '1' : '' }, invResponses[i], roomDataByStore[store]);
-      inventory.push({ store, products: inv.products || [], error: inv.error || '' });
-      if (inv.error) errors.push(store + ': ' + inv.error);
-    } catch (err) {
-      inventory.push({ store, products: [], error: err.message });
-      errors.push(store + ': ' + err.message);
+      products = inv.products || [];
+      error = inv.error || '';
+    } catch (err) { error = err && err.message; }
+
+    const prev = prevByStore[store];
+    if ((!products.length || error) && prev && (prev.products || []).length) {
+      // fresh fetch failed/empty → keep last-good so the bundle stays complete
+      inventory.push({ store: store, products: prev.products, error: '', stale: true });
+      staleStores.push(store);
+      errors.push(store + ' (kept last-good, fresh fetch ' + (error ? 'errored: ' + error : 'empty') + ')');
+    } else {
+      inventory.push({ store: store, products: products, error: error });
+      if (error) errors.push(store + ': ' + error);
     }
   }
-  return { ok: true, generatedAt, source: 'generated', velocity, inventory, errors };
+  return { ok: true, generatedAt, source: 'generated', velocity, inventory, errors, staleStores: staleStores };
 }
 
 function getOperationalBundle(params) {
@@ -4650,10 +4670,31 @@ function warmBundleOnly() {
   try {
     const bundle = buildOperationalBundle_(true);
     writeOperationalSnapshot_('inventory_bundle_v1', bundle);
+    // Tripwire (Leaderboard-style): if any store fell back to last-good, file ONE bug per distinct stale-set
+    // and self-clear when the bundle is clean again — so a persistent Dutchie glitch is caught by the system.
+    try {
+      const props = PropertiesService.getScriptProperties();
+      const stale = bundle.staleStores || [];
+      const sig = stale.slice().sort().join(',');
+      if (sig !== (props.getProperty('BUNDLE_STALE_SIG') || '')) {
+        if (stale.length) {
+          GXCore.gxIngestBug('inventory', 'app', {
+            title: '⚠️ Inventory bundle: ' + stale.length + ' store(s) served from last-good (live Dutchie fetch failed)',
+            desc: 'Automated tripwire: the operational-bundle build could not fetch live inventory for ' + stale.join(', ') +
+              '. Those stores are served from their previous good snapshot so app TOTALS stay correct (no more silent-half-value), ' +
+              'but their data is stale until Dutchie recovers. Repeated alerts = a persistent Dutchie/API-key issue for those stores.',
+            priority: 'normal', tab: 'inventory', appVer: 'bundle-guard'
+          });
+        }
+        props.setProperty('BUNDLE_STALE_SIG', sig);
+      }
+    } catch (e) { _logGasError('warmBundleOnly/tripwire', e && e.message); }
+    result.staleStores = bundle.staleStores || [];
     result.inventory = bundle.inventory.map(inv => ({
       store:    inv.store,
       products: (inv.products || []).length,
       error:    inv.error || '',
+      stale:    !!inv.stale,
     }));
     result.operationalBundle = {
       generatedAt: bundle.generatedAt,
