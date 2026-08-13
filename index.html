@@ -1209,6 +1209,11 @@ if (location.protocol === 'file:') {
   }
   .iwp-label { font-size: 9px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .iwp-value { font-size: 19px; font-weight: 700; line-height: 1.1; white-space: nowrap; }
+  /* Shimmer skeleton — shown while a pill's value is still loading in the background (vs "—" = no data) */
+  .val-skel { display:inline-block; width:72px; height:17px; border-radius:5px; vertical-align:middle;
+    background:linear-gradient(90deg, var(--border) 25%, rgba(150,150,150,.28) 50%, var(--border) 75%);
+    background-size:200% 100%; animation:valShimmer 1.25s ease-in-out infinite; }
+  @keyframes valShimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
   .inv-status-pill {
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 7px 10px;
@@ -1714,23 +1719,23 @@ if (location.protocol === 'file:') {
       <div class="inv-wide-row">
       <div class="inv-wide-pill" id="iwpInvPill" onclick="toggleFinancials()" title="Click to show/hide financials" style="cursor:pointer">
         <div class="iwp-label">Inventory Value <span style="opacity:.5">(cost)</span> <span id="iwpPrivateIcon" style="font-size:10px;opacity:.5;margin-left:4px"></span></div>
-        <div class="iwp-value" id="iwpInvValue">—</div>
+        <div class="iwp-value" id="iwpInvValue"><span class="val-skel"></span></div>
       </div>
       <div class="inv-wide-pill">
         <div class="iwp-label">Retail Value</div>
-        <div class="iwp-value" id="iwpRetailValue">—</div>
+        <div class="iwp-value" id="iwpRetailValue"><span class="val-skel"></span></div>
       </div>
       <div class="inv-wide-pill">
         <div class="iwp-label">Total Sales <span style="opacity:.5">(last 28d)</span></div>
-        <div class="iwp-value" id="iwpSales">—</div>
+        <div class="iwp-value" id="iwpSales"><span class="val-skel"></span></div>
       </div>
       <div class="inv-wide-pill">
         <div class="iwp-label">Gross Margin <span style="opacity:.5">(last 28d)</span></div>
-        <div class="iwp-value" id="iwpMargin" style="color:var(--green)">—</div>
+        <div class="iwp-value" id="iwpMargin" style="color:var(--green)"><span class="val-skel"></span></div>
       </div>
       <div class="inv-wide-pill" id="iwpMissedRev" onclick="invFilterStatus('oos')" title="Estimated sales lost to stock-outs. For staple products (edibles, cartridges, hardware): days-out-of-stock × 28-day average daily demand × price (real shelf price where known, otherwise cost ÷ gross margin), capped at 28 days per item. For substitutable groups (flower strains, Fatty pre-rolls) a single stock-out only counts to the extent the group has fallen below its target variety count — a well-stocked group counts ~$0 because customers switch to another strain/flavor. An estimate that sharpens as real prices bank. Click to filter to OOS. Keep it low!" style="cursor:pointer">
         <div class="iwp-label" style="color:var(--red)">Lost Revenue</div>
-        <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)">—</div>
+        <div class="iwp-value" id="iwpMissedRevVal" style="color:var(--red)"><span class="val-skel"></span></div>
       </div>
       </div>
       <div class="inv-status-row">
@@ -4063,14 +4068,15 @@ function init() {
       state.invPage = 0;
       state.restockShowAll = false;
       if (state.tab === 'inventory') {
-        state.inventoryData = null;
-        state.velocityData  = null;
-        state.inv28Sales    = null;
-        state.inv28Cogs     = null;
-        state.betaDecisionStore = null;
-        document.getElementById('inventoryContent').innerHTML =
-          '<div class="load-progress"><div class="spinner"></div><br>Loading…</div>';
-        loadInventoryData();
+        if (state.inventoryData) {
+          // All stores are already loaded — switching store is just a re-filter, no re-pull/spinner.
+          renderInventory();
+          loadBetaDecisionsForInventory(); // per-store decision feed (no-op unless beta); updates async
+        } else {
+          document.getElementById('inventoryContent').innerHTML =
+            '<div class="load-progress"><div class="spinner"></div><br>Loading…</div>';
+          loadInventoryData();
+        }
       } else if (state.tab === 'beta') {
         loadBetaFeed();
       } else {
@@ -4365,7 +4371,9 @@ function filterInventory(products, flagged) {
 // ── Data loading ─────────────────────────────────────────
 async function loadInventoryData() {
   const el = document.getElementById('inventoryContent');
-  const targetStores = state.store === 'All' ? STORES.map(s => s.name) : [state.store];
+  // Always load ALL stores (the bundle has them anyway) so switching the store filter is an instant
+  // re-filter, not a re-pull. filterInventory + the summary bar scope everything to state.store at render.
+  const targetStores = STORES.map(s => s.name);
 
   el.innerHTML = `<div class="load-progress">
     <div class="spinner"></div>
@@ -4679,7 +4687,10 @@ async function loadInventoryData() {
         const tS = sumBy(sRows, 'sales'), tC = sumBy(cRows, 'cogs');
         setF('iwpSales',  tS > 0 ? fmtFull(tS) : '—');
         setF('iwpMargin', tS > 0 ? fmtPct((tS - tC) / tS) : '—');
-      } catch(e) { /* financial overlay is optional */ }
+      } catch(e) {
+        // Financial overlay is optional — but clear the loading shimmer so the pill doesn't spin forever.
+        ['iwpSales','iwpMargin'].forEach(id => { const n = document.getElementById(id); if (n && n.querySelector('.val-skel')) n.textContent = '—'; });
+      }
     })();
 
     // Lost-revenue estimate for the pill — backend computes it across ALL out-of-stocks (velocity ×
@@ -4704,7 +4715,10 @@ async function loadInventoryData() {
             }
           }
         }
-      } catch(e) { /* lost-revenue overlay is optional */ }
+      } catch(e) {
+        // Lost-revenue overlay is optional — clear the loading shimmer so the pill doesn't spin forever.
+        const n = document.getElementById('iwpMissedRevVal'); if (n && n.querySelector('.val-skel')) n.textContent = '—';
+      }
     })();
   } catch (err) {
     clearInterval(_quoteTimer);
@@ -6391,9 +6405,11 @@ function updateInvSummaryBar(counts, needsReorder, totalInvValue, totalMissedRev
       setFinancial('iwpMissedRevVal', fmtFull(totalMissedRevenue));
     } else if (totalLostUnits > 0) {
       const node = el('iwpMissedRevVal'); if (node) node.textContent = Math.round(totalLostUnits) + 'u';
-    } else {
+    } else if (state.lostSales) {
+      // Estimate has loaded and is genuinely zero — show a dash.
       setFinancial('iwpMissedRevVal', '—');
     }
+    // else: ?action=lostsales still in flight — leave the loading shimmer in place (don't flash '—').
   }
   const _sData = state.inv28Sales || state.salesData;
   const _cData = state.inv28Cogs  || state.cogsData;
@@ -7771,7 +7787,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.73';
+const APP_VERSION = 'v2.74';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
