@@ -1594,9 +1594,10 @@ if (location.protocol === 'file:') {
       <div class="settings-row">
         <button class="settings-btn-sm" id="buildSnapshotBtn" onclick="buildOperationalSnapshotNow()" style="flex:1;text-align:center">Build Snapshot Now</button>
       </div>
-      <div class="settings-row">
-        <button class="settings-btn-sm" id="installWarmTriggerBtn" onclick="installWarmTriggerNow()" style="flex:1;text-align:center">Install Nightly Trigger</button>
-      </div>
+      <!-- "Install Nightly Trigger" button removed (v2.76): the nightly operational-snapshot trigger is a
+           set-once permanent fixture, so an always-visible manual install button was orphaned/misleading.
+           When the trigger is genuinely missing, the inventory health card surfaces a CONDITIONAL "Install
+           Trigger" (installWarmTriggerFromHealth → action=installwarmtrigger), which is the real self-heal path. -->
       <div class="settings-row" id="gasErrorRow" style="display:none">
         <span class="settings-label" style="color:var(--amber)">⚠ GAS Errors</span>
         <span id="gasErrorCount" style="font-size:11px;color:var(--amber)"></span>
@@ -7787,7 +7788,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.75';
+const APP_VERSION = 'v2.76';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
@@ -8248,40 +8249,10 @@ async function buildOperationalSnapshotNow() {
   }
 }
 
-async function installWarmTriggerNow() {
-  const btn = document.getElementById('installWarmTriggerBtn');
-  const label = document.getElementById('operationalSnapshotLabel');
-  const oldText = btn ? btn.textContent : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = 'Installing...';
-  }
-  if (label) {
-    label.textContent = 'Installing trigger...';
-    label.style.color = '#d4a843';
-    label.title = 'Installing the nightly operational snapshot trigger.';
-  }
-  try {
-    const result = await withTimeout(proxyFetch({ action: 'installwarmtrigger' }), 30000, 'Trigger install');
-    if (label) {
-      label.textContent = 'Trigger installed';
-      label.style.color = 'var(--green)';
-      label.title = result.message || 'Nightly operational snapshot trigger installed.';
-    }
-    await refreshOperationalSnapshotStatus();
-  } catch(e) {
-    if (label) {
-      label.textContent = 'Trigger install failed';
-      label.style.color = 'var(--red)';
-      label.title = e.message || 'Trigger install failed';
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = oldText || 'Install Nightly Trigger';
-    }
-  }
-}
+// installWarmTriggerNow() removed (v2.76): the always-visible Settings "Install Nightly Trigger" button
+// was orphaned — the nightly operational-snapshot trigger installs once and persists. The real self-heal
+// path is installWarmTriggerFromHealth() (inventory health card), which fires action=installwarmtrigger
+// only when the trigger is actually missing. The backend action + setupOperationalCacheTrigger stay.
 
 // (triggerVelBackfillNow removed — local velocity backfill retired; velocity is owned by GX Core.)
 
