@@ -5174,6 +5174,14 @@ function _sizeMatch(name) {
 }
 function sizeBaseName(name) { const n = String(name || ''); const m = _sizeMatch(n); return m ? n.slice(0, m.index).replace(/[\s\-–|/]+$/, '').trim() : n; }
 function sizeSuffix(name) { const m = _sizeMatch(String(name || '')); return m ? (m[1] || m[0]).replace(/^[\s\-–|/]+/, '').trim() : ''; }
+// Natural size ordering (Small → 3XL) for nesting child rows.
+function _sizeRank(name) {
+  const s = String(sizeSuffix(name) || name || '').toLowerCase().replace(/[\s\-]/g, '');
+  const map = { xxsmall: 0, xsmall: 1, xs: 1, small: 2, s: 2, medium: 3, m: 3, large: 4, l: 4,
+    xlarge: 5, xl: 5, xxlarge: 6, xxl: 6, '2xl': 6, '2xlarge': 6, xxxlarge: 7, xxxl: 7, '3xl': 7, '3xlarge': 7,
+    '4xl': 8, '4xlarge': 8, '5xl': 9, '6xl': 10 };
+  return (s in map) ? map[s] : 50;
+}
 
 function buildGroups(sorted) {
   // NB: group keys are coerced to String — a numeric SKU (e.g. all-digit) would otherwise break key.replace().
@@ -6250,7 +6258,10 @@ function renderInventory() {
       if (!donorsByStore.has(s.donor.store)) donorsByStore.set(s.donor.store, []);
       donorsByStore.get(s.donor.store).push(s);
     }
-    const childRows = items.map(p => {
+    const childItems = isSizeGroup
+      ? items.slice().sort((a, b) => (_sizeRank(a.name) - _sizeRank(b.name)) || String(a.store).localeCompare(String(b.store)))
+      : items;
+    const childRows = childItems.map(p => {
       const fkEsc = flagKey(p).replace(/'/g, "\\'");
       const txList = donorsByStore.get(p.store) || [];
       // Inline transfer text — one line per suggestion
@@ -7755,7 +7766,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.71';
+const APP_VERSION = 'v2.72';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
