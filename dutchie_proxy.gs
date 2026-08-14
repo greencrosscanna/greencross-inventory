@@ -233,6 +233,8 @@ function doGet(e) {
     if (params.action === 'velgapcheck')       return jsonOut(velGapCheck(params));
     if (params.action === 'velgapaudit')       return jsonOut(velGapAudit());
     if (params.action === 'getstate')          return jsonOut(getSharedState(params));
+    if (params.action === 'leadtimes')         return jsonOut(getLeadTimes());
+    if (params.action === 'setleadtimes')      return jsonOut(setLeadTimes(params));
     if (params.action === 'sharedkill')        return jsonOut(sharedKill(params));
     if (params.action === 'sharedunkill')      return jsonOut(sharedUnkill(params));
     if (params.action === 'sharedretire')      return jsonOut(sharedRetire(params));
@@ -4937,6 +4939,14 @@ function backfillSkuDict() {
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
 const SHARED_RETIRED_KEY = 'gc_shared_retired'; // items queued for manual retirement in Dutchie
+// Custom lead times: per-brand/category target-coverage (days) overrides for the reorder engine. Shared
+// server-side (all users + the smart-ordering job read the same list). Rule = {type:'brand'|'category', value, days}.
+const LEAD_TIMES_KEY = 'gc_lead_times';
+const DEFAULT_LEAD_TIMES = [
+  { type: 'brand',    value: 'Green Cross',               days: 30 },
+  { type: 'category', value: 'Apparel',                   days: 30 },
+  { type: 'category', value: 'Paraphernalia Electronics', days: 30 },
+];
 
 function isBetaRequest_(params) {
   return params && (params.beta === '1' || params.mode === 'beta' || getDataMode() === 'beta');
@@ -5015,6 +5025,32 @@ function getSharedState(params) {
     flagged: flagged,
     retired: JSON.parse(props.getProperty(SHARED_RETIRED_KEY) || '{}'),
   };
+}
+
+// Custom lead times (shared). Read returns the saved rules, or a default seed until Sky saves for the first
+// time (seeded:true so the UI can hint it's a starting point). The smart-ordering job reads this too.
+function getLeadTimes() {
+  const raw = PropertiesService.getScriptProperties().getProperty(LEAD_TIMES_KEY);
+  if (!raw) return { ok: true, rules: DEFAULT_LEAD_TIMES, seeded: true };
+  let rules;
+  try { rules = JSON.parse(raw); } catch (e) { rules = []; }
+  if (!Array.isArray(rules)) rules = [];
+  return { ok: true, rules: rules, seeded: false };
+}
+
+function setLeadTimes(params) {
+  let rules;
+  try { rules = JSON.parse(params.rules || '[]'); } catch (e) { return { ok: false, error: 'bad rules JSON' }; }
+  if (!Array.isArray(rules)) return { ok: false, error: 'rules must be an array' };
+  const clean = rules.map(function (r) {
+    return {
+      type:  (String((r && r.type) || 'brand').toLowerCase() === 'category') ? 'category' : 'brand',
+      value: String((r && r.value) || '').trim(),
+      days:  Math.max(1, Math.round(Number(r && r.days) || 0)),
+    };
+  }).filter(function (r) { return r.value && r.days >= 1; });
+  PropertiesService.getScriptProperties().setProperty(LEAD_TIMES_KEY, JSON.stringify(clean));
+  return { ok: true, rules: clean };
 }
 
 function sharedKill(params) {

@@ -1637,6 +1637,18 @@ if (location.protocol === 'file:') {
       <div style="font-size:11px;color:var(--muted);margin-top:4px">Lead 7d + safety 7d = 14 days. This controls local Inventory reorder chips; Decision Feed uses the same beta target.</div>
     </div>
 
+    <!-- Custom Lead Times -->
+    <div class="settings-sec">
+      <div class="settings-sec-title">Lead Times</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Target coverage (days) for specific <b>brands</b> or <b>categories</b> — e.g. Green Cross, Apparel, Paraphernalia Electronics. Overrides the global target above for matching items; the longest matching rule wins. Shared with everyone.</div>
+      <div id="leadTimesRows"></div>
+      <div class="settings-row" style="margin-top:8px;gap:6px">
+        <button class="settings-btn-sm" onclick="addLeadTimeRow()">+ Add rule</button>
+        <button class="settings-btn-sm" onclick="saveLeadTimes()" style="margin-left:auto">Save lead times</button>
+      </div>
+      <div id="leadTimesMsg" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+    </div>
+
     <!-- Transfer Settings -->
     <div class="settings-sec">
       <div class="settings-sec-title">Transfer Settings</div>
@@ -2308,6 +2320,7 @@ let _betaDecisionLoadTimer = null;
 let state = {
   tab: 'inventory',
   store: 'All',
+  leadTimes: [],   // custom per-brand/category target-coverage overrides (shared backend config)
   from: '',
   to: '',
   cogsData: null,
@@ -4146,6 +4159,9 @@ function init() {
 
   // Load release notes from GX Core (single source of truth), then drive What's New + Version History
   loadChangelog();
+
+  // Load shared custom lead times (brand/category → target-coverage days) for the reorder engine.
+  loadLeadTimes();
 }
 
 function setLoadingAll() {
@@ -4283,7 +4299,7 @@ function enrichProduct(p, storeName, velMap) {
     status = doh < DOH_CRITICAL ? 'critical' : doh < DOH_LOW ? 'low' : doh < DOH_WATCH ? 'watch' : 'ok';
   } else { status = isNew ? 'ok' : 'slow'; }
 
-  const REORDER_BUFFER = getReorderBuffer();
+  const REORDER_BUFFER = getBufferForProduct(p);   // custom lead time (brand/category) or global buffer
   const rawReorder = (pVel > 0 && !isDistroOnly && (p.qty === 0 || doh < REORDER_BUFFER))
     ? Math.max(0, pVel * REORDER_BUFFER - p.qty) : 0;
   const isFlower = isBulkFlowerProduct(p);
@@ -7821,7 +7837,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.83';
+const APP_VERSION = 'v2.84';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8643,6 +8659,97 @@ function saveReorderBuffer() {
   localStorage.setItem(LS.REORDER_BUFFER, String(v));
   localStorage.setItem(LS.REORDER_TARGET, '1');
   if (state.inventoryData) renderInventory();
+}
+
+// ── Custom lead times (shared backend config: brand/category → target-coverage days) ──
+// A product's reorder buffer is the LONGEST matching rule's days (brand or category, case-insensitive),
+// or the global buffer if nothing matches. "Total coverage" semantics — the rule value IS the buffer.
+function getBufferForProduct(p) {
+  const rules = state.leadTimes || [];
+  if (rules.length && p) {
+    const brand = String(p.brand || '').trim().toLowerCase();
+    const cat   = String(p.category || '').trim().toLowerCase();
+    let best = 0;
+    for (const r of rules) {
+      const val = String((r && r.value) || '').trim().toLowerCase();
+      if (!val) continue;
+      const hit = (r.type === 'category') ? (cat === val) : (brand === val);
+      if (hit) best = Math.max(best, Number(r.days) || 0);
+    }
+    if (best > 0) return best;
+  }
+  return getReorderBuffer();
+}
+
+async function loadLeadTimes() {
+  try {
+    const res = await proxyFetch({ action: 'leadtimes' });
+    state.leadTimes = Array.isArray(res.rules) ? res.rules : [];
+  } catch (e) { state.leadTimes = state.leadTimes || []; }
+  renderLeadTimesEditor();
+  if (state.inventoryData) renderInventory();  // reorder qtys depend on lead times
+}
+
+function renderLeadTimesEditor() {
+  const box = document.getElementById('leadTimesRows');
+  if (!box) return;
+  const rows = state.leadTimes || [];
+  if (!rows.length) {
+    box.innerHTML = '<div style="font-size:11px;color:var(--muted)">No custom lead times — all items use the global buffer above.</div>';
+    return;
+  }
+  box.innerHTML = rows.map((r, i) => leadTimeRowHtml(r, i)).join('');
+}
+
+function leadTimeRowHtml(r, i) {
+  const type = (r && r.type === 'category') ? 'category' : 'brand';
+  const val  = escapeHtml(String((r && r.value) || ''));
+  const days = Number((r && r.days) || 0) || '';
+  return `<div class="settings-row lt-row" data-i="${i}" style="gap:6px;margin-top:4px">
+    <select class="settings-input lt-type" style="max-width:104px">
+      <option value="brand"${type === 'brand' ? ' selected' : ''}>Brand</option>
+      <option value="category"${type === 'category' ? ' selected' : ''}>Category</option>
+    </select>
+    <input class="settings-input lt-value" placeholder="e.g. Green Cross" value="${val}" style="flex:1">
+    <input class="settings-input lt-days" type="number" min="1" max="365" placeholder="days" value="${days}" style="max-width:66px">
+    <button class="settings-btn-sm danger" onclick="removeLeadTimeRow(${i})" title="Remove rule">✕</button>
+  </div>`;
+}
+
+// Read the current editor rows into rule objects (keeps unsaved edits when adding/removing rows).
+function readLeadTimeEditor() {
+  return [...document.querySelectorAll('#leadTimesRows .lt-row')].map(row => ({
+    type:  row.querySelector('.lt-type').value === 'category' ? 'category' : 'brand',
+    value: row.querySelector('.lt-value').value.trim(),
+    days:  parseInt(row.querySelector('.lt-days').value, 10) || 0,
+  }));
+}
+
+function addLeadTimeRow() {
+  state.leadTimes = readLeadTimeEditor();
+  state.leadTimes.push({ type: 'brand', value: '', days: 14 });
+  renderLeadTimesEditor();
+}
+
+function removeLeadTimeRow(i) {
+  state.leadTimes = readLeadTimeEditor();
+  state.leadTimes.splice(i, 1);
+  renderLeadTimesEditor();
+}
+
+async function saveLeadTimes() {
+  const rules = readLeadTimeEditor().filter(r => r.value && r.days >= 1);
+  const msg = document.getElementById('leadTimesMsg');
+  if (msg) { msg.textContent = 'Saving…'; msg.style.color = 'var(--muted)'; }
+  try {
+    const res = await proxyFetch({ action: 'setleadtimes', rules: JSON.stringify(rules) });
+    state.leadTimes = Array.isArray(res.rules) ? res.rules : rules;
+    renderLeadTimesEditor();
+    if (state.inventoryData) renderInventory();
+    if (msg) { msg.textContent = '✓ Saved — applied to reorder suggestions for everyone.'; msg.style.color = 'var(--green)'; }
+  } catch (e) {
+    if (msg) { msg.textContent = 'Save failed — try again. ' + (e.message || ''); msg.style.color = 'var(--red)'; }
+  }
 }
 
 // ── Density ──────────────────────────────────────────────
