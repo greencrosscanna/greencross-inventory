@@ -4939,13 +4939,14 @@ function backfillSkuDict() {
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
 const SHARED_RETIRED_KEY = 'gc_shared_retired'; // items queued for manual retirement in Dutchie
-// Custom lead times: per-brand/category target-coverage (days) overrides for the reorder engine. Shared
-// server-side (all users + the smart-ordering job read the same list). Rule = {type:'brand'|'category', value, days}.
+// Custom lead times: per group target-coverage (days) overrides for the reorder engine. Shared server-side
+// (all users + the smart-ordering job read the same list). A rule matches on brand AND/OR category (both set
+// = AND, so "Green Cross + Apparel" targets just GC tees, distinct from "Green Cross + Paraphernalia
+// Electronics" = GC batteries). At least one of brand/category must be set. Rule = {brand, category, days}.
 const LEAD_TIMES_KEY = 'gc_lead_times';
 const DEFAULT_LEAD_TIMES = [
-  { type: 'brand',    value: 'Green Cross',               days: 30 },
-  { type: 'category', value: 'Apparel',                   days: 30 },
-  { type: 'category', value: 'Paraphernalia Electronics', days: 30 },
+  { brand: 'Green Cross', category: 'Apparel',                   days: 40 },  // GC tee shirts (size run)
+  { brand: 'Green Cross', category: 'Paraphernalia Electronics', days: 180 }, // GC batteries (3 SKUs)
 ];
 
 function isBetaRequest_(params) {
@@ -5035,6 +5036,14 @@ function getLeadTimes() {
   let rules;
   try { rules = JSON.parse(raw); } catch (e) { rules = []; }
   if (!Array.isArray(rules)) rules = [];
+  // Migrate any legacy {type:'brand'|'category', value} rows to the {brand, category} shape.
+  rules = rules.map(function (r) {
+    if (r && (r.brand !== undefined || r.category !== undefined)) {
+      return { brand: String(r.brand || '').trim(), category: String(r.category || '').trim(), days: Math.max(1, Math.round(Number(r.days) || 0)) };
+    }
+    var t = String((r && r.type) || 'brand').toLowerCase(), v = String((r && r.value) || '').trim();
+    return { brand: t === 'category' ? '' : v, category: t === 'category' ? v : '', days: Math.max(1, Math.round(Number(r && r.days) || 0)) };
+  }).filter(function (r) { return (r.brand || r.category) && r.days >= 1; });
   return { ok: true, rules: rules, seeded: false };
 }
 
@@ -5044,11 +5053,11 @@ function setLeadTimes(params) {
   if (!Array.isArray(rules)) return { ok: false, error: 'rules must be an array' };
   const clean = rules.map(function (r) {
     return {
-      type:  (String((r && r.type) || 'brand').toLowerCase() === 'category') ? 'category' : 'brand',
-      value: String((r && r.value) || '').trim(),
-      days:  Math.max(1, Math.round(Number(r && r.days) || 0)),
+      brand:    String((r && r.brand) || '').trim(),
+      category: String((r && r.category) || '').trim(),
+      days:     Math.max(1, Math.round(Number(r && r.days) || 0)),
     };
-  }).filter(function (r) { return r.value && r.days >= 1; });
+  }).filter(function (r) { return (r.brand || r.category) && r.days >= 1; });  // need at least one dimension
   PropertiesService.getScriptProperties().setProperty(LEAD_TIMES_KEY, JSON.stringify(clean));
   return { ok: true, rules: clean };
 }

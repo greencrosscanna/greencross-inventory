@@ -1640,7 +1640,7 @@ if (location.protocol === 'file:') {
     <!-- Custom Lead Times -->
     <div class="settings-sec">
       <div class="settings-sec-title">Lead Times</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Target coverage (days) for specific <b>brands</b> or <b>categories</b> — e.g. Green Cross, Apparel, Paraphernalia Electronics. Overrides the global target above for matching items; the longest matching rule wins. Shared with everyone.</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Target coverage (days) for a group of items. Match by <b>Brand</b>, <b>Category</b>, or <b>both</b> (both = AND, e.g. Green Cross + Apparel = GC tees at 40d, distinct from Green Cross + Paraphernalia Electronics = GC batteries at 180d). Leave a field blank to match any. Overrides the global target above; the most specific matching rule wins. Shared with everyone.</div>
       <div id="leadTimesRows"></div>
       <div class="settings-row" style="margin-top:8px;gap:6px">
         <button class="settings-btn-sm" onclick="addLeadTimeRow()">+ Add rule</button>
@@ -7837,7 +7837,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.84';
+const APP_VERSION = 'v2.85';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8661,22 +8661,28 @@ function saveReorderBuffer() {
   if (state.inventoryData) renderInventory();
 }
 
-// ── Custom lead times (shared backend config: brand/category → target-coverage days) ──
-// A product's reorder buffer is the LONGEST matching rule's days (brand or category, case-insensitive),
-// or the global buffer if nothing matches. "Total coverage" semantics — the rule value IS the buffer.
+// ── Custom lead times (shared backend config) ──
+// A rule matches on brand AND/OR category (both set = AND). This lets "Green Cross + Apparel" (tees, 40d) be
+// distinct from "Green Cross + Paraphernalia Electronics" (batteries, 180d). The MOST SPECIFIC matching rule
+// wins (a brand+category rule beats a single-dimension one); ties break to the longer lead. "Total coverage"
+// semantics — the matched days ARE the reorder buffer. No match → the global buffer.
 function getBufferForProduct(p) {
   const rules = state.leadTimes || [];
   if (rules.length && p) {
     const brand = String(p.brand || '').trim().toLowerCase();
     const cat   = String(p.category || '').trim().toLowerCase();
-    let best = 0;
+    let bestDays = 0, bestSpec = -1;
     for (const r of rules) {
-      const val = String((r && r.value) || '').trim().toLowerCase();
-      if (!val) continue;
-      const hit = (r.type === 'category') ? (cat === val) : (brand === val);
-      if (hit) best = Math.max(best, Number(r.days) || 0);
+      const rb = String((r && r.brand) || '').trim().toLowerCase();
+      const rc = String((r && r.category) || '').trim().toLowerCase();
+      if (!rb && !rc) continue;
+      if (rb && brand !== rb) continue;
+      if (rc && cat !== rc) continue;
+      const spec = (rb ? 1 : 0) + (rc ? 1 : 0);
+      const days = Number(r.days) || 0;
+      if (spec > bestSpec || (spec === bestSpec && days > bestDays)) { bestSpec = spec; bestDays = days; }
     }
-    if (best > 0) return best;
+    if (bestDays > 0) return bestDays;
   }
   return getReorderBuffer();
 }
@@ -8702,16 +8708,13 @@ function renderLeadTimesEditor() {
 }
 
 function leadTimeRowHtml(r, i) {
-  const type = (r && r.type === 'category') ? 'category' : 'brand';
-  const val  = escapeHtml(String((r && r.value) || ''));
-  const days = Number((r && r.days) || 0) || '';
+  const brand = escapeHtml(String((r && r.brand) || ''));
+  const cat   = escapeHtml(String((r && r.category) || ''));
+  const days  = Number((r && r.days) || 0) || '';
   return `<div class="settings-row lt-row" data-i="${i}" style="gap:6px;margin-top:4px">
-    <select class="settings-input lt-type" style="max-width:104px">
-      <option value="brand"${type === 'brand' ? ' selected' : ''}>Brand</option>
-      <option value="category"${type === 'category' ? ' selected' : ''}>Category</option>
-    </select>
-    <input class="settings-input lt-value" placeholder="e.g. Green Cross" value="${val}" style="flex:1">
-    <input class="settings-input lt-days" type="number" min="1" max="365" placeholder="days" value="${days}" style="max-width:66px">
+    <input class="settings-input lt-brand" placeholder="Brand (any)" value="${brand}" style="flex:1" title="Brand — leave blank to match any brand">
+    <input class="settings-input lt-cat" placeholder="Category (any)" value="${cat}" style="flex:1" title="Category — leave blank to match any category">
+    <input class="settings-input lt-days" type="number" min="1" max="365" placeholder="days" value="${days}" style="max-width:66px" title="Target coverage in days">
     <button class="settings-btn-sm danger" onclick="removeLeadTimeRow(${i})" title="Remove rule">✕</button>
   </div>`;
 }
@@ -8719,15 +8722,15 @@ function leadTimeRowHtml(r, i) {
 // Read the current editor rows into rule objects (keeps unsaved edits when adding/removing rows).
 function readLeadTimeEditor() {
   return [...document.querySelectorAll('#leadTimesRows .lt-row')].map(row => ({
-    type:  row.querySelector('.lt-type').value === 'category' ? 'category' : 'brand',
-    value: row.querySelector('.lt-value').value.trim(),
-    days:  parseInt(row.querySelector('.lt-days').value, 10) || 0,
+    brand:    row.querySelector('.lt-brand').value.trim(),
+    category: row.querySelector('.lt-cat').value.trim(),
+    days:     parseInt(row.querySelector('.lt-days').value, 10) || 0,
   }));
 }
 
 function addLeadTimeRow() {
   state.leadTimes = readLeadTimeEditor();
-  state.leadTimes.push({ type: 'brand', value: '', days: 14 });
+  state.leadTimes.push({ brand: '', category: '', days: 14 });
   renderLeadTimesEditor();
 }
 
@@ -8738,7 +8741,7 @@ function removeLeadTimeRow(i) {
 }
 
 async function saveLeadTimes() {
-  const rules = readLeadTimeEditor().filter(r => r.value && r.days >= 1);
+  const rules = readLeadTimeEditor().filter(r => (r.brand || r.category) && r.days >= 1);
   const msg = document.getElementById('leadTimesMsg');
   if (msg) { msg.textContent = 'Saving…'; msg.style.color = 'var(--muted)'; }
   try {
