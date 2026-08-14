@@ -4730,7 +4730,11 @@ async function loadInventoryData() {
 }
 
 function buildInvFilterOptions(products) {
-  const categories = [...new Set(products.map(p => p.category).filter(Boolean))].sort();
+  // Shake is hard-excluded from inventory everywhere (see filterInventory / summary counts), so its
+  // category must not surface as a "Hide" pill or a category-dropdown option — the pill would filter
+  // nothing and just confuse. We don't track shake or samples in this app.
+  const isExcludedCat_ = c => c === 'Cannabis Bulk Shake' || /\bshake\b/i.test(c);
+  const categories = [...new Set(products.map(p => p.category).filter(Boolean))].filter(c => !isExcludedCat_(c)).sort();
   const brands     = [...new Set(products.map(p => p.brand).filter(Boolean))].sort();
   const vendors    = [...new Set(products.map(p => p.vendor).filter(Boolean))].sort();
 
@@ -7788,7 +7792,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.76';
+const APP_VERSION = 'v2.77';
 const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 let _vhCbSeq = 0;
