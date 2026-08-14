@@ -1477,6 +1477,10 @@ if (location.protocol === 'file:') {
   }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Shared GX Core client (retry-aware): the canonical resilient wrapper for GX Core's flaky two-hop
+     /exec endpoint. Loaded here (before the app script) so window.GXClient is defined when loadChangelog
+     runs. Canonical source: greencross-gx-theme/gx-client.js — keep GX Core calls routed through it. -->
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-client.js"></script>
 </head>
 <body>
 
@@ -7792,36 +7796,14 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.77';
-const VERSION_HISTORY_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
+const APP_VERSION = 'v2.78';
+const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
-let _vhCbSeq = 0;
-
-function fetchVersionHistory() {
-  return new Promise(resolve => {
-    const callback = '__gcVerHist' + Date.now() + '_' + (++_vhCbSeq);
-    const script = document.createElement('script');
-    const cleanup = () => { delete window[callback]; script.remove(); clearTimeout(timer); };
-    const timer = setTimeout(() => { cleanup(); resolve([]); }, 8000);   // fail soft → empty list
-    window[callback] = payload => {
-      cleanup();
-      let out = [];
-      try {
-        if (payload && payload.ok && Array.isArray(payload.history)) {
-          out = payload.history.map(h => ({
-            v: h.version,
-            date: fmtVerDate(h.deployed_at),
-            items: String(h.notes || '').split('\n').map(s => s.trim()).filter(Boolean),
-          }));
-        }
-      } catch (e) { out = []; }
-      resolve(out);
-    };
-    script.onerror = () => { cleanup(); resolve([]); };
-    script.src = VERSION_HISTORY_URL + '?action=version_history&app=inventory&callback=' + callback;
-    document.head.appendChild(script);
-  });
-}
+// Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
+// Core's flaky two-hop /exec through jsonp() with backoff, so a transient Drive-HTML miss (Google's content
+// layer 404'ing) no longer blanks Version History / What's New. Replaces the hand-rolled fetchVersionHistory
+// + the v2.75 bespoke retry loop. _GX is null only if the shared client somehow failed to load (guarded).
+const _GX = (typeof GXClient === 'function') ? GXClient(GXCORE_EXEC_URL) : null;
 
 function fmtVerDate(iso) {
   if (!iso) return '';
@@ -7832,18 +7814,24 @@ function fmtVerDate(iso) {
 
 async function loadChangelog() {
   migrateWnSeenKey_();
-  // GX Core's webapp intermittently serves a Drive "unable to open the file" HTML page instead of the
-  // JSONP payload (a 200, so script.onerror never fires — the 8s timeout just resolves []). A single miss
-  // used to leave Version History AND What's New blank for the whole session with no retry. Retry a few
-  // times with backoff until we get a non-empty list. Verified: a failed load recovers on the next call.
-  for (let attempt = 0; attempt < 4; attempt++) {
-    CHANGELOG_DATA = await fetchVersionHistory();
-    if (CHANGELOG_DATA.length) break;
-    renderVersionHistory();                                  // keep the "loading…" note visible meanwhile
-    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));  // 1.5s → 3s → 4.5s
+  if (!_GX) { renderVersionHistoryError('Version history unavailable — the GX Core client failed to load.'); return; }
+  try {
+    // GX.jsonp already retries with backoff and treats a no-callback timeout as the miss (the exact
+    // Drive-HTML failure), rejecting only after every attempt misses — so no bespoke retry loop here.
+    const payload = await _GX.jsonp('version_history', { app: 'inventory' });
+    CHANGELOG_DATA = (payload && payload.ok && Array.isArray(payload.history))
+      ? payload.history.map(h => ({
+          v: h.version,
+          date: fmtVerDate(h.deployed_at),
+          items: String(h.notes || '').split('\n').map(s => s.trim()).filter(Boolean),
+        }))
+      : [];
+    renderVersionHistory();
+    checkWhatsNew();
+  } catch (e) {
+    // Every retry missed → show a clear, actionable state, never a silent blank.
+    renderVersionHistoryError('Couldn’t reach the Command Center.');
   }
-  renderVersionHistory();
-  checkWhatsNew();
 }
 
 // One-time migration: the What's New seen-key used to be a bare `gc_wn_seen`, which is shared across
@@ -7856,6 +7844,16 @@ function migrateWnSeenKey_() {
     const old = localStorage.getItem('gc_wn_seen');
     if (old && /^v2\./.test(old)) localStorage.setItem(LS.WN_SEEN, old);
   } catch (e) {}
+}
+
+// Shown when the GX Core fetch fails every retry (or the client didn't load). A clear, actionable state
+// with a Retry — never a silent blank list that reads as "broken."
+function renderVersionHistoryError(msg) {
+  const box = document.getElementById('verHistoryRows');
+  if (!box) return;
+  box.innerHTML =
+    '<div style="font-size:12px;color:var(--muted);padding:2px 0">' + escapeHtml(msg) +
+    ' <button class="settings-btn-sm" style="margin-left:6px" onclick="loadChangelog()">Retry</button></div>';
 }
 
 function renderVersionHistory() {
