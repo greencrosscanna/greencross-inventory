@@ -3830,12 +3830,23 @@ function invFieldProbe(params) {
   const code  = resp.getResponseCode();
   if (code !== 200) return { httpStatus: code, error: resp.getContentText().slice(0, 500) };
   const raw   = JSON.parse(resp.getContentText());
-  const items = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
+  let items = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
   if (!items.length) return { httpStatus: code, error: 'empty response' };
-  // Return first item in full + a list of all keys with their value types
+  // Optional ?sku=… — filter to one SKU to inspect its raw price fields (unitPrice vs any rec/med price).
+  const sku = String(params.sku || '').trim();
+  if (sku) {
+    const match = items.filter(i => String(i.sku) === sku);
+    if (!match.length) return { store, httpStatus: code, sku, matched: 0, totalItems: items.length, error: 'sku not found at ' + store + ' — try a different store' };
+    items = match;
+  }
+  // Return first (matched) item in full + a list of all keys with their value types. Also surface any
+  // price-ish fields explicitly so the raw unitPrice vs rec/med price question is answerable at a glance.
   const first = items[0];
   const fields = Object.entries(first).map(([k, v]) => ({ key: k, type: typeof v, sample: JSON.stringify(v).slice(0, 80) }));
-  return { store, httpStatus: code, totalItems: items.length, fields, firstItem: first };
+  const priceFields = Object.entries(first)
+    .filter(([k]) => /price|cost|msrp|tax|rec|med/i.test(k))
+    .reduce((o, [k, v]) => { o[k] = v; return o; }, {});
+  return { store, sku: sku || null, httpStatus: code, totalItems: items.length, matched: items.length, priceFields, fields, firstItem: first };
 }
 
 // Fetch all inventory transactions for a specific inventoryId to debug room classification
