@@ -7819,8 +7819,11 @@ async function loadChangelog() {
     // GX.jsonp already retries with backoff and treats a no-callback timeout as the miss (the exact
     // Drive-HTML failure), rejecting only after every attempt misses — so no bespoke retry loop here.
     const payload = await _GX.jsonp('version_history', { app: 'inventory' });
-    CHANGELOG_DATA = (payload && payload.ok && Array.isArray(payload.history))
-      ? payload.history.map(h => ({
+    // Prefer GX Core's consolidated `releases` feed (meaningful upgrades only, per the shared What's New
+    // standard); fall back to the full raw `history` if an older GX Core doesn't send releases yet.
+    const feed = (payload && payload.ok && (payload.releases || payload.history));
+    CHANGELOG_DATA = Array.isArray(feed)
+      ? feed.map(h => ({
           v: h.version,
           date: fmtVerDate(h.deployed_at),
           items: String(h.notes || '').split('\n').map(s => s.trim()).filter(Boolean),
@@ -7928,7 +7931,7 @@ function showWhatsNew(entries) {
   }
   document.getElementById('wnModal').innerHTML = `
     <div class="wn-header">
-      <div class="wn-icon">🌿</div>
+      <div class="wn-icon"><img src="https://greencrosscanna.github.io/greencross-gx-theme/gc-icon.png" alt="GC" style="width:28px;height:28px;object-fit:contain;display:block;" onerror="this.replaceWith(this.ownerDocument.createTextNode(String.fromCodePoint(127807)))"></div>
       <div>
         <div class="wn-title">What's New</div>
         <div class="wn-subtitle">Green Cross Inventory — ${latest}</div>
