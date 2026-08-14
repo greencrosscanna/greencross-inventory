@@ -803,6 +803,7 @@ if (location.protocol === 'file:') {
   .inv-table td.name-cell { width: 160px; }
   .inv-table .prod-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .inv-table .prod-brand { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .inv-table .prod-price { color: var(--text); font-weight: 600; }  /* retail price stands out on the ID sub-line */
 
   /* ── Inv table column widths (table-layout:fixed requires explicit widths) ── */
   .inv-table th:nth-child(1) { width: 90px;  }  /* Status   */
@@ -6221,13 +6222,27 @@ function renderInventory() {
     if (loss > 0) return `<span style="color:var(--red)" title="Est. sales lost while out of stock (all stores)">${fmtLoss(loss)}</span>`;
     return '—';
   }
+  // Retail (unit shelf) price for the ID sub-line — same field that drives the Retail Value pill (p.unitPrice).
+  const fmtUsd = v => v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  function mkRetailPrice(p) {
+    const v = Number(p && p.unitPrice) || 0;
+    return v > 0 ? ` · <span class="prod-price" title="Retail shelf price">${fmtUsd(v)}</span>` : '';
+  }
+  // Group parent: show a single price if uniform, else a min–max range (e.g. size variants priced differently).
+  function mkGroupRetailPrice(items) {
+    const prices = (items || []).map(p => Number(p.unitPrice) || 0).filter(v => v > 0);
+    if (!prices.length) return '';
+    const min = Math.min(...prices), max = Math.max(...prices);
+    const txt = (min === max) ? fmtUsd(min) : `${fmtUsd(min)}–${fmtUsd(max)}`;
+    return ` · <span class="prod-price" title="Retail shelf price${min === max ? '' : ' (range across variants)'}">${txt}</span>`;
+  }
   function mkFlatRow(p) {
     const fkEsc = flagKey(p).replace(/'/g, "\\'");
     return `<tr>
       <td>${mkStatusPill(p)}</td>
       <td class="name-cell">
         <div class="prod-name" title="${p.name}">${p.name}${p.isNew ? '<span class="tag tag-new">New</span>' : ''}${p.isHot ? '<span class="tag tag-hot">Hot</span>' : ''}${p.isDead ? '<span class="tag tag-dead">Dead</span>' : ''}${p.isBackstock ? '<span class="tag tag-back">Back Stock</span>' : ''}${mkLLBadge(p)}</div>
-        <div class="prod-brand" onclick="event.stopPropagation()" style="user-select:text;cursor:text">${p.sku ? p.sku + ' · ' : ''}${p.vendor || p.brand}</div>
+        <div class="prod-brand" onclick="event.stopPropagation()" style="user-select:text;cursor:text">${p.sku ? p.sku + ' · ' : ''}${p.vendor || p.brand}${mkRetailPrice(p)}</div>
         ${mkBuyerRecLine(p)}
       </td>
       <td style="color:${storeColor(p.store)}">${storeDisplay(p.store)}</td>
@@ -6266,7 +6281,7 @@ function renderInventory() {
       <td>${mkStatusPill(agg)}</td>
       <td class="name-cell">
         <div class="prod-name" title="${agg.name}"><span class="grp-toggle${expanded ? ' open' : ''}">▶</span>${agg.name}${sizeBadge}${agg.isNew ? '<span class="tag tag-new">New</span>' : ''}${agg.isHot ? '<span class="tag tag-hot">Hot</span>' : ''}${agg.isDead ? '<span class="tag tag-dead">Dead</span>' : ''}${agg.isBackstock ? '<span class="tag tag-back">Back Stock</span>' : ''}${(suggestions.length || group.hasTransferHint) ? '<span style="margin-left:6px;color:var(--green);font-size:12px;font-weight:700;opacity:.85" title="Transfer opportunity available">↔</span>' : ''}${mkLLBadge(agg)}</div>
-        <div class="prod-brand" onclick="event.stopPropagation()" style="user-select:text;cursor:text">${agg.sku ? agg.sku + ' · ' : ''}${agg.vendor || agg.brand}</div>
+        <div class="prod-brand" onclick="event.stopPropagation()" style="user-select:text;cursor:text">${agg.sku ? agg.sku + ' · ' : ''}${agg.vendor || agg.brand}${mkGroupRetailPrice(items)}</div>
         ${mkGroupBuyerRecLine(items, shouldLoadTransferDetails)}
       </td>
       <td><div class="grp-store-dots">${storeDots}</div></td>
@@ -7796,7 +7811,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.79';
+const APP_VERSION = 'v2.80';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
