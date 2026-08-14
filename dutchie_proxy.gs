@@ -640,6 +640,7 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
         value:        0,
         unitCost:     0,
         unitPrice:    Number(item.unitPrice || item.price || item.retailPrice || item.defaultUnitPrice || item.medPrice || item.recPrice || 0),
+        recUnitPrice: Number(item.recUnitPrice || 0),   // Dutchie's recreational OTD price (tax-incl) — the number on the shelf tag
         lastMod:      '',
         img:          item.imageUrl || item.productImageUrl || item.photo || '',
       };
@@ -647,6 +648,8 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
     const p = productMap[name];
     const itemPrice = Number(item.unitPrice || item.price || item.retailPrice || item.defaultUnitPrice || item.medPrice || item.recPrice || 0);
     if (itemPrice > 0) p.unitPrice = itemPrice;
+    const recPrice = Number(item.recUnitPrice || 0);
+    if (recPrice > 0) p.recUnitPrice = recPrice;
 
     // Classification priority:
     // 1. roomQuantities array — direct per-package room split from Dutchie (most accurate)
@@ -756,6 +759,7 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
       value:         Math.round(p.value        * 100) / 100,
       unitCost:      Math.round(p.unitCost     * 100) / 100,
       unitPrice:     Math.round(p.unitPrice    * 100) / 100,
+      recUnitPrice:  Math.round((p.recUnitPrice || 0) * 100) / 100,
     };
   });
 
