@@ -4939,15 +4939,14 @@ function backfillSkuDict() {
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
 const SHARED_RETIRED_KEY = 'gc_shared_retired'; // items queued for manual retirement in Dutchie
-// Custom lead times: per group target-coverage (days) overrides for the reorder engine. Shared server-side
-// (all users + the smart-ordering job read the same list). A rule matches on brand AND/OR category (both set
-// = AND, so "Green Cross + Apparel" targets just GC tees, distinct from "Green Cross + Paraphernalia
-// Electronics" = GC batteries). At least one of brand/category must be set. Rule = {brand, category, days}.
+// Custom lead times: per SKU or per style target-coverage (days) overrides for the reorder engine. Shared
+// server-side (all users + the smart-ordering job read the same list). Added via the Settings picker.
+//   • type:'sku'   → key = SKU; matches that one product.
+//   • type:'style' → key = style base name (product name minus size suffix), brand; matches every size SKU
+//                     of that style (leverages grouping), so a tee run shares one lead time.
+// SKU rule beats style rule beats the global buffer. Rule = {type, key, brand, label, days}.
 const LEAD_TIMES_KEY = 'gc_lead_times';
-const DEFAULT_LEAD_TIMES = [
-  { brand: 'Green Cross', category: 'Apparel',                   days: 40 },  // GC tee shirts (size run)
-  { brand: 'Green Cross', category: 'Paraphernalia Electronics', days: 180 }, // GC batteries (3 SKUs)
-];
+const DEFAULT_LEAD_TIMES = [];  // start empty — Sky adds specific SKUs/styles via the picker
 
 function isBetaRequest_(params) {
   return params && (params.beta === '1' || params.mode === 'beta' || getDataMode() === 'beta');
@@ -5036,14 +5035,20 @@ function getLeadTimes() {
   let rules;
   try { rules = JSON.parse(raw); } catch (e) { rules = []; }
   if (!Array.isArray(rules)) rules = [];
-  // Migrate any legacy {type:'brand'|'category', value} rows to the {brand, category} shape.
-  rules = rules.map(function (r) {
-    if (r && (r.brand !== undefined || r.category !== undefined)) {
-      return { brand: String(r.brand || '').trim(), category: String(r.category || '').trim(), days: Math.max(1, Math.round(Number(r.days) || 0)) };
-    }
-    var t = String((r && r.type) || 'brand').toLowerCase(), v = String((r && r.value) || '').trim();
-    return { brand: t === 'category' ? '' : v, category: t === 'category' ? v : '', days: Math.max(1, Math.round(Number(r && r.days) || 0)) };
-  }).filter(function (r) { return (r.brand || r.category) && r.days >= 1; });
+  // Keep only well-formed sku/style rules; legacy brand/category rows (pre-picker) are dropped so the
+  // picker model starts clean.
+  rules = rules
+    .filter(function (r) { return r && (r.type === 'sku' || r.type === 'style'); })
+    .map(function (r) {
+      return {
+        type:  r.type,
+        key:   String(r.key || '').trim(),
+        brand: String(r.brand || '').trim(),
+        label: String(r.label || '').trim(),
+        days:  Math.max(1, Math.round(Number(r.days) || 0)),
+      };
+    })
+    .filter(function (r) { return r.key && r.days >= 1; });
   return { ok: true, rules: rules, seeded: false };
 }
 
@@ -5053,11 +5058,13 @@ function setLeadTimes(params) {
   if (!Array.isArray(rules)) return { ok: false, error: 'rules must be an array' };
   const clean = rules.map(function (r) {
     return {
-      brand:    String((r && r.brand) || '').trim(),
-      category: String((r && r.category) || '').trim(),
-      days:     Math.max(1, Math.round(Number(r && r.days) || 0)),
+      type:  (String((r && r.type) || 'sku').toLowerCase() === 'style') ? 'style' : 'sku',
+      key:   String((r && r.key) || '').trim(),
+      brand: String((r && r.brand) || '').trim(),
+      label: String((r && r.label) || '').trim(),
+      days:  Math.max(1, Math.round(Number(r && r.days) || 0)),
     };
-  }).filter(function (r) { return (r.brand || r.category) && r.days >= 1; });  // need at least one dimension
+  }).filter(function (r) { return r.key && r.days >= 1; });
   PropertiesService.getScriptProperties().setProperty(LEAD_TIMES_KEY, JSON.stringify(clean));
   return { ok: true, rules: clean };
 }
