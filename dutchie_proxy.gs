@@ -333,8 +333,13 @@ function handleBugReport(b) {
   // Central bug log — write into GX Core's shared bug_reports table (Command Center cockpit).
   // NOTE: the library function is gxIngestBug(app, reporter, payload) — NOT ingestBug, which
   // does not exist in GX Core v12 and would throw, silently dropping every report.
+  // Route to the right Command Center project. Price Cards is a sub-app of Inventory with its own project
+  // key ('pricecards'), so a bug filed from its tab (state.tab === 'pricetags') goes there; everything else
+  // is Inventory. Keep this map in sync as more Inventory sub-apps get their own project keys.
+  var TAB_TO_APP = { pricetags: 'pricecards' };
+  var bugApp = TAB_TO_APP[String(b.appTab || '').toLowerCase()] || 'inventory';
   try {
-    GXCore.gxIngestBug('inventory', b.reporter, {
+    GXCore.gxIngestBug(bugApp, b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
       store: b.appStore, tab: b.appTab, appVer: b.appVer
     });
