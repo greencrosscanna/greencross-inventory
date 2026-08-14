@@ -7843,7 +7843,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.86';
+const APP_VERSION = 'v2.87';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8574,6 +8574,20 @@ function updatePriceTagsBadge() {
     })
     .catch(() => {});
 }
+
+// Instant Price Cards badge updates: the Price Cards iframe postMessages its live queue count on every
+// change, so the badge self-corrects immediately instead of waiting for the 30s poll (which stays as a
+// cross-device backstop). Origin-checked — only accept messages from our own Pages origin.
+window.addEventListener('message', function (ev) {
+  if (ev.origin !== 'https://greencrosscanna.github.io') return;
+  const d = ev.data;
+  if (d && d.type === 'pricecards:queue' && typeof d.count === 'number') {
+    const badge = document.getElementById('pricetagsBadge');
+    if (!badge) return;
+    badge.textContent = d.count;
+    badge.style.display = d.count > 0 ? 'inline-flex' : 'none';
+  }
+});
 
 function cartKey(p) {
   // Unique key per product per store
