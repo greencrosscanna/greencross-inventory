@@ -804,12 +804,14 @@ if (location.protocol === 'file:') {
   .inv-table .prod-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .inv-table .prod-brand { font-size: 11px; color: var(--muted); margin-top: 1px; }
   .inv-table .prod-price { color: var(--text); font-weight: 600; }  /* retail price stands out on the ID sub-line */
-  .fatty-tile { background: var(--card2, rgba(255,255,255,.03)); border-radius: 12px; padding: 14px 16px; }
-  .fatty-tile-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .fatty-tile-num { font-size: 26px; font-weight: 700; line-height: 1.1; margin-bottom: 8px; }
-  .fatty-pill { cursor: pointer; }
   .fatty-range-btn { font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--muted); }
   .fatty-range-btn.on { border-color: var(--green); color: var(--green); background: rgba(29,158,117,.1); }
+  .fatty-qtile:hover, .fatty-scard:hover { background: rgba(255,255,255,.06) !important; }
+  .fatty-grid2 { display: grid; grid-template-columns: 1.25fr 2.75fr; gap: 12px; margin-bottom: 12px; align-items: stretch; }
+  .fatty-fifo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .fatty-cmp-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  @keyframes fattyGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+  @media (max-width: 900px) { .fatty-grid2 { grid-template-columns: 1fr; } .fatty-cmp-grid { grid-template-columns: repeat(2, 1fr); } }
 
   /* ── Inv table column widths (table-layout:fixed requires explicit widths) ── */
   .inv-table th:nth-child(1) { width: 90px;  }  /* Status   */
@@ -2344,6 +2346,9 @@ let state = {
   fattyData: null, // FATTY joint tracker payload (counts by vintage/store + weekly history)
   fattyStore: 'All stores',
   fattyRange: 'all', // trend window: 1m | 3m | 6m | 1y | all
+  fattyMode: (localStorage.getItem('gc_fatty_mode') || 'stack'), // stack | lines chart form (persisted)
+  fattyIsolate: null, // null | '2024' | '2025' | '2026' — isolate one vintage (dim others)
+  fattyCompare: (localStorage.getItem('gc_fatty_compare') === '1'), // store comparison row (persisted)
   from: '',
   to: '',
   cogsData: null,
@@ -7861,7 +7866,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.92';
+const APP_VERSION = 'v2.93';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8836,7 +8841,11 @@ const FATTY_SEED = [
   ['2026-07-03',715,3410,77],['2026-07-10',429,3459,114],['2026-07-17',362,4063,150],
   ['2026-07-24',228,3662,224],['2026-07-31',188,4282,214],['2026-08-14',160,3668,276]
 ];
-const FATTY_DATA_START = '2026-03-13';
+const FATTY_DAY = 86400000;
+const FATTY_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fattyDateLabel = t => { const d = new Date(t); return FATTY_MON[d.getUTCMonth()] + ' ' + d.getUTCDate(); };
+const fattyFmt = n => Math.round(n).toLocaleString();
+let _fattyAnim, _fattyRaf, _fattyGeo;   // hero count-up state + chart hover geometry (not persisted)
 
 async function loadFattyTracker() {
   const el = document.getElementById('fattyContent');
@@ -8852,6 +8861,108 @@ async function loadFattyTracker() {
 
 function setFattyStore(s) { state.fattyStore = s; renderFatty(); }
 function setFattyRange(r) { state.fattyRange = r; renderFatty(); }
+function setFattyMode(m) { state.fattyMode = m; try { localStorage.setItem('gc_fatty_mode', m); } catch (e) {} renderFatty(); }
+function setFattyIsolate(v) { state.fattyIsolate = (state.fattyIsolate === v ? null : v); renderFatty(); }
+function toggleFattyCompare() { state.fattyCompare = !state.fattyCompare; try { localStorage.setItem('gc_fatty_compare', state.fattyCompare ? '1' : '0'); } catch (e) {} renderFatty(); }
+function pickFattyStore(s) { state.fattyStore = (state.fattyStore === s ? 'All stores' : s); renderFatty(); }
+
+// Weekly series [{t, vals, total}] for the selected store. All stores = the manual FATTY_SEED (deep history);
+// a single store = REAL weekly.byStore[store] (no synthetic split). Live "now" appended (merged if within a
+// few days of the last point).
+function fattySeriesFor(sel, d, vints) {
+  const stores = d.stores || [];
+  const parse = s => new Date(s + 'T00:00:00Z').getTime();
+  const rows = [];
+  if (sel === 'All stores') {
+    FATTY_SEED.forEach(r => {
+      const vals = { '2024': r[1], '2025': r[2], '2026': r[3] };
+      rows.push({ t: parse(r[0]), vals: vals, total: vints.reduce((a, v) => a + (vals[v] || 0), 0) });
+    });
+  } else {
+    const weeks = (d.weekly && d.weekly.weeks) || [];
+    const byStore = (d.weekly && d.weekly.byStore && d.weekly.byStore[sel]) || {};
+    weeks.forEach(wk => {
+      const vals = {}; vints.forEach(v => vals[v] = (byStore[wk] || {})[v] || 0);
+      rows.push({ t: parse(wk), vals: vals, total: vints.reduce((a, v) => a + vals[v], 0) });
+    });
+  }
+  const nowVals = {};
+  vints.forEach(v => nowVals[v] = sel === 'All stores'
+    ? stores.reduce((a, s) => a + (((d.current || {})[s] || {})[v] || 0), 0)
+    : (((d.current || {})[sel] || {})[v] || 0));
+  const nowRow = { t: new Date(todayStr() + 'T00:00:00Z').getTime(), vals: nowVals, total: vints.reduce((a, v) => a + nowVals[v], 0) };
+  if (rows.length && (nowRow.t - rows[rows.length - 1].t) <= 4 * FATTY_DAY) rows[rows.length - 1] = nowRow;
+  else rows.push(nowRow);
+  return rows;
+}
+
+// Sell-through = mean of weekly DECLINES per vintage over the last `win` weeks: sum(max(0, prev−cur)) / n.
+// Endpoint differencing is wrong here — totals are near-flat because new harvest lands while old stock drains.
+function fattyVelocity(rows, v, win) {
+  const n = Math.min(win, rows.length - 1);
+  if (n < 1) return 0;
+  let sum = 0;
+  for (let i = rows.length - n; i < rows.length; i++) {
+    const decl = (rows[i - 1].vals[v] || 0) - (rows[i].vals[v] || 0);
+    if (decl > 0) sum += decl;
+  }
+  return sum / n;
+}
+function fattyBurn(rows, vints, win) { return vints.reduce((a, v) => a + fattyVelocity(rows, v, win), 0); }
+
+// Hero count-up: animate the displayed total to `target` over 550ms, cubic ease-out; cancel any in-flight.
+function fattyAnimateHero(target) {
+  if (_fattyAnim === undefined) _fattyAnim = 0;
+  const from = _fattyAnim;
+  cancelAnimationFrame(_fattyRaf);
+  if (from === target) { const el = document.getElementById('fattyHeroNum'); if (el) el.textContent = fattyFmt(target); _fattyAnim = target; return; }
+  const t0 = performance.now();
+  const step = () => {
+    const k = Math.min(1, (performance.now() - t0) / 550);
+    const e = 1 - Math.pow(1 - k, 3);
+    _fattyAnim = Math.round(from + (target - from) * e);
+    const el = document.getElementById('fattyHeroNum'); if (el) el.textContent = fattyFmt(_fattyAnim);
+    if (k < 1) _fattyRaf = requestAnimationFrame(step); else _fattyAnim = target;
+  };
+  _fattyRaf = requestAnimationFrame(step);
+}
+
+// Chart hover — updates crosshair/dots/tooltip DOM directly against the geometry stashed by fattyChartSvg
+// (no full panel re-render on mousemove).
+function fattyHoverMove(e) {
+  const g = _fattyGeo; if (!g) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const vx = ((e.clientX - r.left) / r.width) * 1000;
+  if (vx < g.padL) { fattyHoverLeave(); return; }
+  let best = 0, bd = Infinity;
+  g.pts.forEach((p, i) => { const dd = Math.abs(p.xpx - vx); if (dd < bd) { bd = dd; best = i; } });
+  const p = g.pts[best];
+  const ch = document.getElementById('fattyCrosshair');
+  if (ch) { ch.setAttribute('x1', p.xpx.toFixed(1)); ch.setAttribute('x2', p.xpx.toFixed(1)); ch.setAttribute('stroke-opacity', '1'); }
+  for (let i = 0; i < 3; i++) {
+    const dot = document.getElementById('fattyDot' + i); if (!dot) continue;
+    if (g.mode === 'lines' && i < g.vints.length) {
+      const v = g.vints[i]; dot.setAttribute('cx', p.xpx.toFixed(1)); dot.setAttribute('cy', p.vy[v].toFixed(1)); dot.setAttribute('fill', fattyColor(v)); dot.setAttribute('opacity', '1');
+    } else if (g.mode === 'stack' && i === 0) {
+      dot.setAttribute('cx', p.xpx.toFixed(1)); dot.setAttribute('cy', p.ty.toFixed(1)); dot.setAttribute('fill', 'var(--text)'); dot.setAttribute('opacity', '1');
+    } else dot.setAttribute('opacity', '0');
+  }
+  const tip = document.getElementById('fattyTip');
+  if (tip) {
+    tip.style.left = Math.min(88, Math.max(12, (p.xpx / 1000) * 100)) + '%';
+    tip.style.opacity = '1';
+    document.getElementById('fattyTipDate').textContent = p.isLast ? 'now · ' + p.label : p.label;
+    document.getElementById('fattyTipRows').innerHTML = g.vints.map(v =>
+      `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${fattyColor(v)}"></span><span style="color:var(--muted)">${v}</span><span style="margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600">${fattyFmt(p.vals[v] || 0)}</span></div>`).join('');
+    document.getElementById('fattyTipTotal').textContent = fattyFmt(p.total);
+    document.getElementById('fattyTipDelta').textContent = p.prev != null ? ((p.total - p.prev >= 0 ? '+' : '−') + fattyFmt(Math.abs(p.total - p.prev)) + ' vs prior week') : 'first week with data';
+  }
+}
+function fattyHoverLeave() {
+  const ch = document.getElementById('fattyCrosshair'); if (ch) ch.setAttribute('stroke-opacity', '0');
+  for (let i = 0; i < 3; i++) { const dot = document.getElementById('fattyDot' + i); if (dot) dot.setAttribute('opacity', '0'); }
+  const tip = document.getElementById('fattyTip'); if (tip) tip.style.opacity = '0';
+}
 
 function renderFatty() {
   const d = state.fattyData;
@@ -8860,126 +8971,190 @@ function renderFatty() {
   const stores = d.stores || [];
   const vints = (d.vintages || []).filter(v => v !== 'Unknown');
   const sel = state.fattyStore || 'All stores';
-  const curFor = v => sel === 'All stores'
-    ? stores.reduce((a, s) => a + (((d.current || {})[s] || {})[v] || 0), 0)
-    : (((d.current || {})[sel] || {})[v] || 0);
-  const weeks = (d.weekly && d.weekly.weeks) || [];
-  const weekVal = (wk, v) => sel === 'All stores'
-    ? stores.reduce((a, s) => a + ((((d.weekly.byStore[s] || {})[wk] || {})[v]) || 0), 0)
-    : ((((d.weekly.byStore[sel] || {})[wk] || {})[v]) || 0);
-  const lastWk = weeks[weeks.length - 1];
-  const fmt = n => Math.round(n).toLocaleString();
+  const mode = state.fattyMode || 'stack';
+  const iso = state.fattyIsolate;
+  const cmp = state.fattyCompare;
+  const WIN = 4;
+  const fmt = fattyFmt;
+  const rows = fattySeriesFor(sel, d, vints);
+  const last = rows[rows.length - 1], prev = rows[rows.length - 2] || last;
+  const total = last.total, totalPrev = prev.total;
+  const burn = fattyBurn(rows, vints, WIN);
+  const runWeeks = burn > 0 ? total / burn : Infinity;
+  const wowChip = (delta, sz) => `<span style="font-size:${sz || 12}px;font-weight:600;white-space:nowrap;color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(delta))} wk</span>`;
 
-  const filterOpts = ['All stores'].concat(stores);
-  const filterHtml = filterOpts.map(s => {
-    const on = s === sel;
-    return `<button class="pill fatty-pill${on ? ' store-active' : ''}" onclick="setFattyStore('${s.replace(/'/g, "\\'")}')" style="${on ? '' : ''}">${escapeHtml(s)}</button>`;
+  const pillList = [{ name: 'All stores', label: 'All stores', color: 'var(--green)' }].concat(stores.map(s => ({ name: s, label: storeDisplay(s), color: storeColor(s) })));
+  const pills = pillList.map(s => {
+    const on = sel === s.name;
+    return `<button onclick="setFattyStore('${s.name.replace(/'/g, "\\'")}')" style="flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid ${on ? s.color : 'var(--border)'};background:${on ? `color-mix(in srgb, ${s.color} 14%, transparent)` : 'transparent'};color:${on ? s.color : 'var(--muted)'};font-size:12px;cursor:pointer;transition:all .15s">${escapeHtml(s.label)}</button>`;
   }).join('');
+  const compareBtn = `<button onclick="toggleFattyCompare()" style="flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid ${cmp ? 'var(--green)' : 'var(--border)'};background:${cmp ? 'rgba(74,222,128,.12)' : 'transparent'};color:${cmp ? 'var(--green)' : 'var(--muted)'};font-size:12px;cursor:pointer;margin-left:4px">⊞ Compare</button>`;
 
-  const total = vints.reduce((a, v) => a + curFor(v), 0);
-  const totalPrev = vints.reduce((a, v) => a + (lastWk ? weekVal(lastWk, v) : 0), 0);
-  const chip = (delta) => {
-    const up = delta >= 0;
-    const col = up ? 'var(--green)' : 'var(--red)';
-    return `<span style="font-size:12px;font-weight:600;color:${col};white-space:nowrap">${up ? '▲ +' : '▼ −'}${fmt(Math.abs(delta))} wk</span>`;
-  };
-  const totalTile = `<div class="fatty-tile" style="border:1px solid var(--green)">
-    <div class="fatty-tile-label">Total on hand</div>
-    <div class="fatty-tile-num">${fmt(total)}</div>
-    <div>${chip(total - totalPrev)}</div></div>`;
-  const vintageTiles = vints.map(v => {
-    const n = curFor(v), wow = n - (lastWk ? weekVal(lastWk, v) : 0);
-    return `<div class="fatty-tile">
-      <div class="fatty-tile-label"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${fattyColor(v)};vertical-align:middle;margin-right:5px"></span>${v} harvest</div>
-      <div class="fatty-tile-num">${fmt(n)}</div>
-      <div>${chip(wow)}</div></div>`;
+  const burnLabel = burn > 0 ? `selling ${fmt(burn)}/wk (${WIN}-wk sell-through)` : 'no depletion in window';
+  const weeksSupply = burn > 0 ? runWeeks.toFixed(1) : '—';
+  const runOut = (burn > 0 && runWeeks < 60) ? fattyDateLabel(last.t + runWeeks * 7 * FATTY_DAY) : '—';
+  const hero = `<div style="background:var(--card);border:1px solid var(--green);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;justify-content:space-between">
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Total on hand · ${escapeHtml(sel === 'All stores' ? 'all stores' : storeDisplay(sel))}</div>
+        <div id="fattyHeroNum" style="font-size:44px;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;margin-top:4px">${fmt(_fattyAnim === undefined ? 0 : _fattyAnim)}</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:6px">${wowChip(total - totalPrev)}<span style="font-size:12px;color:var(--muted)">${escapeHtml(burnLabel)}</span></div>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:18px">
+        <div><div style="font-size:11px;color:var(--muted)">Weeks of supply</div><div style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums">${weeksSupply}</div></div>
+        <div><div style="font-size:11px;color:var(--muted)">Est. run-out</div><div style="font-size:20px;font-weight:700">${runOut}</div></div>
+      </div>
+    </div>`;
+
+  const tiles = vints.map((v, i) => {
+    const n = last.vals[v] || 0, p = prev.vals[v] || 0, vel = fattyVelocity(rows, v, WIN);
+    const dim = iso && iso !== v;
+    const share = total ? (n / total) * 100 : 0;
+    const older = vints.slice(0, i).some(o => (last.vals[o] || 0) > 0);
+    const tag = n === 0 ? 'CLEARED' : (older ? 'BEHIND' : 'SELL FIRST');
+    const tagColor = (n > 0 && !older) ? 'var(--green)' : 'var(--muted)';
+    return `<div class="fatty-qtile" onclick="setFattyIsolate('${v}')" style="background:rgba(255,255,255,.03);border:1px solid ${iso === v ? fattyColor(v) : 'var(--border)'};border-radius:10px;padding:12px 14px;cursor:pointer;opacity:${dim ? 0.45 : 1}">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${fattyColor(v)}"></span>${v} harvest<span style="margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.4px;color:${tagColor}">${tag}</span></div>
+        <div style="font-size:26px;font-weight:700;line-height:1.1;margin:6px 0 4px;font-variant-numeric:tabular-nums;transition:color .2s">${fmt(n)}</div>
+        <div style="height:3px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${share.toFixed(1)}%;background:${fattyColor(v)};transition:width .4s ease"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span style="color:${(n - p) >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${(n - p) >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(n - p))} wk</span><span>${vel > 0 ? '−' + fmt(vel) + '/wk' : 'flat'}</span></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">${vel > 0 ? 'clears in ~' + (n / vel).toFixed(1) + ' wk' : (n > 0 ? 'no depletion' : 'cleared')}</div>
+      </div>`;
   }).join('');
+  const fifoCard = `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">FIFO queue · oldest first</span><span style="font-size:11px;color:var(--muted)">click a vintage to isolate it in the chart</span></div>
+      <div class="fatty-fifo-grid">${tiles}</div>
+    </div>`;
 
-  el.innerHTML =
-    `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
-       <div style="font-size:16px;font-weight:700">FATTY joint tracker <span style="font-size:12px;color:var(--muted);font-weight:400">· by harvest vintage</span></div>
-       <div class="fatty-filter" style="display:flex;gap:4px;flex-wrap:wrap">${filterHtml}</div>
-     </div>
-     <div class="fatty-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px">${totalTile}${vintageTiles}</div>
-     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap">
-       <div style="display:flex;align-items:center;gap:8px">
-         <span style="font-size:12px;color:var(--muted)">On hand by week</span>
-         <div style="display:flex;gap:3px">${[['1m','1M'],['3m','3M'],['6m','6M'],['1y','1Y'],['all','All']].map(r => `<button class="fatty-range-btn${state.fattyRange === r[0] ? ' on' : ''}" onclick="setFattyRange('${r[0]}')">${r[1]}</button>`).join('')}</div>
-       </div>
-       <div style="display:flex;gap:14px;font-size:12px;color:var(--muted)">${vints.map(v => `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${fattyColor(v)};vertical-align:middle;margin-right:4px"></span>${v}</span>`).join('')}</div>
-     </div>
-     ${fattyChartSvg(fattyBuildSeries(sel, vints, weeks, weekVal, curFor), vints, state.fattyRange)}
-     <div style="font-size:11px;color:var(--muted);margin-top:8px">${d.skuMapped || 0} SKUs matched to a harvest year${d.unresolvedUnits ? ` · ${fmt(d.unresolvedUnits)} units without a harvest date` : ''}. Trend from snapshot history; updates hourly.</div>`;
-}
+  const seg = `<div style="display:flex;gap:2px;border:1px solid var(--border);border-radius:999px;padding:2px">
+      <button onclick="setFattyMode('stack')" style="font-size:11px;padding:3px 10px;border-radius:999px;cursor:pointer;border:none;background:${mode === 'stack' ? 'rgba(74,222,128,.14)' : 'transparent'};color:${mode === 'stack' ? 'var(--green)' : 'var(--muted)'}">Stacked</button>
+      <button onclick="setFattyMode('lines')" style="font-size:11px;padding:3px 10px;border-radius:999px;cursor:pointer;border:none;background:${mode === 'lines' ? 'rgba(74,222,128,.14)' : 'transparent'};color:${mode === 'lines' ? 'var(--green)' : 'var(--muted)'}">Lines</button>
+    </div>`;
+  const rangeBtns = `<div style="display:flex;gap:3px">${[['1m', '1M'], ['3m', '3M'], ['6m', '6M'], ['1y', '1Y'], ['all', 'All']].map(r => `<button class="fatty-range-btn${state.fattyRange === r[0] ? ' on' : ''}" onclick="setFattyRange('${r[0]}')">${r[1]}</button>`).join('')}</div>`;
+  const legend = vints.map(v => {
+    const on = !iso || iso === v;
+    return `<button onclick="setFattyIsolate('${v}')" style="display:flex;align-items:center;gap:5px;font-size:12px;padding:3px 9px;border-radius:999px;cursor:pointer;border:1px solid ${iso === v ? fattyColor(v) : 'var(--border)'};background:transparent;color:${on ? 'var(--text)' : 'var(--muted)'};opacity:${on ? 1 : 0.45};transition:opacity .15s"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${fattyColor(v)}"></span>${v}</button>`;
+  }).join('');
+  const tooltip = `<div id="fattyTip" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);pointer-events:none;opacity:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:150px;box-shadow:0 6px 18px rgba(0,0,0,.5);transition:opacity .1s">
+      <div id="fattyTipDate" style="font-size:11px;color:var(--muted);margin-bottom:5px"></div>
+      <div id="fattyTipRows"></div>
+      <div style="display:flex;gap:10px;font-size:12px;font-weight:700;border-top:1px solid var(--border);margin-top:5px;padding-top:5px"><span>Total</span><span id="fattyTipTotal" style="margin-left:auto;font-variant-numeric:tabular-nums"></span></div>
+      <div id="fattyTipDelta" style="font-size:11px;color:var(--muted);margin-top:3px"></div>
+    </div>`;
+  const chartCard = `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px 10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">On hand by week</span>${seg}${rangeBtns}</div>
+        <div style="display:flex;gap:6px;align-items:center">${legend}</div>
+      </div>
+      <div style="position:relative">${fattyChartSvg(rows, vints, state.fattyRange, mode, iso)}${tooltip}</div>
+    </div>`;
 
-// Build a date-keyed series [{date, vals:{vintage:qty}}] for the chart. All-stores uses the manual seed
-// (real depth back to Mar 13); a single store uses whatever weekly snapshot history exists. The live current
-// total is appended as the "now" point so the line runs to today.
-function fattyBuildSeries(sel, vints, weeks, weekVal, curFor) {
-  const series = [];
-  if (sel === 'All stores') {
-    FATTY_SEED.forEach(row => series.push({ date: row[0], vals: { '2024': row[1], '2025': row[2], '2026': row[3] } }));
-  } else {
-    weeks.forEach(wk => { const vals = {}; vints.forEach(v => vals[v] = weekVal(wk, v)); series.push({ date: wk, vals: vals }); });
+  let compareRow = '';
+  if (cmp) {
+    const cards = stores.map(s => {
+      const srows = fattySeriesFor(s, d, vints).slice(-12);
+      const cur = srows[srows.length - 1], pr = srows[srows.length - 2] || cur;
+      const mn = Math.min(...srows.map(r => r.total)), mx = Math.max(1, ...srows.map(r => r.total)), rng = Math.max(1, mx - mn);
+      const pts = srows.map((r, i) => (srows.length < 2 ? 0 : (i / (srows.length - 1)) * 100).toFixed(1) + ',' + (28 - ((r.total - mn) / rng) * 24).toFixed(1));
+      const old = vints.find(v => (cur.vals[v] || 0) > 0);
+      const on = sel === s, col = storeColor(s);
+      return `<div class="fatty-scard" onclick="pickFattyStore('${s.replace(/'/g, "\\'")}')" style="background:rgba(255,255,255,.03);border:1px solid ${on ? col : 'var(--border)'};border-radius:10px;padding:11px 12px;cursor:pointer">
+          <div style="font-size:12px;font-weight:600;color:${col}">${escapeHtml(storeDisplay(s))}</div>
+          <div style="font-size:22px;font-weight:700;line-height:1.15;margin-top:3px;font-variant-numeric:tabular-nums">${fmt(cur.total)}</div>
+          <div style="font-size:11px;font-weight:600;color:${(cur.total - pr.total) >= 0 ? 'var(--green)' : 'var(--red)'}">${(cur.total - pr.total) >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(cur.total - pr.total))} wk</div>
+          <svg viewBox="0 0 100 30" width="100%" height="30" style="display:block;margin-top:6px"><path d="M ${pts.join(' L ')}" fill="none" stroke="${col}" stroke-width="1.6"/><path d="M ${pts.join(' L ')} L 100,30 L 0,30 Z" fill="${col}" fill-opacity="0.14" stroke="none"/></svg>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">${old ? 'oldest ' + old + ' · ' + fmt(cur.vals[old] || 0) : 'clear'}</div>
+        </div>`;
+    }).join('');
+    compareRow = `<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Store comparison · last 12 weeks</span><span style="font-size:11px;color:var(--muted)">click a store to filter the chart above</span></div>
+        <div class="fatty-cmp-grid">${cards}</div>
+      </div>`;
   }
-  const nowVals = {}; vints.forEach(v => nowVals[v] = curFor(v));
-  const today = todayStr();
-  const todT = new Date(today + 'T00:00:00Z').getTime();
-  const lastT = series.length ? new Date(series[series.length - 1].date + 'T00:00:00Z').getTime() : 0;
-  // If the last data point is within a few days of today, replace it with the live "now" point instead of
-  // stacking a near-duplicate label at the right edge.
-  if (series.length && (todT - lastT) <= 4 * 86400000) series[series.length - 1] = { date: today, vals: nowVals };
-  else series.push({ date: today, vals: nowVals });
-  return series;
+
+  const oldest = vints.find(v => (last.vals[v] || 0) > 0);
+  const oldestVel = oldest ? fattyVelocity(rows, oldest, WIN) : 0;
+  const footnote = (oldest ? `FIFO: oldest remaining is ${oldest} — ${fmt(last.vals[oldest])} units${oldestVel > 0 ? `, clearing in ~${(last.vals[oldest] / oldestVel).toFixed(1)} weeks` : ', not moving'}. ` : '') + 'Weekly history reconstructed from the tracking sheet; live counts take over at the "now" point.';
+
+  el.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:16px;font-weight:700">FATTY joint tracker <span style="font-size:12px;color:var(--muted);font-weight:400">· by harvest vintage · FIFO</span></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Old stock draining, new stock building. Trend from snapshot history; updates hourly.</div>
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${pills}${compareBtn}</div>
+    </div>
+    <div class="fatty-grid2">${hero}${fifoCard}</div>
+    ${chartCard}
+    ${compareRow}
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">${escapeHtml(footnote)}</div>`;
+
+  fattyAnimateHero(total);
 }
 
-// Date-axis stacked-area. The window is time-based (range = calendar days back from now). Any span before the
-// first real data point (Mar 13) is drawn as a grayed "no data" band, and the stack begins at that first
-// point's full height — so it never looks like inventory ramped up from zero.
-function fattyChartSvg(series, vints, range) {
-  if (!series || series.length < 2) return '<div style="font-size:12px;color:var(--muted);padding:20px 0">Not enough history yet — the trend fills in as snapshots accrue.</div>';
-  const DAY = 86400000;
-  const parse = s => new Date(s + 'T00:00:00Z').getTime();
-  const nowT = parse(series[series.length - 1].date);
-  const firstT = parse(series[0].date);
+// Weekly stacked-area / lines chart. viewBox 1000×320; both area and line paths always in the DOM, cross-faded
+// by opacity (Stacked/Lines). X domain = first visible week → now. Stashes geometry on _fattyGeo for hover.
+function fattyChartSvg(rows, vints, range, mode, iso) {
+  if (!rows || rows.length < 2) { _fattyGeo = null; return '<div style="font-size:12px;color:var(--muted);padding:24px 0">Not enough history yet — the trend fills in as snapshots accrue.</div>'; }
+  const nowT = rows[rows.length - 1].t;
   const rangeDays = { '1m': 30, '3m': 91, '6m': 182, '1y': 365, 'all': 1e9 }[range] || 1e9;
-  let winStart = (range === 'all') ? firstT : (nowT - rangeDays * DAY);
-  let vis = series.filter(p => parse(p.date) >= winStart);
-  if (vis.length < 2) { vis = series.slice(-2); winStart = Math.min(winStart, parse(vis[0].date)); }
-  const W = 720, H = 258, padL = 42, padB = 40, padT = 8, padR = 8;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const span = Math.max(DAY, nowT - winStart);
-  const x = t => padL + plotW * ((t - winStart) / span);
-  const totals = vis.map(p => vints.reduce((a, v) => a + (p.vals[v] || 0), 0));
-  const maxY = Math.max(1, ...totals) * 1.12;
+  const winStart = range === 'all' ? rows[0].t : nowT - rangeDays * FATTY_DAY;
+  let vis = rows.filter(p => p.t >= winStart);
+  if (vis.length < 2) vis = rows.slice(-2);
+  const padL = 52, padR = 16, padT = 12, plotH = 216, W = 1000;
+  const domStart = vis[0].t, plotW = W - padL - padR;
+  const span = Math.max(FATTY_DAY, nowT - domStart);
+  const x = t => padL + plotW * ((t - domStart) / span);
+  const maxY = Math.max(1, ...vis.map(p => p.total)) * 1.12;
   const y = val => padT + plotH * (1 - val / maxY);
-  const gy = [0, 0.25, 0.5, 0.75, 1].map(f => {
+
+  const grid = [0, 0.25, 0.5, 0.75, 1].map(f => {
     const val = maxY * f, yy = y(val);
-    return `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" stroke="var(--border)" stroke-width="1"/><text x="${padL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${Math.round(val).toLocaleString()}</text>`;
+    return `<line x1="52" y1="${yy.toFixed(1)}" x2="984" y2="${yy.toFixed(1)}" stroke="var(--border)" stroke-width="1"/><text x="46" y="${(yy + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${fattyFmt(val)}</text>`;
   }).join('');
-  let gray = '';
-  if (winStart < firstT - DAY) {
-    const gx1 = x(winStart), gx2 = x(firstT);
-    gray = `<rect x="${gx1.toFixed(1)}" y="${padT}" width="${Math.max(0, gx2 - gx1).toFixed(1)}" height="${plotH}" fill="var(--muted)" fill-opacity="0.07"/>`
-         + `<line x1="${gx2.toFixed(1)}" y1="${padT}" x2="${gx2.toFixed(1)}" y2="${(padT + plotH).toFixed(1)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>`;
-  }
-  let bands = '';
+
+  let areas = '', lines = '';
   const cum = vis.map(() => 0);
   vints.forEach(v => {
     const top = vis.map((p, i) => cum[i] + (p.vals[v] || 0));
-    const topPts = top.map((t, i) => `${x(parse(vis[i].date)).toFixed(1)},${y(t).toFixed(1)}`).join(' ');
-    const botPts = cum.map((c, i) => `${x(parse(vis[i].date)).toFixed(1)},${y(c).toFixed(1)}`).reverse().join(' ');
-    bands += `<polygon points="${topPts} ${botPts}" fill="${fattyColor(v)}" fill-opacity="0.55" stroke="${fattyColor(v)}" stroke-width="1"/>`;
+    const topPts = top.map((tv, i) => x(vis[i].t).toFixed(1) + ',' + y(tv).toFixed(1)).join(' L ');
+    const botPts = cum.map((c, i) => x(vis[i].t).toFixed(1) + ',' + y(c).toFixed(1)).reverse().join(' L ');
+    const dim = iso && iso !== v;
+    areas += `<path d="M ${topPts} L ${botPts} Z" fill="${fattyColor(v)}" fill-opacity="${mode === 'stack' ? (dim ? 0.08 : 0.55) : 0}" stroke="${fattyColor(v)}" stroke-width="${mode === 'stack' ? 1 : 0}" stroke-opacity="${mode === 'stack' ? (dim ? 0.25 : 1) : 0}" style="transition:fill-opacity .25s,stroke-opacity .25s"/>`;
+    lines += `<path d="M ${vis.map(p => x(p.t).toFixed(1) + ',' + y(p.vals[v] || 0).toFixed(1)).join(' L ')}" fill="none" stroke="${fattyColor(v)}" stroke-width="2" stroke-opacity="${mode === 'lines' ? (dim ? 0.18 : 1) : 0}" stroke-linejoin="round" style="transition:stroke-opacity .25s"/>`;
     vis.forEach((_, i) => { cum[i] = top[i]; });
   });
-  const axY = padT + plotH;
-  const gx = vis.map((p, i) => {
-    const xx = x(parse(p.date)), lab = (i === vis.length - 1) ? 'now' : p.date.slice(5), ly = axY + 12;
-    return `<line x1="${xx.toFixed(1)}" y1="${axY.toFixed(1)}" x2="${xx.toFixed(1)}" y2="${(axY + 3).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`
-         + `<text x="${xx.toFixed(1)}" y="${ly.toFixed(1)}" transform="rotate(-45 ${xx.toFixed(1)} ${ly.toFixed(1)})" text-anchor="end" font-size="9" fill="var(--muted)">${escapeHtml(lab)}</text>`;
+
+  const step = Math.ceil(vis.length / 9);
+  const xticks = vis.map((p, i) => {
+    const isLast = i === vis.length - 1;
+    if (!isLast && i % step !== 0) return '';
+    return `<text x="${x(p.t).toFixed(1)}" y="243" text-anchor="middle" font-size="9" fill="${isLast ? 'var(--green)' : 'var(--muted)'}">${isLast ? 'now' : fattyDateLabel(p.t)}</text>`;
   }).join('');
-  const dots = vis.map((p, i) => `<circle cx="${x(parse(p.date)).toFixed(1)}" cy="${y(totals[i]).toFixed(1)}" r="6" fill="transparent"><title>${i === vis.length - 1 ? 'now' : escapeHtml(p.date)} · total ${Math.round(totals[i]).toLocaleString()}</title></circle>`).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:100%;height:auto" role="img" aria-label="Stacked area of FATTY joints on hand by harvest vintage over time; grayed before Mar 13 where there is no data">${gy}${gray}${bands}${gx}${dots}</svg>`;
+
+  const maxDelta = Math.max(1, ...vis.slice(1).map((p, i) => Math.abs(p.total - vis[i].total)));
+  const barW = Math.max(3, Math.min(16, (plotW / Math.max(vis.length, 2)) * 0.55));
+  const bars = vis.slice(1).map((p, i) => {
+    const delta = p.total - vis[i].total, up = delta >= 0;
+    const h = Math.max(1, (Math.abs(delta) / maxDelta) * 26), cx = x(p.t) - barW / 2;
+    return `<rect x="${cx.toFixed(1)}" y="${(up ? 272 - h : 272).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${up ? 'var(--green)' : 'var(--red)'}" rx="1" style="transform-origin:${cx.toFixed(1)}px 272px;animation:fattyGrow .45s ease both"/>`;
+  }).join('');
+
+  _fattyGeo = { padL, mode, vints, pts: vis.map((p, i) => {
+    const vy = {}; vints.forEach(v => vy[v] = y(p.vals[v] || 0));
+    return { xpx: x(p.t), ty: y(p.total), vy, vals: p.vals, total: p.total, label: fattyDateLabel(p.t), isLast: i === vis.length - 1, prev: i > 0 ? vis[i - 1].total : null };
+  }) };
+
+  return `<svg viewBox="0 0 1000 320" width="100%" style="max-width:100%;height:auto;display:block" onmousemove="fattyHoverMove(event)" onmouseleave="fattyHoverLeave()" role="img" aria-label="FATTY joints on hand by harvest vintage over time">
+      ${grid}${areas}${lines}${bars}
+      <line x1="52" y1="272" x2="984" y2="272" stroke="var(--border)" stroke-width="1"/>
+      <text x="46" y="262" text-anchor="end" font-size="9" fill="var(--muted)">+</text>
+      <text x="46" y="292" text-anchor="end" font-size="9" fill="var(--muted)">−</text>
+      <text x="52" y="312" font-size="9" fill="var(--muted)">weekly change in units on hand</text>
+      ${xticks}
+      <line id="fattyCrosshair" x1="-10" y1="12" x2="-10" y2="300" stroke="var(--text)" stroke-width="1" stroke-opacity="0"/>
+      <circle id="fattyDot0" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
+      <circle id="fattyDot1" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
+      <circle id="fattyDot2" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
+    </svg>`;
 }
 
 // ── Density ──────────────────────────────────────────────
