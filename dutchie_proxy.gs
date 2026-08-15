@@ -3871,7 +3871,7 @@ function labResultsProbe(params) {
   if (code !== 200) return { httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), error: body.slice(0, 500) };
   let raw; try { raw = JSON.parse(body); } catch (e) { return { httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), parseError: true, bodySample: body.slice(0, 300) }; }
   let recs = Array.isArray(raw) ? raw : (raw.data || raw.items || raw.labResults || raw.results || []);
-  if (!recs.length) return { store, httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), error: 'empty response', totalRecords: 0, rawType: (Array.isArray(raw) ? 'array' : typeof raw), rawKeys: (raw && typeof raw === 'object' && !Array.isArray(raw)) ? Object.keys(raw) : null, bodySample: body.slice(0, 300) };
+  if (!recs.length) return { store, httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), empty: true, totalRecords: 0, rawType: (Array.isArray(raw) ? 'array' : typeof raw), rawKeys: (raw && typeof raw === 'object' && !Array.isArray(raw)) ? Object.keys(raw) : null, bodySample: body.slice(0, 400) };
   if (batchId) {
     const match = recs.filter(r => String(r.batchId) === batchId || String(r.batchName) === batchId);
     if (match.length) recs = match;
