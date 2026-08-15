@@ -249,6 +249,7 @@ function doGet(e) {
     if (params.action === 'txtypeprobe')    return jsonOut(txTypeProbe(params));
     if (params.action === 'invfieldprobe')  return jsonOut(invFieldProbe(params));
     if (params.action === 'labresultsprobe') return jsonOut(labResultsProbe(params));
+    if (params.action === 'fattytracker')    return jsonOut(getFattyTracker(params));
     if (params.action === 'snapshotprobe')  return jsonOut(snapshotProbe(params));
     if (params.action === 'invrooms')       return jsonOut(invRoomsProbe(params));
     if (params.action === 'invtxlookup')    return jsonOut(invTxLookup(params));
@@ -3882,6 +3883,142 @@ function labResultsProbe(params) {
     .filter(([k]) => /date|harvest|packag|cultivat|sample|tested/i.test(k))
     .reduce((o, [k, v]) => { o[k] = v; return o; }, {});
   return { store, batchId: batchId || null, httpStatus: code, totalRecords: recs.length, dateFields, fields, firstRecord: first };
+}
+
+// ─── FATTY joint tracker ──────────────────────────────────────────────────────
+// Tracks FATTY (infused pre-roll) inventory by HARVEST-YEAR vintage. Harvest date isn't in
+// /reporting/inventory — it lives in /inventory/labresults (field HarvestDate), keyed by the package's
+// batchName (Metrc tag). We resolve harvest per batch (cached permanently — it never changes), bucket
+// current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
+// correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
+const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v1';
+
+function _getHarvestMap() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+// Resolve HarvestDate (YYYY-MM-DD) for batchNames at a store. Fetches uncached via /inventory/labresults
+// (chunked fetchAll, rate-limit friendly) and caches only FOUND dates permanently (so a batch that gets a
+// harvest date entered later still resolves on a future run).
+function resolveHarvestDates_(store, batchNames) {
+  const map = _getHarvestMap();
+  const missing = batchNames.filter(function (b) { return b && !map[b]; });
+  if (missing.length) {
+    const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
+    var found = false;
+    for (var i = 0; i < missing.length; i += 25) {
+      const chunk = missing.slice(i, i + 25);
+      const reqs = chunk.map(function (b) {
+        return { url: DUTCHIE_BASE + '/inventory/labresults?batchName=' + encodeURIComponent(b), headers: hdrs, muteHttpExceptions: true };
+      });
+      const resps = UrlFetchApp.fetchAll(reqs);
+      resps.forEach(function (r, j) {
+        try {
+          if (r.getResponseCode() === 200) {
+            const arr = JSON.parse(r.getContentText());
+            const hd = arr && arr[0] && arr[0].HarvestDate;
+            if (hd) { map[chunk[j]] = String(hd).slice(0, 10); found = true; }
+          }
+        } catch (e) {}
+      });
+    }
+    if (found) PropertiesService.getScriptProperties().setProperty(HARVEST_BY_BATCH_KEY, JSON.stringify(map));
+  }
+  return map;
+}
+
+function isoWeekStart_(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const dow = (d.getUTCDay() + 6) % 7; // 0 = Monday
+  d.setUTCDate(d.getUTCDate() - dow);
+  return d.toISOString().slice(0, 10);
+}
+
+// Weekly on-hand history for FATTY by store × vintage, from the Inv Snapshot. For each (store, week) we take
+// the LATEST snapshot date in that week (point-in-time on-hand, not a sum of days). skuVintage maps sku→year.
+function buildFattyWeekly_(skuVintage) {
+  const out = { weeks: [], byStore: {} };
+  try {
+    const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
+    const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return out;
+    const width = Math.max(9, sheet.getLastColumn());
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+    const byKeyDate = {}; // store|week|date -> {vintage -> qty}
+    for (var r = 0; r < data.length; r++) {
+      const row = data[r];
+      const name = String(row[2] || '');
+      if (!/fatty/i.test(name)) continue;
+      const sku = String(row[5] || '').trim();
+      const v = skuVintage[sku];
+      if (!v) continue;
+      const store = String(row[1] || '').trim();
+      const dateRaw = row[0];
+      const dateStr = dateRaw instanceof Date ? dateRaw.toISOString().slice(0, 10) : String(dateRaw).slice(0, 10);
+      const week = isoWeekStart_(dateStr);
+      const k = store + '|' + week + '|' + dateStr;
+      (byKeyDate[k] || (byKeyDate[k] = {}))[v] = (byKeyDate[k][v] || 0) + (Number(row[6] || 0) || 0);
+    }
+    const latestDate = {}; // store|week -> dateStr
+    Object.keys(byKeyDate).forEach(function (k) {
+      const parts = k.split('|'), sw = parts[0] + '|' + parts[1], date = parts[2];
+      if (!latestDate[sw] || date > latestDate[sw]) latestDate[sw] = date;
+    });
+    const weeksSet = {};
+    Object.keys(latestDate).forEach(function (sw) {
+      const parts = sw.split('|'), store = parts[0], week = parts[1];
+      weeksSet[week] = true;
+      out.byStore[store] = out.byStore[store] || {};
+      out.byStore[store][week] = byKeyDate[sw + '|' + latestDate[sw]] || {};
+    });
+    out.weeks = Object.keys(weeksSet).sort();
+  } catch (e) { _logGasError('buildFattyWeekly_', e && e.message); }
+  return out;
+}
+
+function buildFattyTracker_(force) {
+  if (!force) { const c = scriptCache.get(FATTY_TRACKER_CACHE); if (c) { try { return JSON.parse(c); } catch (e) {} } }
+  const stores = STORES.map(function (s) { return s.name; });
+  const reqs = stores.map(function (s) {
+    return { url: DUTCHIE_BASE + '/reporting/inventory', headers: { Authorization: dutchieAuth(s), Accept: 'application/json' }, muteHttpExceptions: true };
+  });
+  const resps = UrlFetchApp.fetchAll(reqs);
+  const skuVintage = {};            // sku -> 'YYYY'
+  const current = {};               // store -> { vintage -> qty }
+  const vintagesSet = {};
+  var unresolved = 0;
+  stores.forEach(function (store, i) {
+    var items = [];
+    try { if (resps[i].getResponseCode() === 200) { const raw = JSON.parse(resps[i].getContentText()); items = Array.isArray(raw) ? raw : (raw.data || raw.items || []); } } catch (e) {}
+    const fatties = items.filter(function (it) { return /fatty/i.test(String(it.productName || it.name || '')); });
+    const batchNames = [];
+    const seenB = {};
+    fatties.forEach(function (it) { const b = String(it.batchName || ''); if (b && !seenB[b]) { seenB[b] = 1; batchNames.push(b); } });
+    const hmap = resolveHarvestDates_(store, batchNames);
+    current[store] = {};
+    fatties.forEach(function (it) {
+      const qty = Number(it.quantityAvailable || it.quantity || 0) || 0;
+      if (qty <= 0) return;
+      const hd = hmap[String(it.batchName || '')] || '';
+      const vintage = hd ? hd.slice(0, 4) : 'Unknown';
+      if (vintage === 'Unknown') unresolved += qty;
+      current[store][vintage] = (current[store][vintage] || 0) + qty;
+      vintagesSet[vintage] = true;
+      const sku = String(it.sku || '').trim();
+      if (sku && hd) skuVintage[sku] = vintage;
+    });
+  });
+  const weekly = buildFattyWeekly_(skuVintage);
+  const vintages = Object.keys(vintagesSet).filter(function (v) { return v !== 'Unknown'; }).sort();
+  if (vintagesSet['Unknown']) vintages.push('Unknown');
+  const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
+  try { scriptCache.put(FATTY_TRACKER_CACHE, JSON.stringify(result), 60 * 60); } catch (e) {}
+  return result;
+}
+
+function getFattyTracker(params) {
+  return buildFattyTracker_(params && params.force === '1');
 }
 
 // Fetch all inventory transactions for a specific inventoryId to debug room classification
