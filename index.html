@@ -804,6 +804,10 @@ if (location.protocol === 'file:') {
   .inv-table .prod-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .inv-table .prod-brand { font-size: 11px; color: var(--muted); margin-top: 1px; }
   .inv-table .prod-price { color: var(--text); font-weight: 600; }  /* retail price stands out on the ID sub-line */
+  .fatty-tile { background: var(--card2, rgba(255,255,255,.03)); border-radius: 12px; padding: 14px 16px; }
+  .fatty-tile-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .fatty-tile-num { font-size: 26px; font-weight: 700; line-height: 1.1; margin-bottom: 8px; }
+  .fatty-pill { cursor: pointer; }
 
   /* ── Inv table column widths (table-layout:fixed requires explicit widths) ── */
   .inv-table th:nth-child(1) { width: 90px;  }  /* Status   */
@@ -1516,6 +1520,7 @@ if (location.protocol === 'file:') {
         <button class="tab" data-tab="performance">Performance</button>
         <button class="tab" data-tab="pricetags" id="tabPricetags">Price Cards <span class="cart-badge" id="pricetagsBadge" style="display:none"></span></button>
         <button class="tab" data-tab="flags">Flags</button>
+        <button class="tab" data-tab="fatty">FATTY</button>
         <button class="tab beta-tab" data-tab="beta" id="betaTabBtn">Beta</button>
         <button class="tab scanner-tab" data-tab="scanner" id="scannerTabBtn" style="display:none;align-items:center;gap:4px">
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Scan
@@ -1901,6 +1906,13 @@ if (location.protocol === 'file:') {
   <div class="panel" id="panel-flags">
     <div id="flagsContent">
       <div class="state-msg"><div class="spinner"></div><br>Loading…</div>
+    </div>
+  </div>
+
+  <!-- ══ FATTY JOINT TRACKER ══ -->
+  <div class="panel" id="panel-fatty" style="padding:16px 20px">
+    <div id="fattyContent">
+      <div class="state-msg"><div class="spinner"></div><br>Loading FATTY tracker…</div>
     </div>
   </div>
 
@@ -2327,6 +2339,8 @@ let state = {
   tab: 'inventory',
   store: 'All',
   leadTimes: [],   // custom per-brand/category target-coverage overrides (shared backend config)
+  fattyData: null, // FATTY joint tracker payload (counts by vintage/store + weekly history)
+  fattyStore: 'All stores',
   from: '',
   to: '',
   cogsData: null,
@@ -4055,7 +4069,7 @@ function init() {
       row.classList.toggle('visible', isInv);
       row.classList.toggle('expanded', isInv && state.catRowExpanded);
       if (isInv) updateCatToggleBtn();
-      document.querySelector('.date-controls').style.display = (isInv || isBeta) ? 'none' : '';
+      document.querySelector('.date-controls').style.display = (isInv || isBeta || state.tab === 'fatty') ? 'none' : '';
       if (isInv && !state.inventoryData) loadInventoryData();
       if (isInv && state.inventoryData) {
         renderInventory();
@@ -4069,12 +4083,13 @@ function init() {
         }
       }
       if (state.tab === 'flags') renderFlags();
+      if (state.tab === 'fatty') loadFattyTracker();
       if (state.tab === 'orders') renderOrders();
       if (state.tab === 'transfers') renderTransfers();
       if (isBeta) loadBetaFeed();
       const isScanner = state.tab === 'scanner';
       const ctrlBar = document.querySelector('.controls-bar');
-      if (ctrlBar) ctrlBar.style.display = (isScanner || state.tab === 'pricetags') ? 'none' : '';
+      if (ctrlBar) ctrlBar.style.display = (isScanner || state.tab === 'pricetags' || state.tab === 'fatty') ? 'none' : '';
       if (isScanner) initScanner();
       else stopScanner();
     });
@@ -7843,7 +7858,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.87';
+const APP_VERSION = 'v2.88';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8800,6 +8815,111 @@ async function saveLeadTimes() {
   } catch (e) {
     if (msg) { msg.textContent = 'Save failed — try again. ' + (e.message || ''); msg.style.color = 'var(--red)'; }
   }
+}
+
+// ── FATTY joint tracker ──────────────────────────────────
+const FATTY_VCOLOR = { '2022':'#9b6dff', '2023':'#8a5cf6', '2024':'#2a78d6', '2025':'#1d9e75', '2026':'#eb6834', '2027':'#e2b13c', '2028':'#d4537e' };
+const fattyColor = v => FATTY_VCOLOR[v] || '#8a8a8a';
+
+async function loadFattyTracker() {
+  const el = document.getElementById('fattyContent');
+  if (state.fattyData) { renderFatty(); return; }
+  if (el) el.innerHTML = '<div class="state-msg"><div class="spinner"></div><br>Loading FATTY tracker…<br><span style="font-size:11px;color:var(--muted)">First load builds harvest data from Dutchie — up to ~30s.</span></div>';
+  try {
+    state.fattyData = await proxyFetch({ action: 'fattytracker' }, 'fatty_tracker_v1', 30 * 60 * 1000);
+    renderFatty();
+  } catch (e) {
+    if (el) el.innerHTML = '<div class="state-msg">Couldn\'t reach the FATTY tracker. <button class="settings-btn-sm" onclick="state.fattyData=null;loadFattyTracker()">Retry</button></div>';
+  }
+}
+
+function setFattyStore(s) { state.fattyStore = s; renderFatty(); }
+
+function renderFatty() {
+  const d = state.fattyData;
+  const el = document.getElementById('fattyContent');
+  if (!d || !el) return;
+  const stores = d.stores || [];
+  const vints = (d.vintages || []).filter(v => v !== 'Unknown');
+  const sel = state.fattyStore || 'All stores';
+  const curFor = v => sel === 'All stores'
+    ? stores.reduce((a, s) => a + (((d.current || {})[s] || {})[v] || 0), 0)
+    : (((d.current || {})[sel] || {})[v] || 0);
+  const weeks = (d.weekly && d.weekly.weeks) || [];
+  const weekVal = (wk, v) => sel === 'All stores'
+    ? stores.reduce((a, s) => a + ((((d.weekly.byStore[s] || {})[wk] || {})[v]) || 0), 0)
+    : ((((d.weekly.byStore[sel] || {})[wk] || {})[v]) || 0);
+  const lastWk = weeks[weeks.length - 1];
+  const fmt = n => Math.round(n).toLocaleString();
+
+  const filterOpts = ['All stores'].concat(stores);
+  const filterHtml = filterOpts.map(s => {
+    const on = s === sel;
+    return `<button class="pill fatty-pill${on ? ' store-active' : ''}" onclick="setFattyStore('${s.replace(/'/g, "\\'")}')" style="${on ? '' : ''}">${escapeHtml(s)}</button>`;
+  }).join('');
+
+  const total = vints.reduce((a, v) => a + curFor(v), 0);
+  const totalPrev = vints.reduce((a, v) => a + (lastWk ? weekVal(lastWk, v) : 0), 0);
+  const chip = (delta) => {
+    const up = delta >= 0;
+    const col = up ? 'var(--green)' : 'var(--red)';
+    return `<span style="font-size:12px;font-weight:600;color:${col};white-space:nowrap">${up ? '▲ +' : '▼ −'}${fmt(Math.abs(delta))} wk</span>`;
+  };
+  const totalTile = `<div class="fatty-tile" style="border:1px solid var(--green)">
+    <div class="fatty-tile-label">Total on hand</div>
+    <div class="fatty-tile-num">${fmt(total)}</div>
+    <div>${chip(total - totalPrev)}</div></div>`;
+  const vintageTiles = vints.map(v => {
+    const n = curFor(v), wow = n - (lastWk ? weekVal(lastWk, v) : 0);
+    return `<div class="fatty-tile">
+      <div class="fatty-tile-label"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${fattyColor(v)};vertical-align:middle;margin-right:5px"></span>${v} harvest</div>
+      <div class="fatty-tile-num">${fmt(n)}</div>
+      <div>${chip(wow)}</div></div>`;
+  }).join('');
+
+  el.innerHTML =
+    `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+       <div style="font-size:16px;font-weight:700">FATTY joint tracker <span style="font-size:12px;color:var(--muted);font-weight:400">· by harvest vintage</span></div>
+       <div class="fatty-filter" style="display:flex;gap:4px;flex-wrap:wrap">${filterHtml}</div>
+     </div>
+     <div class="fatty-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px">${totalTile}${vintageTiles}</div>
+     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
+       <span style="font-size:12px;color:var(--muted)">On hand by week — stack height is total</span>
+       <div style="display:flex;gap:14px;font-size:12px;color:var(--muted)">${vints.map(v => `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${fattyColor(v)};vertical-align:middle;margin-right:4px"></span>${v}</span>`).join('')}</div>
+     </div>
+     ${fattyChartSvg(vints, weeks, weekVal, curFor)}
+     <div style="font-size:11px;color:var(--muted);margin-top:8px">${d.skuMapped || 0} SKUs matched to a harvest year${d.unresolvedUnits ? ` · ${fmt(d.unresolvedUnits)} units without a harvest date` : ''}. Trend from snapshot history; updates hourly.</div>`;
+}
+
+function fattyChartSvg(vints, weeks, weekVal, curFor) {
+  const labels = weeks.map(w => w.slice(5)).concat(['now']);
+  const n = labels.length;
+  if (n < 2) return '<div style="font-size:12px;color:var(--muted);padding:20px 0">Not enough history yet — the trend fills in as weekly snapshots accrue.</div>';
+  const valAt = (i, v) => i < weeks.length ? weekVal(weeks[i], v) : curFor(v);
+  const totals = labels.map((_, i) => vints.reduce((a, v) => a + valAt(i, v), 0));
+  const maxY = Math.max(1, ...totals) * 1.1;
+  const W = 720, H = 240, padL = 42, padB = 22, padT = 8, padR = 8;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const x = i => padL + (n === 1 ? 0 : i * (plotW / (n - 1)));
+  const y = val => padT + plotH * (1 - val / maxY);
+  let bands = '';
+  const cum = labels.map(() => 0);
+  vints.forEach(v => {
+    const top = labels.map((_, i) => cum[i] + valAt(i, v));
+    const topPts = top.map((t, i) => `${x(i).toFixed(1)},${y(t).toFixed(1)}`).join(' ');
+    const botPts = cum.map((c, i) => `${x(i).toFixed(1)},${y(c).toFixed(1)}`).reverse().join(' ');
+    bands += `<polygon points="${topPts} ${botPts}" fill="${fattyColor(v)}" fill-opacity="0.55" stroke="${fattyColor(v)}" stroke-width="1"/>`;
+    labels.forEach((_, i) => { cum[i] = top[i]; });
+  });
+  const gy = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const val = maxY * f, yy = y(val);
+    return `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" stroke="var(--border)" stroke-width="1"/><text x="${padL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${Math.round(val).toLocaleString()}</text>`;
+  }).join('');
+  const step = Math.ceil(n / 8);
+  const gx = labels.map((lab, i) => (i % step === 0 || i === n - 1)
+    ? `<text x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${escapeHtml(lab)}</text>` : '').join('');
+  const dots = labels.map((lab, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(totals[i]).toFixed(1)}" r="6" fill="transparent"><title>${escapeHtml(lab)} · total ${Math.round(totals[i]).toLocaleString()}</title></circle>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:100%;height:auto" role="img" aria-label="Stacked area of FATTY joints on hand by harvest vintage over time">${gy}${bands}${gx}${dots}</svg>`;
 }
 
 // ── Density ──────────────────────────────────────────────
