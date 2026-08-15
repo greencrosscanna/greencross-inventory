@@ -3980,7 +3980,7 @@ function buildFattyWeekly_(skuVintage) {
 function buildFattyTracker_(force) {
   const scriptCache = CacheService.getScriptCache();
   if (!force) { const c = scriptCache.get(FATTY_TRACKER_CACHE); if (c) { try { return JSON.parse(c); } catch (e) {} } }
-  const stores = STORES.map(function (s) { return s.name; });
+  const stores = STORES.slice();
   const reqs = stores.map(function (s) {
     return { url: DUTCHIE_BASE + '/reporting/inventory', headers: { Authorization: dutchieAuth(s), Accept: 'application/json' }, muteHttpExceptions: true };
   });
