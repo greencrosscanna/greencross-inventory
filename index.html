@@ -808,6 +808,8 @@ if (location.protocol === 'file:') {
   .fatty-tile-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
   .fatty-tile-num { font-size: 26px; font-weight: 700; line-height: 1.1; margin-bottom: 8px; }
   .fatty-pill { cursor: pointer; }
+  .fatty-range-btn { font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--muted); }
+  .fatty-range-btn.on { border-color: var(--green); color: var(--green); background: rgba(29,158,117,.1); }
 
   /* ── Inv table column widths (table-layout:fixed requires explicit widths) ── */
   .inv-table th:nth-child(1) { width: 90px;  }  /* Status   */
@@ -2341,6 +2343,7 @@ let state = {
   leadTimes: [],   // custom per-brand/category target-coverage overrides (shared backend config)
   fattyData: null, // FATTY joint tracker payload (counts by vintage/store + weekly history)
   fattyStore: 'All stores',
+  fattyRange: 'all', // trend window: 1m | 3m | 6m | 1y | all
   from: '',
   to: '',
   cogsData: null,
@@ -7858,7 +7861,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.88';
+const APP_VERSION = 'v2.89';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8834,6 +8837,7 @@ async function loadFattyTracker() {
 }
 
 function setFattyStore(s) { state.fattyStore = s; renderFatty(); }
+function setFattyRange(r) { state.fattyRange = r; renderFatty(); }
 
 function renderFatty() {
   const d = state.fattyData;
@@ -8883,15 +8887,20 @@ function renderFatty() {
        <div class="fatty-filter" style="display:flex;gap:4px;flex-wrap:wrap">${filterHtml}</div>
      </div>
      <div class="fatty-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px">${totalTile}${vintageTiles}</div>
-     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
-       <span style="font-size:12px;color:var(--muted)">On hand by week — stack height is total</span>
+     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+       <div style="display:flex;align-items:center;gap:8px">
+         <span style="font-size:12px;color:var(--muted)">On hand by week</span>
+         <div style="display:flex;gap:3px">${[['1m','1M'],['3m','3M'],['6m','6M'],['1y','1Y'],['all','All']].map(r => `<button class="fatty-range-btn${state.fattyRange === r[0] ? ' on' : ''}" onclick="setFattyRange('${r[0]}')">${r[1]}</button>`).join('')}</div>
+       </div>
        <div style="display:flex;gap:14px;font-size:12px;color:var(--muted)">${vints.map(v => `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${fattyColor(v)};vertical-align:middle;margin-right:4px"></span>${v}</span>`).join('')}</div>
      </div>
-     ${fattyChartSvg(vints, weeks, weekVal, curFor)}
+     ${fattyChartSvg(vints, weeks, weekVal, curFor, state.fattyRange)}
      <div style="font-size:11px;color:var(--muted);margin-top:8px">${d.skuMapped || 0} SKUs matched to a harvest year${d.unresolvedUnits ? ` · ${fmt(d.unresolvedUnits)} units without a harvest date` : ''}. Trend from snapshot history; updates hourly.</div>`;
 }
 
-function fattyChartSvg(vints, weeks, weekVal, curFor) {
+function fattyChartSvg(vints, allWeeks, weekVal, curFor, range) {
+  const rangeN = { '1m': 4, '3m': 13, '6m': 26, '1y': 52, 'all': 1e9 }[range] || 1e9;
+  const weeks = allWeeks.length > rangeN ? allWeeks.slice(-rangeN) : allWeeks;
   const labels = weeks.map(w => w.slice(5)).concat(['now']);
   const n = labels.length;
   if (n < 2) return '<div style="font-size:12px;color:var(--muted);padding:20px 0">Not enough history yet — the trend fills in as weekly snapshots accrue.</div>';
