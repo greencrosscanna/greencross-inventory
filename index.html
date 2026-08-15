@@ -7861,7 +7861,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.91';
+const APP_VERSION = 'v2.92';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8924,7 +8924,11 @@ function fattyBuildSeries(sel, vints, weeks, weekVal, curFor) {
   }
   const nowVals = {}; vints.forEach(v => nowVals[v] = curFor(v));
   const today = todayStr();
-  if (series.length && series[series.length - 1].date === today) series[series.length - 1] = { date: today, vals: nowVals };
+  const todT = new Date(today + 'T00:00:00Z').getTime();
+  const lastT = series.length ? new Date(series[series.length - 1].date + 'T00:00:00Z').getTime() : 0;
+  // If the last data point is within a few days of today, replace it with the live "now" point instead of
+  // stacking a near-duplicate label at the right edge.
+  if (series.length && (todT - lastT) <= 4 * 86400000) series[series.length - 1] = { date: today, vals: nowVals };
   else series.push({ date: today, vals: nowVals });
   return series;
 }
