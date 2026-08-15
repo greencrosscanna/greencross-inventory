@@ -248,6 +248,7 @@ function doGet(e) {
     if (params.action === 'skusales')       return jsonOut(skuSalesSearch(params));
     if (params.action === 'txtypeprobe')    return jsonOut(txTypeProbe(params));
     if (params.action === 'invfieldprobe')  return jsonOut(invFieldProbe(params));
+    if (params.action === 'labresultsprobe') return jsonOut(labResultsProbe(params));
     if (params.action === 'snapshotprobe')  return jsonOut(snapshotProbe(params));
     if (params.action === 'invrooms')       return jsonOut(invRoomsProbe(params));
     if (params.action === 'invtxlookup')    return jsonOut(invTxLookup(params));
@@ -3853,6 +3854,30 @@ function invFieldProbe(params) {
     .filter(([k]) => /price|cost|msrp|tax|rec|med/i.test(k))
     .reduce((o, [k, v]) => { o[k] = v; return o; }, {});
   return { store, sku: sku || null, httpStatus: code, totalItems: items.length, matched: items.length, priceFields, fields, firstItem: first };
+}
+
+// Probe /inventory/labresults (lab results by batch) to find the harvest-date field for the FATTY joint
+// tracker. ?batchId=… filters to one batch; returns the matched record in full + a keys/types list.
+function labResultsProbe(params) {
+  const store = params.store || 'River Rd';
+  const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
+  const resp  = UrlFetchApp.fetch(DUTCHIE_BASE + '/inventory/labresults', { headers: hdrs, muteHttpExceptions: true });
+  const code  = resp.getResponseCode();
+  if (code !== 200) return { httpStatus: code, url: '/inventory/labresults', error: resp.getContentText().slice(0, 500) };
+  const raw   = JSON.parse(resp.getContentText());
+  let recs = Array.isArray(raw) ? raw : (raw.data || raw.items || raw.labResults || []);
+  if (!recs.length) return { store, httpStatus: code, error: 'empty response', totalRecords: 0 };
+  const batchId = String(params.batchId || '').trim();
+  if (batchId) {
+    const match = recs.filter(r => String(r.batchId) === batchId || String(r.batchName) === batchId);
+    if (match.length) recs = match;
+  }
+  const first = recs[0];
+  const fields = Object.entries(first).map(([k, v]) => ({ key: k, type: typeof v, sample: JSON.stringify(v).slice(0, 80) }));
+  const dateFields = Object.entries(first)
+    .filter(([k]) => /date|harvest|packag|cultivat|sample|tested/i.test(k))
+    .reduce((o, [k, v]) => { o[k] = v; return o; }, {});
+  return { store, batchId: batchId || null, httpStatus: code, totalRecords: recs.length, dateFields, fields, firstRecord: first };
 }
 
 // Fetch all inventory transactions for a specific inventoryId to debug room classification
