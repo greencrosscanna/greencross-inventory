@@ -3860,13 +3860,18 @@ function invFieldProbe(params) {
 // tracker. ?batchId=… filters to one batch; returns the matched record in full + a keys/types list.
 function labResultsProbe(params) {
   const store = params.store || 'River Rd';
+  const batchId = String(params.batchId || '').trim();
   const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
-  const resp  = UrlFetchApp.fetch(DUTCHIE_BASE + '/inventory/labresults', { headers: hdrs, muteHttpExceptions: true });
+  // "Lab results by batch" — try batchId as a query param (several likely names) since a bare call is empty.
+  const qp = batchId ? ('?' + (params.qp || 'batchId') + '=' + encodeURIComponent(batchId)) : '';
+  const url   = DUTCHIE_BASE + '/inventory/labresults' + qp;
+  const resp  = UrlFetchApp.fetch(url, { headers: hdrs, muteHttpExceptions: true });
   const code  = resp.getResponseCode();
-  if (code !== 200) return { httpStatus: code, url: '/inventory/labresults', error: resp.getContentText().slice(0, 500) };
-  const raw   = JSON.parse(resp.getContentText());
-  let recs = Array.isArray(raw) ? raw : (raw.data || raw.items || raw.labResults || []);
-  if (!recs.length) return { store, httpStatus: code, error: 'empty response', totalRecords: 0 };
+  const body  = resp.getContentText();
+  if (code !== 200) return { httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), error: body.slice(0, 500) };
+  let raw; try { raw = JSON.parse(body); } catch (e) { return { httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), parseError: true, bodySample: body.slice(0, 300) }; }
+  let recs = Array.isArray(raw) ? raw : (raw.data || raw.items || raw.labResults || raw.results || []);
+  if (!recs.length) return { store, httpStatus: code, url: url.replace(DUTCHIE_BASE, ''), error: 'empty response', totalRecords: 0, rawType: (Array.isArray(raw) ? 'array' : typeof raw), rawKeys: (raw && typeof raw === 'object' && !Array.isArray(raw)) ? Object.keys(raw) : null, bodySample: body.slice(0, 300) };
   const batchId = String(params.batchId || '').trim();
   if (batchId) {
     const match = recs.filter(r => String(r.batchId) === batchId || String(r.batchName) === batchId);
