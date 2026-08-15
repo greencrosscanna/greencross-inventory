@@ -4931,6 +4931,10 @@ function warmOperationalCaches() {
   const velResult    = warmVelocityOnly();
   const bundleResult = warmBundleOnly();
   const feedResult   = warmDecisionFeedOnly();
+  // Rebuild the FATTY joint-tracker cache too (its cold build fetches lab results for every FATTY batch, ~25s)
+  // so the first user load each day is instant. Non-fatal.
+  const fattyErrors = [];
+  try { buildFattyTracker_(true); } catch (e) { fattyErrors.push('fatty: ' + (e && e.message)); }
 
   // Phase functions already prefix their own errors ('velocity: ...', 'operational bundle: ...').
   // Spread them directly — don't re-prefix or the status panel shows 'velocity: velocity: msg'.
@@ -4938,6 +4942,7 @@ function warmOperationalCaches() {
     ...velResult.errors,
     ...bundleResult.errors,
     ...feedResult.errors,
+    ...fattyErrors,
   ];
 
   const result = {
