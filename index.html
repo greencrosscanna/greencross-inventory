@@ -7866,7 +7866,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.94';
+const APP_VERSION = 'v2.95';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8841,6 +8841,25 @@ const FATTY_SEED = [
   ['2026-07-03',715,3410,77],['2026-07-10',429,3459,114],['2026-07-17',362,4063,150],
   ['2026-07-24',228,3662,224],['2026-07-31',188,4282,214],['2026-08-14',160,3668,276]
 ];
+// Gap-filled seed: any missing weekly slot (e.g. Jun 19, Aug 7) is inserted with the median (midpoint) of the
+// two bounding weeks, so the trend has an even weekly cadence with no holes.
+const FATTY_SEED_FILLED = (() => {
+  const WK = 7 * 86400000;
+  const src = FATTY_SEED.map(r => ({ t: new Date(r[0] + 'T00:00:00Z').getTime(), vals: { '2024': r[1], '2025': r[2], '2026': r[3] } }));
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    out.push(src[i]);
+    const b = src[i + 1];
+    if (!b) continue;
+    const gaps = Math.round((b.t - src[i].t) / WK) - 1;
+    for (let g = 1; g <= gaps; g++) {
+      const mid = {};
+      for (const v in src[i].vals) mid[v] = Math.round((src[i].vals[v] + b.vals[v]) / 2);
+      out.push({ t: src[i].t + g * WK, vals: mid });
+    }
+  }
+  return out;
+})();
 const FATTY_DAY = 86400000;
 const FATTY_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const fattyDateLabel = t => { const d = new Date(t); return FATTY_MON[d.getUTCMonth()] + ' ' + d.getUTCDate(); };
@@ -8874,9 +8893,9 @@ function fattySeriesFor(sel, d, vints) {
   const parse = s => new Date(s + 'T00:00:00Z').getTime();
   const rows = [];
   if (sel === 'All stores') {
-    FATTY_SEED.forEach(r => {
-      const vals = { '2024': r[1], '2025': r[2], '2026': r[3] };
-      rows.push({ t: parse(r[0]), vals: vals, total: vints.reduce((a, v) => a + (vals[v] || 0), 0) });
+    FATTY_SEED_FILLED.forEach(r => {
+      const vals = {}; vints.forEach(v => vals[v] = r.vals[v] || 0);
+      rows.push({ t: r.t, vals: vals, total: vints.reduce((a, v) => a + vals[v], 0) });
     });
   } else {
     const weeks = (d.weekly && d.weekly.weeks) || [];
@@ -9074,10 +9093,6 @@ function renderFatty() {
       </div>`;
   }
 
-  const oldest = vints.find(v => (last.vals[v] || 0) > 0);
-  const oldestVel = oldest ? fattyVelocity(rows, oldest, WIN) : 0;
-  const footnote = (oldest ? `FIFO: oldest remaining is ${oldest} — ${fmt(last.vals[oldest])} units${oldestVel > 0 ? `, clearing in ~${(last.vals[oldest] / oldestVel).toFixed(1)} weeks` : ', not moving'}. ` : '') + 'Weekly history reconstructed from the tracking sheet; live counts take over at the "now" point.';
-
   el.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
       <div>
         <div style="font-size:16px;font-weight:700">FATTY joint tracker <span style="font-size:12px;color:var(--muted);font-weight:400">· by harvest vintage · FIFO</span></div>
@@ -9087,8 +9102,7 @@ function renderFatty() {
     </div>
     <div class="fatty-grid2">${hero}${fifoCard}</div>
     ${chartCard}
-    ${compareRow}
-    <div style="font-size:11px;color:var(--muted);margin-top:10px">${escapeHtml(footnote)}</div>`;
+    ${compareRow}`;
 
   fattyAnimateHero(total);
 }
