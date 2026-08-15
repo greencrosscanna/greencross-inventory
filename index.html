@@ -7861,7 +7861,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.90';
+const APP_VERSION = 'v2.91';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8942,7 +8942,7 @@ function fattyChartSvg(series, vints, range) {
   let winStart = (range === 'all') ? firstT : (nowT - rangeDays * DAY);
   let vis = series.filter(p => parse(p.date) >= winStart);
   if (vis.length < 2) { vis = series.slice(-2); winStart = Math.min(winStart, parse(vis[0].date)); }
-  const W = 720, H = 240, padL = 42, padB = 22, padT = 8, padR = 8;
+  const W = 720, H = 258, padL = 42, padB = 40, padT = 8, padR = 8;
   const plotW = W - padL - padR, plotH = H - padT - padB;
   const span = Math.max(DAY, nowT - winStart);
   const x = t => padL + plotW * ((t - winStart) / span);
@@ -8957,8 +8957,7 @@ function fattyChartSvg(series, vints, range) {
   if (winStart < firstT - DAY) {
     const gx1 = x(winStart), gx2 = x(firstT);
     gray = `<rect x="${gx1.toFixed(1)}" y="${padT}" width="${Math.max(0, gx2 - gx1).toFixed(1)}" height="${plotH}" fill="var(--muted)" fill-opacity="0.07"/>`
-         + `<line x1="${gx2.toFixed(1)}" y1="${padT}" x2="${gx2.toFixed(1)}" y2="${(padT + plotH).toFixed(1)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>`
-         + ((gx2 - gx1) > 70 ? `<text x="${((gx1 + gx2) / 2).toFixed(1)}" y="${(padT + plotH / 2).toFixed(1)}" text-anchor="middle" font-size="11" fill="var(--muted)">no data before Mar 13</text>` : '');
+         + `<line x1="${gx2.toFixed(1)}" y1="${padT}" x2="${gx2.toFixed(1)}" y2="${(padT + plotH).toFixed(1)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>`;
   }
   let bands = '';
   const cum = vis.map(() => 0);
@@ -8969,10 +8968,12 @@ function fattyChartSvg(series, vints, range) {
     bands += `<polygon points="${topPts} ${botPts}" fill="${fattyColor(v)}" fill-opacity="0.55" stroke="${fattyColor(v)}" stroke-width="1"/>`;
     vis.forEach((_, i) => { cum[i] = top[i]; });
   });
-  const nLab = Math.min(7, vis.length);
-  const stepL = Math.max(1, Math.floor((vis.length - 1) / (nLab - 1)));
-  const gx = vis.map((p, i) => (i % stepL === 0 || i === vis.length - 1)
-    ? `<text x="${x(parse(p.date)).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${i === vis.length - 1 ? 'now' : escapeHtml(p.date.slice(5))}</text>` : '').join('');
+  const axY = padT + plotH;
+  const gx = vis.map((p, i) => {
+    const xx = x(parse(p.date)), lab = (i === vis.length - 1) ? 'now' : p.date.slice(5), ly = axY + 12;
+    return `<line x1="${xx.toFixed(1)}" y1="${axY.toFixed(1)}" x2="${xx.toFixed(1)}" y2="${(axY + 3).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`
+         + `<text x="${xx.toFixed(1)}" y="${ly.toFixed(1)}" transform="rotate(-45 ${xx.toFixed(1)} ${ly.toFixed(1)})" text-anchor="end" font-size="9" fill="var(--muted)">${escapeHtml(lab)}</text>`;
+  }).join('');
   const dots = vis.map((p, i) => `<circle cx="${x(parse(p.date)).toFixed(1)}" cy="${y(totals[i]).toFixed(1)}" r="6" fill="transparent"><title>${i === vis.length - 1 ? 'now' : escapeHtml(p.date)} · total ${Math.round(totals[i]).toLocaleString()}</title></circle>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:100%;height:auto" role="img" aria-label="Stacked area of FATTY joints on hand by harvest vintage over time; grayed before Mar 13 where there is no data">${gy}${gray}${bands}${gx}${dots}</svg>`;
 }
