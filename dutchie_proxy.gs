@@ -3978,6 +3978,7 @@ function buildFattyWeekly_(skuVintage) {
 }
 
 function buildFattyTracker_(force) {
+  const scriptCache = CacheService.getScriptCache();
   if (!force) { const c = scriptCache.get(FATTY_TRACKER_CACHE); if (c) { try { return JSON.parse(c); } catch (e) {} } }
   const stores = STORES.map(function (s) { return s.name; });
   const reqs = stores.map(function (s) {
