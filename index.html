@@ -7866,7 +7866,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.93';
+const APP_VERSION = 'v2.94';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8845,7 +8845,7 @@ const FATTY_DAY = 86400000;
 const FATTY_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const fattyDateLabel = t => { const d = new Date(t); return FATTY_MON[d.getUTCMonth()] + ' ' + d.getUTCDate(); };
 const fattyFmt = n => Math.round(n).toLocaleString();
-let _fattyAnim, _fattyRaf, _fattyGeo;   // hero count-up state + chart hover geometry (not persisted)
+let _fattyAnim, _fattyRaf, _fattyGeo, _fattySafety;   // hero count-up state + chart hover geometry (not persisted)
 
 async function loadFattyTracker() {
   const el = document.getElementById('fattyContent');
@@ -8925,6 +8925,9 @@ function fattyAnimateHero(target) {
     if (k < 1) _fattyRaf = requestAnimationFrame(step); else _fattyAnim = target;
   };
   _fattyRaf = requestAnimationFrame(step);
+  // Safety net: if requestAnimationFrame is throttled (e.g. background tab), land the final value anyway.
+  clearTimeout(_fattySafety);
+  _fattySafety = setTimeout(() => { _fattyAnim = target; const el = document.getElementById('fattyHeroNum'); if (el) el.textContent = fattyFmt(target); }, 620);
 }
 
 // Chart hover — updates crosshair/dots/tooltip DOM directly against the geometry stashed by fattyChartSvg
