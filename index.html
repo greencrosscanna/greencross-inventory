@@ -1523,6 +1523,7 @@ if (location.protocol === 'file:') {
         <button class="tab" data-tab="transfers" id="tabTransfers">Transfers <span class="cart-badge" id="transferBadge" style="display:none"></span></button>
         <button class="tab" data-tab="performance">Performance</button>
         <button class="tab" data-tab="pricetags" id="tabPricetags">Price Cards <span class="cart-badge" id="pricetagsBadge" style="display:none"></span></button>
+        <button class="tab" data-tab="spiff" id="tabSpiff">SPIFF</button>
         <button class="tab" data-tab="flags">Flags</button>
         <button class="tab" data-tab="fatty">FATTY</button>
         <button class="tab beta-tab" data-tab="beta" id="betaTabBtn">Beta</button>
@@ -1865,6 +1866,14 @@ if (location.protocol === 'file:') {
   <div class="panel" id="panel-pricetags" style="padding:0">
     <iframe id="pricetagsFrame" title="Price Cards"
             src="https://greencrosscanna.github.io/greencross-price-cards/"
+            style="width:100%;height:calc(100vh - 108px);border:0;display:block"
+            allow="clipboard-read; clipboard-write"></iframe>
+  </div>
+
+  <!-- ══ SPIFF PANEL (embeds the SPIFF app) ══ -->
+  <div class="panel" id="panel-spiff" style="padding:0">
+    <iframe id="spiffFrame" title="SPIFF"
+            src="https://greencrosscanna.github.io/greencross-spiff/"
             style="width:100%;height:calc(100vh - 108px);border:0;display:block"
             allow="clipboard-read; clipboard-write"></iframe>
   </div>
@@ -4077,7 +4086,7 @@ function init() {
       row.classList.toggle('visible', isInv);
       row.classList.toggle('expanded', isInv && state.catRowExpanded);
       if (isInv) updateCatToggleBtn();
-      document.querySelector('.date-controls').style.display = (isInv || isBeta || state.tab === 'fatty') ? 'none' : '';
+      document.querySelector('.date-controls').style.display = (isInv || isBeta || state.tab === 'fatty' || state.tab === 'spiff') ? 'none' : '';
       if (isInv && !state.inventoryData) loadInventoryData();
       if (isInv && state.inventoryData) {
         renderInventory();
@@ -4097,7 +4106,7 @@ function init() {
       if (isBeta) loadBetaFeed();
       const isScanner = state.tab === 'scanner';
       const ctrlBar = document.querySelector('.controls-bar');
-      if (ctrlBar) ctrlBar.style.display = (isScanner || state.tab === 'pricetags' || state.tab === 'fatty') ? 'none' : '';
+      if (ctrlBar) ctrlBar.style.display = (isScanner || state.tab === 'pricetags' || state.tab === 'spiff' || state.tab === 'fatty') ? 'none' : '';
       if (isScanner) initScanner();
       else stopScanner();
     });
