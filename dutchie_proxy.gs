@@ -278,6 +278,7 @@ function doGet(e) {
     // COGS / sales dashboard
     if (params.action === 'cogs')           return jsonOut(getCOGS(params));
     if (params.action === 'sales')          return jsonOut(getSales(params));
+    if (params.action === 'sales_dutchie')  return jsonOut(getSalesDutchie(params));
     if (params.action === 'lostsales')      return jsonOut(getLostSales(params));
     if (params.action === 'assortment')     return jsonOut(getAssortmentHealth(params));
     if (params.action === 'assortmentconfig') return jsonOut(getSubstitutionConfig_());
@@ -5018,7 +5019,33 @@ function getCOGS(params) {
   return { data: results };
 }
 
-// ─── SALES ────────────────────────────────────────────────────────────────────
+// ─── SALES (DUTCHIE) ──────────────────────────────────────────────────────────
+// Returns daily net sales from GXCore (Dutchie-sourced, settled days only).
+// Same response shape as getSales: {data:[{date,store,sales}]}.
+// "to" is capped at yesterday — GXCore.getSalesDaily only has settled data.
+function getSalesDutchie(params) {
+  const from = (params.from || '').slice(0, 10);
+  const todayPT   = Utilities.formatDate(new Date(), 'America/Los_Angeles', 'yyyy-MM-dd');
+  const yesterday = Utilities.formatDate(new Date(Date.now() - 86400000), 'America/Los_Angeles', 'yyyy-MM-dd');
+  const rawTo = (params.to || '').slice(0, 10);
+  const to = (!rawTo || rawTo >= todayPT) ? yesterday : rawTo;
+
+  const results = [];
+  for (const store of STORES) {
+    try {
+      const rows = GXCore.getSalesDaily(store, from, to) || [];
+      for (const r of rows) {
+        if (!r.date) continue;
+        results.push({ date: String(r.date).slice(0, 10), store: store, sales: Number(r.net || 0) });
+      }
+    } catch(e) {
+      Logger.log('getSalesDutchie: GXCore.getSalesDaily failed for ' + store + ': ' + e.message);
+    }
+  }
+  return { data: results };
+}
+
+// ─── SALES (QB INCOME SHEET) ──────────────────────────────────────────────────
 function getSales(params) {
   const from = params.from || '';
   const to   = params.to   || '';
