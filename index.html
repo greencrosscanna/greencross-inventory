@@ -3139,7 +3139,7 @@ async function loadData() {
 
   try {
     const [cogsRes, salesRes, budgetRes] = await Promise.all([
-      proxyFetch({ action: 'cogs', from: state.from, to: state.to }, cacheKey + '_cogs', 30 * 60 * 1000),
+      proxyFetch({ action: 'cogs_dutchie', from: state.from, to: state.to }, cacheKey + '_cogs', 30 * 60 * 1000),
       proxyFetch({ action: 'sales_dutchie', from: state.from, to: state.to }, cacheKey + '_sales', 30 * 60 * 1000),
       proxyFetch({ action: 'budget' }, 'budget', 12 * 60 * 60 * 1000),
     ]);
@@ -4732,7 +4732,7 @@ async function loadInventoryData() {
         const fKey = `inv28fin_${fin28From}`;
         const [sRes, cRes] = await Promise.all([
           proxyFetch({ action: 'sales_dutchie', from: fin28From, to: fin28To }, fKey + '_s', 30 * 60 * 1000),
-          proxyFetch({ action: 'cogs',  from: fin28From, to: fin28To }, fKey + '_c', 30 * 60 * 1000),
+          proxyFetch({ action: 'cogs_dutchie',  from: fin28From, to: fin28To }, fKey + '_c', 30 * 60 * 1000),
         ]);
         state.inv28Sales = sRes.data || [];
         state.inv28Cogs  = cRes.data || [];

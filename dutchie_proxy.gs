@@ -277,6 +277,7 @@ function doGet(e) {
     if (params.action === 'setupcentry')    return jsonOut(setUpcEntry(params));
     // COGS / sales dashboard
     if (params.action === 'cogs')           return jsonOut(getCOGS(params));
+    if (params.action === 'cogs_dutchie')   return jsonOut(getCogsDutchie(params));
     if (params.action === 'sales')          return jsonOut(getSales(params));
     if (params.action === 'sales_dutchie')  return jsonOut(getSalesDutchie(params));
     if (params.action === 'lostsales')      return jsonOut(getLostSales(params));
@@ -4995,7 +4996,32 @@ function getSheetByGid(gid) {
   throw new Error('Sheet GID not found: ' + gid);
 }
 
-// ─── COGS ─────────────────────────────────────────────────────────────────────
+// ─── COGS (DUTCHIE) ───────────────────────────────────────────────────────────
+// Returns daily COGS from GXCore (Dutchie-sourced, settled days only).
+// Same response shape as getCOGS: {data:[{date,store,cogs}]}.
+function getCogsDutchie(params) {
+  const from = (params.from || '').slice(0, 10);
+  const todayPT   = Utilities.formatDate(new Date(), 'America/Los_Angeles', 'yyyy-MM-dd');
+  const yesterday = Utilities.formatDate(new Date(Date.now() - 86400000), 'America/Los_Angeles', 'yyyy-MM-dd');
+  const rawTo = (params.to || '').slice(0, 10);
+  const to = (!rawTo || rawTo >= todayPT) ? yesterday : rawTo;
+
+  const results = [];
+  for (const store of STORES) {
+    try {
+      const rows = GXCore.getSalesDaily(store, from, to) || [];
+      for (const r of rows) {
+        if (!r.date) continue;
+        results.push({ date: String(r.date).slice(0, 10), store: store, cogs: Number(r.cogs || 0) });
+      }
+    } catch(e) {
+      Logger.log('getCogsDutchie: GXCore.getSalesDaily failed for ' + store + ': ' + e.message);
+    }
+  }
+  return { data: results };
+}
+
+// ─── COGS (QB INCOME SHEET) ───────────────────────────────────────────────────
 function getCOGS(params) {
   const from = params.from || '';
   const to   = params.to   || '';
