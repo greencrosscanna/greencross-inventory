@@ -24,7 +24,6 @@ const STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'Riv
 const DUTCHIE_STORE_KEYS_PROP = 'DUTCHIE_STORE_KEYS_JSON';
 
 const SHEET_GIDS = {
-  income: 1548231883,
   budget: 1092240858,
   atm:    1349619595,
   sublet: 1274502465,
@@ -276,9 +275,7 @@ function doGet(e) {
     if (params.action === 'getupcmap')      return jsonOut(getUpcMap());
     if (params.action === 'setupcentry')    return jsonOut(setUpcEntry(params));
     // COGS / sales dashboard
-    if (params.action === 'cogs')           return jsonOut(getCOGS(params));
     if (params.action === 'cogs_dutchie')   return jsonOut(getCogsDutchie(params));
-    if (params.action === 'sales')          return jsonOut(getSales(params));
     if (params.action === 'sales_dutchie')  return jsonOut(getSalesDutchie(params));
     if (params.action === 'lostsales')      return jsonOut(getLostSales(params));
     if (params.action === 'assortment')     return jsonOut(getAssortmentHealth(params));
@@ -1067,16 +1064,16 @@ function buildOosLastSeenCostMap_() {
   return out;
 }
 
-// Gross margin % per store over the last `days` (default 28), from the income sheet (sales & COGS) —
-// the same basis as the app's Gross Margin pill. Returns { byStore:{store:gm}, all:gm } with gm in [0,1).
+// Gross margin % per store over the last `days` (default 28), from Dutchie (GXCore.getSalesDaily).
+// Returns { byStore:{store:gm}, all:gm } with gm in [0,1).
 function computeGmByStore_(days) {
   const to = new Date().toISOString().slice(0, 10);
   const from = new Date(Date.now() - (days || 28) * 86400000).toISOString().slice(0, 10);
   const acc = {}; let sAll = 0, cAll = 0;
   const bump = (store, s, c) => { const e = acc[store] || (acc[store] = { s: 0, c: 0 }); e.s += s; e.c += c; };
-  try { (getSales({ from, to }).data || []).forEach(r => { bump(r.store, Number(r.sales || 0), 0); sAll += Number(r.sales || 0); }); }
+  try { (getSalesDutchie({ from, to }).data || []).forEach(r => { bump(r.store, Number(r.sales || 0), 0); sAll += Number(r.sales || 0); }); }
   catch (e) { _logGasError('computeGmByStore_/sales', e.message); }
-  try { (getCOGS({ from, to }).data || []).forEach(r => { bump(r.store, 0, Number(r.cogs || 0)); cAll += Number(r.cogs || 0); }); }
+  try { (getCogsDutchie({ from, to }).data || []).forEach(r => { bump(r.store, 0, Number(r.cogs || 0)); cAll += Number(r.cogs || 0); }); }
   catch (e) { _logGasError('computeGmByStore_/cogs', e.message); }
   const gm = (s, c) => (s > 0 ? Math.max(0, Math.min(0.95, (s - c) / s)) : 0);
   const byStore = {};
@@ -5021,30 +5018,6 @@ function getCogsDutchie(params) {
   return { data: results };
 }
 
-// ─── COGS (QB INCOME SHEET) ───────────────────────────────────────────────────
-function getCOGS(params) {
-  const from = params.from || '';
-  const to   = params.to   || '';
-  const sheet = getSheetByGid(SHEET_GIDS.income);
-  const data  = sheet.getRange(1, 1, sheet.getLastRow(), 4).getValues();
-  const results = [];
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const raw = row[0];
-    if (!raw) continue;
-    let dateStr;
-    if (raw instanceof Date) {
-      dateStr = raw.toISOString().slice(0, 10);
-    } else if (typeof raw === 'string' && raw.match(/\d{4}-\d{2}-\d{2}/)) {
-      dateStr = raw.slice(0, 10);
-    } else continue;
-    if (from && dateStr < from) continue;
-    if (to   && dateStr > to)   continue;
-    results.push({ date: dateStr, store: normalizeStoreName(row[1]), cogs: parseFloat(row[3]) || 0 });
-  }
-  return { data: results };
-}
-
 // ─── SALES (DUTCHIE) ──────────────────────────────────────────────────────────
 // Returns daily net sales from GXCore (Dutchie-sourced, settled days only).
 // Same response shape as getSales: {data:[{date,store,sales}]}.
@@ -5067,30 +5040,6 @@ function getSalesDutchie(params) {
     } catch(e) {
       Logger.log('getSalesDutchie: GXCore.getSalesDaily failed for ' + store + ': ' + e.message);
     }
-  }
-  return { data: results };
-}
-
-// ─── SALES (QB INCOME SHEET) ──────────────────────────────────────────────────
-function getSales(params) {
-  const from = params.from || '';
-  const to   = params.to   || '';
-  const sheet = getSheetByGid(SHEET_GIDS.income);
-  const data  = sheet.getRange(1, 1, sheet.getLastRow(), 3).getValues();
-  const results = [];
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const raw = row[0];
-    if (!raw) continue;
-    let dateStr;
-    if (raw instanceof Date) {
-      dateStr = raw.toISOString().slice(0, 10);
-    } else if (typeof raw === 'string' && raw.match(/\d{4}-\d{2}-\d{2}/)) {
-      dateStr = raw.slice(0, 10);
-    } else continue;
-    if (from && dateStr < from) continue;
-    if (to   && dateStr > to)   continue;
-    results.push({ date: dateStr, store: normalizeStoreName(row[1]), sales: parseFloat(row[2]) || 0 });
   }
   return { data: results };
 }
@@ -5134,12 +5083,6 @@ function getBudget() {
   }
 
   return { months, revenueGoals: revenueRows, expenseBudget: expenseRows };
-}
-
-// ─── SCHEMA (debug) ───────────────────────────────────────────────────────────
-function getSchema() {
-  const sheet = getSheetByGid(SHEET_GIDS.income);
-  return { rows: sheet.getRange(1, 1, 5, 20).getValues() };
 }
 
 // ─── ONE-TIME BACKFILL ─────────────────────────────────────────────────────────
