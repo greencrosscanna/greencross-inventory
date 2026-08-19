@@ -1483,20 +1483,44 @@
 <!-- Shared GX Core client (retry-aware): the canonical resilient wrapper for GX Core's flaky two-hop
      /exec endpoint. Loaded here (before the app script) so window.GXClient is defined when loadChangelog
      runs. Canonical source: greencross-gx-theme/gx-client.js — keep GX Core calls routed through it. -->
-<script src="gx-dev.js"></script>
+<!-- GX dev-guard bootstrap. Canonical source: greencross-gx-theme/gx-dev-boot.html.
+     Paste this ONCE in <head>, before the app's own scripts. It replaces the old
+     <script src="gx-dev.js"></script> tag, which had two problems in production:
+
+       1. It requested a file on EVERY page load, including kiosks. If the file was not committed in
+          that repo it 404ed every time (this is what happened in Leaderboard v1.506); if it was, the
+          kiosk downloaded a dev-only script it can never use.
+       2. A RELATIVE src cannot resolve on a GAS-served page -- HtmlService sandboxes the document to a
+          different origin -- so on that path the guard was silently ABSENT rather than inert. Nothing
+          signalled it, which is worse than the 404.
+
+     Loading it only on localhost fixes both: production never makes the request at all, and the URL is
+     absolute so it resolves from any origin, GAS included. Nothing to commit per repo, which also
+     removes the "referenced a file I never tracked" failure entirely. -->
+<script>
+(function () {
+  var h = location.hostname;
+  if (!(h === 'localhost' || h === '127.0.0.1' || h === '::1' ||
+        /^192\.168\./.test(h) || /^10\./.test(h))) return;   // production: do nothing at all
+  var s = document.createElement('script');
+  s.src = 'https://greencrosscanna.github.io/greencross-gx-theme/gx-dev.js';
+  s.async = false;   // keep execution order relative to other injected scripts
+  document.head.appendChild(s);
+})();
+</script>
 <script>
   // Dev guard: non-mutating actions. Anything NOT listed is blocked when this page is served from
   // localhost, until writes are armed (banner button / ?arm=1 / GXDev.arm()). Inert in production.
   // This app has no single api chokepoint, so gx-dev.js guards at the fetch layer -- requests
   // carrying an action are checked, action-less requests (local assets) pass through untouched.
   // Guarded writes: bugreport, clearerrors, installwarmtrigger, schedulewarmcaches, setleadtimes, setupcentry
-  if (window.GXDev) window.GXDev.declareReads([
+  window.GX_DEV_READS = [
     'assortmentconfig', 'betadecisionfeed', 'budget', 'cogs_dutchie', 'decisionfeed',
     'decisionqueue', 'fattytracker', 'gaserrors', 'getqueue', 'getstate', 'getupcmap',
     'inventory', 'leadtimes', 'llorders', 'loadingquotes', 'login', 'lostsales', 'oosmap',
     'operationalbundle', 'operationalstatus', 'quarantine', 'sales_dutchie', 'skuprobe',
     'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
-  ]);
+  ];
 </script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-client.js"></script>
 </head>
