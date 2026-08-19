@@ -1,39 +1,22 @@
-#!/bin/bash
-# Ship Inventory and record the release to GX Core's CENTRAL version log.
-#   Usage:  bash deploy.sh                              # version-only record
-#           GX_NOTES=$'Line 1\nLine 2' bash deploy.sh   # record WITH release notes
-#
-# Records ONCE per run via GX Core's shared `deploy_version` endpoint (the single
-# release-note log for the whole GX suite — do NOT build a per-app recordversion
-# action). Records show up as deployed_by:"app".
-#
-# Needs .gx_deploy_secret (untracked, never committed) = the shared GC_DEPLOY_SECRET.
-# Without it, recording is skipped with a warning — the deploy itself still happens.
-set -e
+#!/usr/bin/env bash
+# ─── SHARED deploy recorder (source of truth: gx-theme) ──────────────────────────────────────────
+# Record a release in the GX Core shared version log. Synced into every spoke by gx-sync.sh, which
+# fills inventory from the repo's .gx_app. Run AFTER you ship (git push to Pages / clasp deploy engine).
+#   Usage:  GX_NOTES="what changed this release" ./deploy.sh
+# Version is single-sourced from the ?v=NN cache-buster on the JS <script> in index.html — works for
+# any app (generator.js, app.js, main.js, …). To change this script, edit it HERE and re-sync spokes.
+set -euo pipefail
+cd "$(dirname "$0")"
 
-VERSION=$(grep -oE "APP_VERSION = '[^']+'" index.html | head -1 | sed "s/.*'\(.*\)'/\1/")
-[ -z "$VERSION" ] && { echo "✗ Could not read APP_VERSION from index.html"; exit 1; }
-echo "── Shipping Inventory $VERSION ──"
-
-# Backend (Apps Script). Non-fatal so a frontend-only release isn't blocked by clasp auth.
-bash clasp.sh deploy || echo "⚠ backend deploy failed/skipped — continuing with frontend + record."
-
-# Frontend (GitHub Pages).
-git push
-
-# Record the release to GX Core's single version log (safe no-op without the secret).
 GXCORE="https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec"
-if [ -f .gx_deploy_secret ]; then
-  curl -sL -G "$GXCORE" \
-    --data-urlencode "action=deploy_version" \
-    --data-urlencode "secret=$(cat .gx_deploy_secret)" \
-    --data-urlencode "app=inventory" \
-    --data-urlencode "version=$VERSION" \
-    --data-urlencode "sha=$(git rev-parse --short HEAD)" \
-    --data-urlencode "notes=$GX_NOTES"
-  echo ""
-  echo "✓ recorded $VERSION to GX Core (deployed_by:app)"
-else
-  echo "⚠ .gx_deploy_secret missing — skipped GX Core record for $VERSION."
-  echo "  Create it (untracked) with the shared GC_DEPLOY_SECRET value to enable auto-recording."
-fi
+APP="inventory"
+SECRET="$(cat .gx_deploy_secret)"
+APP_VERSION="v$(grep -oE '[A-Za-z0-9_.-]+\.js\?v=[0-9]+' index.html | grep -oE '[0-9]+' | head -1)"
+SHA="$(git rev-parse --short HEAD)"
+GX_NOTES="${GX_NOTES:-}"
+
+echo "Recording ${APP} ${APP_VERSION} (${SHA}) to GX Core…"
+curl -sL -G "$GXCORE" --data-urlencode action=deploy_version --data-urlencode "secret=$SECRET" \
+  --data-urlencode "app=$APP" --data-urlencode "version=$APP_VERSION" \
+  --data-urlencode "sha=$SHA" --data-urlencode "notes=$GX_NOTES"
+echo

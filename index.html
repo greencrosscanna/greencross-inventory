@@ -1489,6 +1489,21 @@ if (location.protocol === 'file:') {
 <!-- Shared GX Core client (retry-aware): the canonical resilient wrapper for GX Core's flaky two-hop
      /exec endpoint. Loaded here (before the app script) so window.GXClient is defined when loadChangelog
      runs. Canonical source: greencross-gx-theme/gx-client.js — keep GX Core calls routed through it. -->
+<script src="gx-dev.js"></script>
+<script>
+  // Dev guard: non-mutating actions. Anything NOT listed is blocked when this page is served from
+  // localhost, until writes are armed (banner button / ?arm=1 / GXDev.arm()). Inert in production.
+  // This app has no single api chokepoint, so gx-dev.js guards at the fetch layer -- requests
+  // carrying an action are checked, action-less requests (local assets) pass through untouched.
+  // Guarded writes: bugreport, clearerrors, installwarmtrigger, schedulewarmcaches, setleadtimes, setupcentry
+  if (window.GXDev) window.GXDev.declareReads([
+    'assortmentconfig', 'betadecisionfeed', 'budget', 'cogs_dutchie', 'decisionfeed',
+    'decisionqueue', 'fattytracker', 'gaserrors', 'getqueue', 'getstate', 'getupcmap',
+    'inventory', 'leadtimes', 'llorders', 'loadingquotes', 'login', 'lostsales', 'oosmap',
+    'operationalbundle', 'operationalstatus', 'quarantine', 'sales_dutchie', 'skuprobe',
+    'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
+  ]);
+</script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-client.js"></script>
 </head>
 <body>
