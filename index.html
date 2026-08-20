@@ -10150,6 +10150,21 @@ const _origUpdateInvSummaryBar = updateInvSummaryBar;
 
 // ── Login ─────────────────────────────────────────────────
 const GC_AUTH_KEY = LS.AUTH;
+
+/* HOST side of the session bridge. Embedded sub-apps (Price Cards, SPIFF) live on another origin and
+   therefore have their own storage -- without this a user signs in here and then again inside the
+   frame to reach one screen. gx-session.js checks the caller's origin against an allowlist; this only
+   decides WHAT to hand over, and hands over the existing GX Core token rather than minting anything. */
+if (window.GXSession) {
+  GXSession.serve(function () {
+    try {
+      var a = JSON.parse(localStorage.getItem(GC_AUTH_KEY) || 'null');
+      if (!a || !a.token) return null;                       // signed out: the child shows its own gate
+      return { token: a.token, user: a.user, displayName: a.displayName || a.user,
+               role: a.role || '', avatarConfig: a.avatarConfig || null, expiresAt: a.expiresAt || '' };
+    } catch (e) { return null; }
+  });
+}
 const GC_AUTH_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function _isLocalDevAuthBypass() {
@@ -10188,7 +10203,11 @@ async function attemptLogin(e) {
     }
     if (!auth || !auth.ok || !auth.token) throw new Error(auth && auth.error ? auth.error : 'Login failed');
     try {
-      localStorage.setItem(GC_AUTH_KEY, JSON.stringify({ user: auth.user || user, token: auth.token, expiresAt: auth.expiresAt || '', ts: Date.now() }));
+      // displayName/avatarConfig come back from GX Core's login and were being discarded. A nested
+      // sub-app needs them to draw a real user chip instead of falling back to the slug.
+      localStorage.setItem(GC_AUTH_KEY, JSON.stringify({ user: auth.user || user, token: auth.token,
+        displayName: auth.displayName || '', role: auth.role || '', avatarConfig: auth.avatarConfig || null,
+        expiresAt: auth.expiresAt || '', ts: Date.now() }));
     } catch (err) {
       console.warn('Login session could not be persisted in this browser context.', err);
     }
