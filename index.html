@@ -1500,6 +1500,7 @@
   window.GX_DEV_READS = [
     'assortmentconfig', 'betadecisionfeed', 'budget', 'cogs_dutchie', 'decisionfeed',
     'decisionqueue', 'fattytracker', 'gaserrors', 'getqueue', 'getstate', 'getupcmap',
+    'grants',
     'inventory', 'leadtimes', 'llorders', 'loadingquotes', 'login', 'lostsales', 'oosmap',
     'operationalbundle', 'operationalstatus', 'quarantine', 'sales_dutchie', 'skuprobe',
     'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
@@ -1562,6 +1563,7 @@
         <button class="tab gx-topnav-tab" data-tab="transfers" id="tabTransfers">Transfers <span class="cart-badge" id="transferBadge" style="display:none"></span></button>
         <button class="tab gx-topnav-tab" data-tab="performance">Performance</button>
         <button class="tab gx-topnav-tab" data-tab="pricetags" id="tabPricetags">Price Cards <span class="cart-badge" id="pricetagsBadge" style="display:none"></span></button>
+        <button class="tab gx-topnav-tab" data-tab="spiff" id="tabSpiff" style="display:none">SPIFF</button>
         <button class="tab gx-topnav-tab" data-tab="flags">Flags</button>
         <button class="tab gx-topnav-tab" data-tab="fatty">FATTY</button>
         <button class="tab gx-topnav-tab beta-tab" data-tab="beta" id="betaTabBtn">Beta</button>
@@ -1907,6 +1909,14 @@
     <div id="inventoryContent">
       <div class="state-msg"><div class="spinner"></div><br>Loading inventory…</div>
     </div>
+  </div>
+
+  <!-- ══ SPIFF PANEL (embeds the SPIFF app) ══ -->
+  <div class="panel" id="panel-spiff" style="padding:0">
+    <iframe id="spiffFrame" title="SPIFF"
+            src="https://greencrosscanna.github.io/greencross-spiff/?embed=1"
+            style="width:100%;height:calc(100vh - 108px);border:0;display:block"
+            allow="clipboard-read; clipboard-write"></iframe>
   </div>
 
   <!-- ══ PRICE TAGS PANEL (embeds the Price Cards app) ══ -->
@@ -4058,11 +4068,57 @@ function scheduleBetaDecisionsForInventory(delayMs = 900) {
 // ════════════════════════════════════════════════════════
 // INITIALIZATION & EVENT WIRING
 // ════════════════════════════════════════════════════════
+/* The SPIFF tab is hidden until GX Core confirms this user actually holds SPIFF.
+   WHY GATE IT AT ALL: SPIFF and Inventory are NOT the same audience and are about to diverge sharply.
+   Inventory has 2 grants; SPIFF is heading to ~12 managers for the bi-weekly announcement. Sky's rule:
+   an Inventory user sees the SPIFF tab only if they have SPIFF, and a SPIFF user who has no Inventory
+   access uses the standalone SPIFF app rather than being handed Inventory to get at it.
+
+   ASKS FOR isSuperadmin TOO, and that is not belt-and-braces. getGrantsForUser reads app_access only,
+   and a superadmin has no explicit row per app -- Sky has no spiff grant -- so gating on the grant
+   list alone would hide the tab from the one person entitled to every app.
+
+   FAILS CLOSED, unlike most gates in this suite. Elsewhere we fail open so a Core hiccup never blanks
+   a board; here the failure mode of showing is worse than the failure mode of hiding. If Core cannot
+   be reached, the tab stays hidden and a SPIFF user still has the standalone app. */
+function revealSpiffTab() {
+  var btn = document.getElementById('tabSpiff');
+  if (!btn || !_GX) return;
+  var tok = getAuthToken();
+  if (!tok) return;
+  /* Remember the last answer and act on it immediately. GX Core's /exec is a two-hop and this call
+     measured ~7s, so gating purely on the response means the tab pops in long after the app looks
+     ready -- which reads as a glitch, and is how you get a bug report about a tab that "appears late".
+     The live check below still runs every boot and HIDES the tab if access was revoked, so the cache
+     can only make the tab appear a few seconds early for someone who legitimately had it last time.
+     It is a UI affordance either way: SPIFF gates itself, so this never grants anyone anything. */
+  var CACHE = 'gcInvSpiffTab';
+  try { if (localStorage.getItem(CACHE) === '1') btn.style.display = ''; } catch (e) {}
+  /* try/catch AS WELL AS .catch(), because GXDev.check throws SYNCHRONOUSLY from inside jsonp when an
+     action is undeclared on localhost -- a synchronous throw sails straight past .catch() and, since
+     this runs from init(), would abort every line of boot after it. That is a RACE, not a certainty:
+     on a cold load the call can go out before gx-dev has armed, so it fails only sometimes, which is
+     the worst way for it to fail. Declaring 'grants' above fixes the cause; this makes the tab reveal
+     incapable of taking the app down whatever a future guard decides to throw. */
+  try {
+  _GX.jsonp('grants', { token: tok })
+    .then(function (r) {
+      if (!r || !r.ok) return;
+      var has = r.isSuperadmin === true
+        || (Array.isArray(r.grants) && r.grants.some(function (g) { return g && g.app === 'spiff'; }));
+      btn.style.display = has ? '' : 'none';           // also HIDES it again if access was revoked
+      try { localStorage.setItem(CACHE, has ? '1' : '0'); } catch (e) {}
+    })
+    .catch(function () { /* stays hidden — see FAILS CLOSED above */ });
+  } catch (e) { /* same: hidden is the safe outcome, and boot must continue */ }
+}
+
 function init() {
   // Restore density preference
   const savedDensity = localStorage.getItem(LS.DENSITY);
   if (savedDensity === 'compact') document.body.classList.add('density-compact');
   initBetaTools();
+  revealSpiffTab();
 
   // Pull loading quotes from the sheet (non-blocking; hardcoded array stays as fallback)
   fetch(proxyUrl({ action: 'loadingquotes' }))
@@ -7918,7 +7974,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.96';
+const APP_VERSION = 'v2.97';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
