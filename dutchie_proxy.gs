@@ -203,6 +203,10 @@ function doGet(e) {
   }
   try {
     if (params.action === 'login') return jsonOut(loginUser(params), params.callback);
+    // Pre-auth diagnostic: which GXCore snapshot is this DEPLOYMENT actually running? A library
+    // call executes the version pinned in the deployed manifest, not gx_core.gs as it reads today,
+    // so re-pins can only be confirmed against the live url. Returns the version number and nothing else.
+    if (params.action === 'libversion')     return jsonOut(getLibVersion_(), params.callback);
     const auth = requireAuth_(params);
     if (!auth.ok) return jsonOut(auth);
     // Inventory
@@ -5418,6 +5422,19 @@ function validateSessionToken_(token) {
   if (!user || !exp || Date.now() > exp) return { ok: false, error: 'Session expired' };
   if (parts[2] !== signSession_(payload)) return { ok: false, error: 'Invalid session' };
   return { ok: true, user: user };
+}
+
+// Reports the GXCore library version this deployment is bound to (GXCore.libVersion(), added in
+// v153). An older pin has no libVersion(), which is itself the answer — the error is reported, not
+// thrown, so the check never 500s.
+function getLibVersion_() {
+  try {
+    if (typeof GXCore === 'undefined' || !GXCore) return { ok: false, error: 'GXCore not bound' };
+    if (typeof GXCore.libVersion !== 'function') return { ok: false, error: 'pinned GXCore has no libVersion() — pre-v153' };
+    return { ok: true, gxcore: GXCore.libVersion() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 function requireAuth_(params) {
