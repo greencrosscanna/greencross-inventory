@@ -1507,6 +1507,7 @@
 </script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-client.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-session.js"></script>
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-avatar.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-topnav.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-stores.js"></script>
 </head>
@@ -1570,8 +1571,9 @@
       </div>
         <div class="gx-topnav-right">
           <div class="gx-clock"><div class="gx-clock-time">&mdash;</div><div class="gx-clock-date">&mdash;</div></div>
-        <button class="btn-sm" id="btnClear" title="Pull live inventory &amp; room data from Dutchie (bypasses the nightly snapshot)">↺ Refresh</button>
-        <button class="btn-sm" id="btnSettings" title="Settings" onclick="openSettings()" style="font-size:15px;padding:4px 10px;">⚙</button>
+        <!-- Refresh and Settings used to sit loose in this row. They are rows in the shared user
+             tray now -- the same tray, in the same place, in every GX app. GXTopNav builds it. -->
+        <span id="invUserSlot"></span>
       </div>
     </div>
   </header>
@@ -4196,7 +4198,8 @@ function init() {
   // nightly build — important at River (the DC). This costs ~1 inventory + 6 room fetches
   // per store, but only on a deliberate click (not on normal loads), so it stays well within
   // quota. The nightly warmOperationalCaches trigger still owns the shared snapshot rebuilds.
-  document.getElementById('btnClear').addEventListener('click', () => {
+  // Named so the user tray can invoke it; there is no longer a button in the header to bind to.
+  window.hardRefresh = () => {
     cacheClear();
     state.cogsData = null;
     state.salesData = null;
@@ -4213,7 +4216,9 @@ function init() {
     if (state.tab === 'inventory') loadInventoryData();
     else if (state.tab === 'beta') loadBetaFeed();
     else loadData();
-  });
+  };
+
+  paintUserTray();
 
   // Show inventory filter bar + tag pills + summary bar by default (Inventory is default tab)
   document.getElementById('invFilters').classList.add('visible');
@@ -7913,7 +7918,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.95';
+const APP_VERSION = 'v2.96';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8235,6 +8240,41 @@ async function submitBugReport() {
 // SETTINGS
 // ════════════════════════════════════════════════════════
 
+/* ── Shared user tray ─────────────────────────────────────────────────────────────────────────
+   Avatar + name chip in the header, with a menu underneath. GXTopNav builds the markup so no app
+   hand-writes it; what each action MEANS stays here. Canonical order, shared across the suite:
+   app-specific rows first, then Settings, Version, Sign out.
+   Refresh is Inventory-specific and sits at the top -- it is the action people reach for most. */
+function paintUserTray() {
+  const slot = document.getElementById('invUserSlot');
+  if (!slot || !window.GXTopNav) return;      // must not break the app if the shared script is down
+  let sess = {};
+  try { sess = JSON.parse(localStorage.getItem(GC_AUTH_KEY) || '{}') || {}; } catch (e) {}
+  const name = sess.displayName || sess.user || '';
+  if (!name) { slot.innerHTML = ''; return; }
+  GXTopNav.renderUser(slot, {
+    name,
+    role: String(sess.role || '').replace(/_/g, ' '),
+    avatar: window.GXAvatar ? GXAvatar.chip(sess.avatarConfig, name, sess.user || name) : null,
+    items: [
+      { action: 'refresh',  label: '↺ Refresh' },
+      { action: 'settings', label: 'Settings' },
+      { action: 'version',  label: 'Version', value: APP_VERSION },
+      { action: 'logout',   label: 'Sign out', danger: true },
+    ],
+  });
+}
+
+document.addEventListener('gx-topnav:action', (e) => {
+  const action = e.detail && e.detail.action;
+  if (action === 'refresh')  window.hardRefresh && window.hardRefresh();
+  else if (action === 'settings') openSettings();
+  // checkWhatsNew() only surfaces UNSEEN entries and self-suppresses once caught up. Clicking
+  // Version is a deliberate ask for the changelog, so show the whole list.
+  else if (action === 'version')  { if (CHANGELOG_DATA.length) showWhatsNew(CHANGELOG_DATA); }
+  else if (action === 'logout')   logout();
+});
+
 function openSettings() {
   const _sess = getAuthSession();
   const _userEl = document.getElementById('settingsUser');
@@ -8274,16 +8314,21 @@ async function refreshGasErrors() {
     const row  = document.getElementById('gasErrorRow');
     const list = document.getElementById('gasErrorList');
     const cnt  = document.getElementById('gasErrorCount');
-    // Update gear badge
-    const gear = document.getElementById('btnSettings');
+    // The settings GEAR used to carry this warning by turning amber. The gear is a row in the user
+    // tray now, so the tray's chip carries it instead -- otherwise this signal disappears silently,
+    // which is worse than the cosmetic change. Settings (where the error list lives) is one click in.
+    const gear = document.querySelector('#invUserSlot .gx-user-btn');
     if (recent.length > 0) {
       if (row)  { row.style.display = ''; cnt.textContent = recent.length + ' in last 24h'; }
       if (list) { list.style.display = ''; list.innerHTML = recent.slice().reverse().map(e => `<div style="margin-bottom:2px"><span style="color:var(--muted)">${new Date(e.ts).toLocaleTimeString()}</span> <b>${escapeHtml(e.fn)}</b>: ${escapeHtml(e.msg)}</div>`).join(''); }
-      if (gear) gear.style.color = 'var(--amber)';
+      if (gear) {
+        gear.style.borderColor = 'var(--amber)';
+        gear.title = recent.length + ' GX Core error(s) in the last 24h — see Settings';
+      }
     } else {
       if (row)  row.style.display = 'none';
       if (list) list.style.display = 'none';
-      if (gear) gear.style.color = '';
+      if (gear) { gear.style.borderColor = ''; gear.title = ''; }
     }
   } catch(e) { /* best-effort */ }
 }
