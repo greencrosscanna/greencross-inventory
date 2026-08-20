@@ -1539,9 +1539,13 @@
 <div id="velTooltip"></div>
 <!-- Off-screen decode canvas — kept outside .app so CSS zoom doesn't affect canvas dimensions -->
 <div id="scannerDecodeEl" style="position:fixed;left:-9999px;top:-9999px;width:300px;height:300px;overflow:hidden;"></div>
-<div class="app">
-
-  <!-- .gx-topnav supplies the shared surface, border and typography. .header-row stays as the inner
+<!-- The nav sits OUTSIDE .app deliberately. .app is a centred content wrapper
+     (max-width:1400px; margin:0 auto), so a header rendered inside it stops short of the
+     window edges on any display wider than 1400px while the bar's own border ends with it.
+     Full-bleed chrome over centred content is the suite pattern -- Leaderboard's nav was
+     moved out of its .app-page wrapper for exactly this reason. The header keeps its own
+     padding (header{padding:0 20px}) and stays position:sticky. -->
+<!-- .gx-topnav supplies the shared surface, border and typography. .header-row stays as the inner
        flex row: it carries five responsive rules across the desktop/mobile classes and media
        queries, and removing it is what collapsed this header on the first attempt. -->
   <header class="gx-topnav">
@@ -1571,6 +1575,9 @@
       </div>
     </div>
   </header>
+
+<div class="app">
+
 
   <!-- LL Order Sheet overlay -->
   <!-- What's New modal -->
