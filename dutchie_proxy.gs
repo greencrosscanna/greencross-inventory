@@ -5481,44 +5481,79 @@ const WRITE_ACTIONS = Object.assign(Object.create(null), {
   trimempty: 1, migrateinvdata: 1, copyinvsnap: 1, deletemigrated: 1,
 });
 
-function requireWriteAuth_(params) {
-  const token = params.token || params.session || params.auth || '';
-  let res;
-  try {
-    if (typeof GXCore === 'undefined' || !GXCore || typeof GXCore.verifySession !== 'function') {
-      return { ok: false, error: 'Write blocked: pinned GXCore has no verifySession() — needs v161+', via: 'unbound' };
-    }
-    res = GXCore.verifySession(token, 'inventory');
-  } catch (e) {
-    return { ok: false, error: 'Write blocked: grant check failed — ' + e.message, via: 'gxcore-error' };
-  }
+// The DECISION — what we do with whatever GX Core said — extracted so the probe below can exercise
+// the shipped path instead of a copy of it. A probe that asserts its own reimplementation is
+// precisely the check that cannot fail, so there is exactly one of these and both callers use it.
+function writeAuthDecision_(res) {
   if (!res || res.ok !== true) {
     return { ok: false, error: (res && res.error) || 'Write blocked: access revoked or session no longer valid', via: 'gxcore' };
   }
   // canEdit is honoured only when GX Core states it OUTRIGHT. A missing field means Core expressed
   // no opinion, not that the answer is no. Treating undefined as false would lock out every user at
   // once the first time Core stopped populating it, and that outage would look exactly like a bug in
-  // this deploy. The live grant re-check above is the guarantee; this is the refinement on top.
+  // this deploy. The live grant re-check is the guarantee; this is the refinement on top.
   if (res.canEdit === false) {
     return { ok: false, error: 'Your Inventory access is read-only', via: 'gxcore' };
   }
   return { ok: true, user: res.user, role: res.role, via: 'gxcore' };
 }
 
-// Proves the write gate is really wired, without needing a real session: reports the pinned
-// version, whether verifySession is callable, and that it REFUSES a deliberately bogus token. A
-// check that cannot fail reads as a pass, so the refusal is asserted rather than assumed.
+// Runs one verification end to end against an INJECTED verifier. Production passes the real library;
+// the probe passes deliberate fakes. Injecting here rather than inside the decision means the probe
+// also covers the throw path, which is the branch most likely to be wrong and least likely to run.
+function verifyWrite_(verify, token) {
+  let res;
+  try {
+    res = verify(token, 'inventory');
+  } catch (e) {
+    return { ok: false, error: 'Write blocked: grant check failed — ' + e.message, via: 'gxcore-error' };
+  }
+  return writeAuthDecision_(res);
+}
+
+function requireWriteAuth_(params) {
+  const token = params.token || params.session || params.auth || '';
+  if (typeof GXCore === 'undefined' || !GXCore || typeof GXCore.verifySession !== 'function') {
+    return { ok: false, error: 'Write blocked: pinned GXCore has no verifySession() — needs v161+', via: 'unbound' };
+  }
+  // Wrapped rather than passed bare: a library method handed around as a value can lose its binding.
+  return verifyWrite_(function (t, a) { return GXCore.verifySession(t, a); }, token);
+}
+
+// Proves the write gate is really wired, without needing a real session.
+//
+// The first version of this only ever checked the TRUE direction — real library, garbage token,
+// "was it refused?" — which a hardcoded `true` would have passed just as happily. pricecards made
+// the point that a probe must not lie in the comfortable direction, so it now also feeds the SAME
+// shipped decision a verifier that ACCEPTS the garbage token and asserts it says yes. If
+// inverseHolds is ever false, the probe is not reading its input and refusesGarbage above is
+// worthless. Every invariant below has to hold for ok:true.
 function writeAuthProbe_() {
-  const out = { ok: true, pinned: null, hasVerifySession: false, refusesGarbage: null,
-                gatedActions: Object.keys(WRITE_ACTIONS).length };
+  const BOGUS = 'nobody:0:not-a-signature';
+  const out = {
+    ok: true, pinned: null, hasVerifySession: false,
+    refusesGarbage: null,     // real library + garbage token  -> must refuse
+    inverseHolds: null,       // a verifier that ACCEPTS       -> must NOT refuse (the probe can report failure)
+    honoursReadOnly: null,    // canEdit:false stated outright  -> must refuse
+    failsClosedOnError: null, // verifier throws                -> must refuse
+    protoSafe: null,          // WRITE_ACTIONS must not inherit from Object.prototype
+    gatedActions: Object.keys(WRITE_ACTIONS).length,
+  };
   try {
     if (typeof GXCore === 'undefined' || !GXCore) return { ok: false, error: 'GXCore not bound' };
     out.pinned = (typeof GXCore.libVersion === 'function') ? GXCore.libVersion() : 'pre-v153';
     out.hasVerifySession = (typeof GXCore.verifySession === 'function');
+
     if (out.hasVerifySession) {
-      const r = GXCore.verifySession('nobody:0:not-a-signature', 'inventory');
-      out.refusesGarbage = !(r && r.ok === true);
+      out.refusesGarbage = !verifyWrite_(function (t, a) { return GXCore.verifySession(t, a); }, BOGUS).ok;
     }
+    out.inverseHolds       =  verifyWrite_(function () { return { ok: true, user: 'probe', role: 'manager', canEdit: true }; }, BOGUS).ok === true;
+    out.honoursReadOnly    = !verifyWrite_(function () { return { ok: true, user: 'probe', role: 'viewer', canEdit: false }; }, BOGUS).ok;
+    out.failsClosedOnError = !verifyWrite_(function () { throw new Error('simulated Core outage'); }, BOGUS).ok;
+    out.protoSafe          = (WRITE_ACTIONS['toString'] === undefined && WRITE_ACTIONS['constructor'] === undefined);
+
+    out.ok = (out.hasVerifySession && out.refusesGarbage === true && out.inverseHolds === true &&
+              out.honoursReadOnly === true && out.failsClosedOnError === true && out.protoSafe === true);
   } catch (e) { out.ok = false; out.error = e.message; }
   return out;
 }
