@@ -3482,7 +3482,10 @@ function getVelocityEndpoint(params) {
   }
 
   if (params.store && params.store !== 'all') {
-    return { store: params.store, products: payload.stores[params.store] || {}, lastSynced, velSource: payload.velSource || 'gxcore' };
+    // hasOwnProperty, not a bare index: params.store is user input, and payload.stores is a plain
+    // object, so store='toString' would otherwise hand back an inherited function as 'products'.
+    const own = Object.prototype.hasOwnProperty.call(payload.stores || {}, params.store);
+    return { store: params.store, products: own ? payload.stores[params.store] : {}, lastSynced, velSource: payload.velSource || 'gxcore' };
   }
   return payload;
 }
@@ -5459,7 +5462,13 @@ function getLibVersion_() {
 //
 // bugreport is intentionally NOT in this list — filing a bug is a user-facing safety valve, and a
 // read-only user must still be able to report that something is broken.
-const WRITE_ACTIONS = {
+// Object.create(null) is deliberate, not style. A plain object literal INHERITS toString,
+// constructor, valueOf, hasOwnProperty and __proto__, so WRITE_ACTIONS['toString'] is truthy and
+// the map answers yes to actions nobody defined. Here that direction is harmless — it would add an
+// auth check to a route that then 404s — but pricecards shipped the same shape on a READ allowlist
+// and ?action=toString dumped their entire pricing sheet to an unauthenticated caller. A lookup
+// table indexed by user input should not have a prototype at all; then the direction cannot matter.
+const WRITE_ACTIONS = Object.assign(Object.create(null), {
   // shared state the app itself mutates
   setleadtimes: 1, setupcentry: 1,
   sharedkill: 1, sharedunkill: 1, sharedretire: 1, sharedunretire: 1, sharedflag: 1,
@@ -5470,7 +5479,7 @@ const WRITE_ACTIONS = {
   schedulewarmcaches: 1, installwarmtrigger: 1, betadecisionfeed: 1,
   // destructive data moves
   trimempty: 1, migrateinvdata: 1, copyinvsnap: 1, deletemigrated: 1,
-};
+});
 
 function requireWriteAuth_(params) {
   const token = params.token || params.session || params.auth || '';
