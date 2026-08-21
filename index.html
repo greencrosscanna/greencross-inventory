@@ -7974,7 +7974,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.98';
+const APP_VERSION = 'v2.99';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8746,10 +8746,21 @@ const PRICETAGS_ENGINE = 'https://script.google.com/macros/s/AKfycbwKRfDEz5Rugw-
 function updatePriceTagsBadge() {
   const badge = document.getElementById('pricetagsBadge');
   if (!badge) return;
-  fetch(PRICETAGS_ENGINE + '?action=getQueue', { cache: 'no-store' })
+  /* queueCount, NOT getQueue. This is a cross-app call into the Price Cards engine with NO token.
+     getQueue is a GATED read that answers today only because their read gate is still dark; the
+     moment it is enforced it returns {ok:false,code:'auth_required'}, d.ok is false, n becomes 0,
+     and the badge silently shows nothing — no error anyone sees, just a badge that quietly stops
+     counting, which is the worst shape for it to take.
+     pricecards built queueCount for exactly this: public, tokenless, returning ONLY {ok,count}. A
+     count of waiting cards leaks nothing; getQueue returns brand, item, size, PRICE and store per
+     card and stays gated. A token was the obvious alternative and the wrong one — it would tie this
+     badge to whether the CURRENT Inventory user holds a pricecards grant, and many do not, so it
+     would blank for a reason unrelated to the queue.
+     THIS SWAP GATES THEIR ROLLOUT: they will not enforce reads while this badge would break. */
+  fetch(PRICETAGS_ENGINE + '?action=queueCount', { cache: 'no-store' })
     .then(r => r.json())
     .then(d => {
-      const n = (d && d.ok && d.queue) ? d.queue.length : 0;
+      const n = (d && d.ok && typeof d.count === 'number') ? d.count : 0;
       badge.textContent = n;
       badge.style.display = n > 0 ? 'inline-flex' : 'none';
     })
