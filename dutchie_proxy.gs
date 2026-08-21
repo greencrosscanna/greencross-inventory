@@ -207,8 +207,15 @@ function doGet(e) {
     // call executes the version pinned in the deployed manifest, not gx_core.gs as it reads today,
     // so re-pins can only be confirmed against the live url. Returns the version number and nothing else.
     if (params.action === 'libversion')     return jsonOut(getLibVersion_(), params.callback);
+    if (params.action === 'writeauthprobe') return jsonOut(writeAuthProbe_(), params.callback);
     const auth = requireAuth_(params);
     if (!auth.ok) return jsonOut(auth);
+    // Identity is established above. A mutation additionally has to clear the LIVE grant in GX Core
+    // (see requireWriteAuth_) so a revoked user cannot keep writing until their token expires.
+    if (WRITE_ACTIONS[params.action]) {
+      const writeAuth = requireWriteAuth_(params);
+      if (!writeAuth.ok) return jsonOut(writeAuth, params.callback);
+    }
     // Inventory
     if (params.action === 'inventory')      return jsonOut(getInventory(params));
     if (params.action === 'inventorylive')  return jsonOut(getLiveInventory(params));
@@ -5435,6 +5442,76 @@ function getLibVersion_() {
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Write authorization — GX Core v161 verifySession
+// ---------------------------------------------------------------------------
+// requireAuth_ below proves WHO the caller is: it checks a signature and an expiry, both of which
+// were fixed at the moment the token was issued. It cannot prove the caller STILL has access, so a
+// revoked user keeps whatever rights they held until their TTL runs out. GXCore.verifySession
+// (added in GX Core v161) re-checks the LIVE grant, which makes a revocation take effect at once.
+//
+// FAIL CLOSED HERE, AND ONLY HERE. Reads keep the local-only check on purpose: routing every board
+// through GX Core would mean a Core hiccup blanks the whole app, which is the tradeoff this suite
+// has deliberately declined everywhere else. A write is the one place where refusing costs less
+// than guessing.
+//
+// bugreport is intentionally NOT in this list — filing a bug is a user-facing safety valve, and a
+// read-only user must still be able to report that something is broken.
+const WRITE_ACTIONS = {
+  // shared state the app itself mutates
+  setleadtimes: 1, setupcentry: 1,
+  sharedkill: 1, sharedunkill: 1, sharedretire: 1, sharedunretire: 1, sharedflag: 1,
+  // operator-only maintenance: no UI calls these, they are reached by URL
+  velsync: 1, velreset: 1, velresyncfrom: 1, veldedup: 1, velclearfrom: 1, velclear: 1,
+  velbackfill: 1, clearerrors: 1, prodcatclear: 1, roomcacheclear: 1,
+  warmcaches: 1, warmvelocity: 1, warmbundle: 1, warmdecision: 1,
+  schedulewarmcaches: 1, installwarmtrigger: 1, betadecisionfeed: 1,
+  // destructive data moves
+  trimempty: 1, migrateinvdata: 1, copyinvsnap: 1, deletemigrated: 1,
+};
+
+function requireWriteAuth_(params) {
+  const token = params.token || params.session || params.auth || '';
+  let res;
+  try {
+    if (typeof GXCore === 'undefined' || !GXCore || typeof GXCore.verifySession !== 'function') {
+      return { ok: false, error: 'Write blocked: pinned GXCore has no verifySession() — needs v161+', via: 'unbound' };
+    }
+    res = GXCore.verifySession(token, 'inventory');
+  } catch (e) {
+    return { ok: false, error: 'Write blocked: grant check failed — ' + e.message, via: 'gxcore-error' };
+  }
+  if (!res || res.ok !== true) {
+    return { ok: false, error: (res && res.error) || 'Write blocked: access revoked or session no longer valid', via: 'gxcore' };
+  }
+  // canEdit is honoured only when GX Core states it OUTRIGHT. A missing field means Core expressed
+  // no opinion, not that the answer is no. Treating undefined as false would lock out every user at
+  // once the first time Core stopped populating it, and that outage would look exactly like a bug in
+  // this deploy. The live grant re-check above is the guarantee; this is the refinement on top.
+  if (res.canEdit === false) {
+    return { ok: false, error: 'Your Inventory access is read-only', via: 'gxcore' };
+  }
+  return { ok: true, user: res.user, role: res.role, via: 'gxcore' };
+}
+
+// Proves the write gate is really wired, without needing a real session: reports the pinned
+// version, whether verifySession is callable, and that it REFUSES a deliberately bogus token. A
+// check that cannot fail reads as a pass, so the refusal is asserted rather than assumed.
+function writeAuthProbe_() {
+  const out = { ok: true, pinned: null, hasVerifySession: false, refusesGarbage: null,
+                gatedActions: Object.keys(WRITE_ACTIONS).length };
+  try {
+    if (typeof GXCore === 'undefined' || !GXCore) return { ok: false, error: 'GXCore not bound' };
+    out.pinned = (typeof GXCore.libVersion === 'function') ? GXCore.libVersion() : 'pre-v153';
+    out.hasVerifySession = (typeof GXCore.verifySession === 'function');
+    if (out.hasVerifySession) {
+      const r = GXCore.verifySession('nobody:0:not-a-signature', 'inventory');
+      out.refusesGarbage = !(r && r.ok === true);
+    }
+  } catch (e) { out.ok = false; out.error = e.message; }
+  return out;
 }
 
 function requireAuth_(params) {
