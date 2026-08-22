@@ -35,8 +35,7 @@ This app is on the shared brain. **`/gxbrain`** loads the shared rules and recon
 — the sync protocol lives in that one command, not copied here. **"brain sync" / "sync brain"** = the
 reconcile-and-report step alone (skips orientation).
 
-Coordination is now the **central brain-notes inbox** in GX Core (not this repo's `BRAIN_NOTES.md`, which is
-retired): `/gxbrain` reads notes addressed to `to_app=inventory`, resolves done ones (`resolve_note`), and
+Coordination is now the **central brain-notes inbox** in GX Core (this repo's `BRAIN_NOTES.md` was retired and has now been deleted): `/gxbrain` reads notes addressed to `to_app=inventory`, resolves done ones (`resolve_note`), and
 writes note-backs to any app (`add_note`). The SessionStart hook surfaces the same inbox.
 
 App-specific facts for the sync check: app key **`inventory`** in GX Core; integrated via bug forwarding
