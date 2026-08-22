@@ -5,14 +5,37 @@ sign-on, the stores registry, the Dutchie connector, and the centralized bug-rep
 all live there. This app integrates with it (binds the `GXCore` Apps Script library; reads its changelog
 and forwards bug reports to it).
 
+## Stack & local loop
+
+**No build step — the file on disk IS the app**, so edit + reload is the whole loop.
+
+| | |
+|---|---|
+| frontend | `index.html` — a **monolith with inline JS** (~10k lines), served by GitHub Pages |
+| backend | `dutchie_proxy.gs` at the repo root, deployed with clasp (`.clasp.json`) |
+| version | the **`APP_VERSION = 'vN.NN'` constant** in `index.html` — no `?v=` cache-buster here (there's no external `.js` to hang one on); `deploy.sh` falls back to reading this constant |
+| run | `python3 serve.py` → <http://localhost:3001> (`--lan` to bind 0.0.0.0 for a kiosk/phone) |
+| ship | commit → push (Pages) → `./deploy.sh` records the release to `version_history` |
+| tests | no automated suite in this repo — verify against the live app |
+
+The dev server talks to the **live** backend; `gx-dev.js` paints a banner saying so and **blocks writes
+until you arm them**. `gx-preflight.sh` is installed as a **pre-push hook** and refuses to ship dev
+leftovers — fixtures on, writes armed, localhost URLs, or anything tagged `@devonly`.
+
+**Sub-apps:** Price Cards and SPIFF embed here as tabs, and their bug reports bucket to **this** app
+(`app=inventory`, `tab=pricecards` / `tab=spiff`) rather than to their own streams.
+
+**Shared files** (`deploy.sh`, `serve.py`, `gx-preflight.sh`, `.claude/gx-brain-notes.sh`) come from
+**gx-theme** via `./gx-sync.sh`, filled from `.gx_app`. Edit them **there**, not here, then re-sync — a
+local edit is overwritten on the next sync. This CLAUDE.md is intentionally **not** synced.
+
 ## Sync with the brain — run `/gxbrain` (or say "brain sync")
 
 This app is on the shared brain. **`/gxbrain`** loads the shared rules and reconciles this chat with GX Core
 — the sync protocol lives in that one command, not copied here. **"brain sync" / "sync brain"** = the
 reconcile-and-report step alone (skips orientation).
 
-Coordination is now the **central brain-notes inbox** in GX Core (not this repo's `BRAIN_NOTES.md`, which is
-retired): `/gxbrain` reads notes addressed to `to_app=inventory`, resolves done ones (`resolve_note`), and
+Coordination is now the **central brain-notes inbox** in GX Core (this repo's `BRAIN_NOTES.md` was retired and has now been deleted): `/gxbrain` reads notes addressed to `to_app=inventory`, resolves done ones (`resolve_note`), and
 writes note-backs to any app (`add_note`). The SessionStart hook surfaces the same inbox.
 
 App-specific facts for the sync check: app key **`inventory`** in GX Core; integrated via bug forwarding
