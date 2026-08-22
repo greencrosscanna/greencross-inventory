@@ -363,15 +363,6 @@ function handleBugReport(b) {
 }
 
 // ─── Store helpers ────────────────────────────────────────────────────────────
-function normalizeStoreName(raw) {
-  if (!raw) return '';
-  let s = String(raw).replace(/\s*-\s*Green Cross Cannabis Emporium\s*/i, '').trim();
-  if (/^Center\s*St/i.test(s))      return 'Center';
-  if (/^Portland\s*Road/i.test(s))  return 'Portland Rd';
-  if (/^Portland\s*Rd/i.test(s))    return 'Portland Rd';
-  return s;
-}
-
 function dutchieAuth(store) {
   const key = getDutchieStoreKeys_()[store];
   if (!key) throw new Error('Unknown store: ' + store);
