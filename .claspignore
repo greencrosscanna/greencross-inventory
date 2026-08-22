@@ -2,6 +2,10 @@
 **/*.json
 !appsscript.json
 !index.html
+# Node-side dev tests. rootDir is "." here and this list does not exclude JS by extension, so without
+# this rule a tests/*.js would be pushed into the Apps Script project as source.
+tests/
+tests/**
 .claude/
 .claude/**
 clasp.sh
