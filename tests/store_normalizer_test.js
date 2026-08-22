@@ -6,99 +6,166 @@
  * WHY THIS FUNCTION
  * Every row of live Dutchie data is filtered through normalizeStore before it reaches a view. If it
  * fails to fold a POS spelling onto our store name the row does not appear under that store, and the
- * number on screen is quietly low -- no error, no empty state, just a wrong total. That failure mode is
- * why it gets tests before anything prettier does.
+ * number on screen is quietly low -- no error, no empty state, just a wrong total.
  *
- * WHAT IT PINS
- * Half of these cases assert behaviour that is CORRECT, and half assert behaviour that is merely
- * CURRENT. The second group is labelled "gap" and is the point of the file: alias coverage here is
- * hand-written and partial, while GX Core's `stores` registry publishes an `aliases` column that is
- * meant to be the one list. Anyone consolidating the two should expect these to change, and will see
- * exactly which strings are affected instead of finding out from a wrong total.
+ * WHAT CHANGED 2026-08-22
+ * It now asks GX Core's `stores` registry first and only falls back to the hand-written rules. So this
+ * file tests TWO paths and both matter:
  *
- * HOW IT LOADS THE REAL CODE
- * index.html is a monolith with inline JS and no module boundary, so the function and the STORES table
- * it closes over are lifted out of the shipped file by text match and evaluated together. It therefore
- * tests the real source, but it IS coupled to that source's shape: if the extraction below stops
- * matching, the test fails loudly rather than silently testing nothing.
+ *   REGISTRY LOADED   the normal case. Aliases come from the one list, so "South", "Commercial St",
+ *                     "Century" and "Century Dr" fold correctly -- all of which this function used to
+ *                     drop on the floor.
+ *   REGISTRY ABSENT   first paint, or GX Core unreachable. The hand-written rules must still behave
+ *                     exactly as they did before, because that is the whole point of keeping them.
  *
- * This file cannot reach Apps Script: .claspignore excludes tests/. Inventory pushes with rootDir "."
- * and does not exclude JS by extension, so that rule is doing real work -- keep it.
+ * The registry path is exercised against the REAL gx-theme/gx-stores.js, seeded with the REAL rows
+ * from ?action=stores (captured 2026-08-22), not a stand-in -- so this also catches a change in the
+ * shared client, not just in this app.
+ *
+ * index.html is a monolith with no module boundary, so the function and the STORES table are lifted
+ * out of the shipped file by text match. If that extraction stops matching, the test exits 2 and says
+ * so rather than passing vacuously.
+ *
+ * Cannot reach Apps Script: .claspignore excludes tests/. rootDir is "." here and the list does not
+ * exclude JS by extension, so that rule is doing real work -- keep it.
  */
 'use strict';
 const fs = require('fs');
+const path = require('path');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 
 function lift(pattern, what) {
   const m = html.match(pattern);
   if (!m) {
     console.error('EXTRACTION FAILED: could not find ' + what + ' in index.html.');
-    console.error('The source moved or changed shape. Update the pattern in this file -- do not delete the test.');
+    console.error('The source moved or changed shape. Update the pattern here -- do not delete the test.');
     process.exit(2);
   }
   return m[0];
 }
-
 const STORES_SRC = lift(/let STORES = \[[\s\S]*?\];/, 'the STORES table');
 const FN_SRC     = lift(/function normalizeStore\(raw\) \{[\s\S]*?\n\}/, 'function normalizeStore');
 
-const normalizeStore = new Function(STORES_SRC + '\n' + FN_SRC + '\nreturn normalizeStore;')();
+// Build normalizeStore with GXStores either injected or absent.
+function build(GXStores) {
+  return new Function('GXStores', STORES_SRC + '\n' + FN_SRC + '\nreturn normalizeStore;')(GXStores);
+}
 
-let pass = 0, fail = 0;
-const is = (input, want, label) => {
-  const got = normalizeStore(input);
+// ── the real shared client, seeded with the real registry ────────────────────
+const ROWS = [
+  { store_id:'bend',        display_name:'Century',    dutchie_name:'Bend',        short_code:'CEN', color:'#22D3EE', sort_order:1, aliases:['Bend','Century','Century Dr'] },
+  { store_id:'center',      display_name:'Center',     dutchie_name:'Center',      short_code:'CTR', color:'#3B82F6', sort_order:2, aliases:['Center'] },
+  { store_id:'commercial',  display_name:'Commercial', dutchie_name:'Commercial',  short_code:'COM', color:'#A855F7', sort_order:3, aliases:['South','Commercial','Commercial St'] },
+  { store_id:'hillsboro',   display_name:'Baseline',   dutchie_name:'Hillsboro',   short_code:'BAS', color:'#6366F1', sort_order:4, aliases:['Baseline','Hillsboro'] },
+  { store_id:'portland-rd', display_name:'Portland',   dutchie_name:'Portland Rd', short_code:'POR', color:'#D946EF', sort_order:5, aliases:['Portland','Portland Rd'] },
+  { store_id:'river-rd',    display_name:'River',      dutchie_name:'River Rd',    short_code:'RIV', color:'#EC4899', sort_order:6, aliases:['River','River Rd'] },
+];
+
+// gx-stores.js ends with `})(typeof window !== 'undefined' ? window : this)`, so it binds to `window`
+// if that name resolves -- NOT to whatever you pass in. Handing it a `global` param therefore attaches
+// GXStores to the sandbox's `this` and the loader silently returns undefined, which is exactly the
+// vacuous pass this file is supposed to make impossible. Name the parameter `window`.
+// No `document` on purpose: paintVars() returns early without one, so no DOM stub is needed.
+function loadRealGXStores() {
+  const p = path.resolve(__dirname, '../../greencross-gx-theme/gx-stores.js');
+  if (!fs.existsSync(p)) return null;                       // sibling repo genuinely not checked out
+  const store = {};
+  const win = {
+    localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } },
+    GXClient: () => ({ jsonp: async () => ({ ok: true, stores: ROWS }) }),
+  };
+  const got = new Function('window', fs.readFileSync(p, 'utf8') + '\nreturn window.GXStores;')(win);
+  if (!got) {
+    console.error('LOAD FAILED: gx-stores.js is present but did not attach GXStores.');
+    console.error('Its IIFE binding changed, or it threw. Fix the loader -- do not let this skip.');
+    process.exit(2);
+  }
+  return got;
+}
+
+let pass = 0, fail = 0, skip = 0;
+const mk = fn => (input, want, label) => {
+  const got = fn(input);
   if (got === want) { pass++; console.log('  PASS  ' + label); }
   else { fail++; console.log('  FAIL  ' + label + `  (${JSON.stringify(input)} -> ${JSON.stringify(got)}, want ${JSON.stringify(want)})`); }
 };
 
-// ── 1. the suffix Dutchie puts on every store name ───────────────────────────
+(async () => {
+
+// ══ PART 1 — registry ABSENT: the offline path must be byte-for-byte what it was ══
+console.log('\n═══ registry ABSENT (first paint / GX Core unreachable) ═══');
+const off = mk(build(undefined));
+
 console.log('\n1. strips the " - Green Cross Cannabis Emporium" suffix');
-is('Portland Rd - Green Cross Cannabis Emporium', 'Portland Rd', 'Portland Rd with suffix');
-is('River Rd - Green Cross Cannabis Emporium',    'River Rd',    'River Rd with suffix');
-is('Bend - green cross cannabis emporium',        'Bend',        'suffix match is case-insensitive');
-is('Bend  -  Green Cross Cannabis Emporium',      'Bend',        'tolerates padding around the dash');
+off('Portland Rd - Green Cross Cannabis Emporium', 'Portland Rd', 'Portland Rd with suffix');
+off('River Rd - Green Cross Cannabis Emporium',    'River Rd',    'River Rd with suffix');
+off('Bend - green cross cannabis emporium',        'Bend',        'suffix match is case-insensitive');
+off('Bend  -  Green Cross Cannabis Emporium',      'Bend',        'tolerates padding around the dash');
 
-// ── 2. the hand-written aliases ──────────────────────────────────────────────
-console.log('\n2. folds known POS spellings onto our store names');
-is('Center St',     'Center',      '"Center St" -> Center');
-is('Portland Road', 'Portland Rd', '"Portland Road" -> Portland Rd');
-is('Portland Rd',   'Portland Rd', '"Portland Rd" passes through unchanged');
-is('River Rd',      'River Rd',    '"River Rd" passes through unchanged');
+console.log('\n2. the hand-written rules still fold what they always did');
+off('Center St',            'Center',      '"Center St" -> Center');
+off('Portland Road',        'Portland Rd', '"Portland Road" -> Portland Rd');
+off('River Rd',             'River Rd',    '"River Rd" unchanged');
+off('center street',        'Center',      'prefix match absorbs "Center Street"');
+off('Center St Suite 200',  'Center',      'and any trailing detail after the match');
+off('Portland Roadhouse',   'Portland Rd', 'same looseness on Portland — documented, not endorsed');
 
-// These rules are PREFIX matches (/^Center\s*St/i), not exact ones, which is easy to misread as a
-// bug and is in fact the useful behaviour -- it absorbs "Center Street" and any trailing detail the
-// POS appends without needing a rule per spelling. The cost is that it also absorbs anything that
-// merely STARTS that way, so a genuinely different store named "Center Stage" would be folded onto
-// Center. No such store exists; if one is ever opened, this is the line that breaks.
-is('center street',        'Center', 'prefix match absorbs "Center Street" for free');
-is('Center St Suite 200',  'Center', 'and any trailing detail after the match');
-is('Portland Roadhouse',   'Portland Rd', 'the same looseness applied to Portland -- documented, not endorsed');
+console.log('\n3. exact STORES match, case-insensitively');
+off('bend',       'Bend',       'lowercase folds to the canonical name');
+off('HILLSBORO',  'Hillsboro',  'uppercase folds to the canonical name');
+off('Commercial', 'Commercial', 'exact name passes through');
 
-// ── 3. exact match against the STORES table, case-insensitively ──────────────
-console.log('\n3. matches the STORES table regardless of case');
-is('bend',        'Bend',        'lowercase folds to the canonical name');
-is('HILLSBORO',   'Hillsboro',   'uppercase folds to the canonical name');
-is('Commercial',  'Commercial',  'exact name passes through');
+console.log('\n4. offline, the alias gaps are still gaps — unchanged by design');
+off('Commercial St', 'Commercial St', '"Commercial St" does not fold without the registry');
+off('South',         'South',         '"South" does not fold without the registry');
+off('Century',       'Century',       '"Century" does not fold without the registry');
 
-// ── 4. what it does NOT know — the real remainder of the store-alias story ───
-console.log('\n4. gaps: strings GX Core knows as aliases and this function does not');
-is('Commercial St', 'Commercial St',
-   'gap: "Commercial St" does NOT fold to Commercial -- there is no rule and no exact match');
-is('South', 'South',
-   'gap: "South" is the old name for the Commercial store and is not handled here');
-is('Century', 'Century',
-   'gap: "Century" is the DISPLAY name of the Bend store; this function keys on the Dutchie name only');
-console.log('       ^ these three are recorded as current behaviour, not endorsed. GX Core publishes an');
-console.log('         `aliases` column that covers them; folding this function onto it is the fix.');
+console.log('\n5. degenerate input');
+off('',         '',        'empty string stays empty');
+off(null,       '',        'null becomes empty rather than throwing');
+off(undefined,  '',        'undefined becomes empty rather than throwing');
+off('  Bend  ', 'Bend',    'surrounding whitespace is trimmed');
+off('Nowhere',  'Nowhere', 'unknown store passes through rather than being dropped');
 
-// ── 5. degenerate input ──────────────────────────────────────────────────────
-console.log('\n5. empty and unknown input');
-is('',        '',        'empty string stays empty');
-is(null,      '',        'null becomes empty rather than throwing');
-is(undefined, '',        'undefined becomes empty rather than throwing');
-is('  Bend  ', 'Bend',   'surrounding whitespace is trimmed');
-is('Nowhere', 'Nowhere', 'an unknown store passes through unchanged rather than being dropped');
+// ══ PART 2 — registry LOADED: the gaps close ══
+console.log('\n═══ registry LOADED (the normal case) ═══');
+const GXStores = loadRealGXStores();
+if (!GXStores) {
+  skip++;
+  console.log('  SKIP  greencross-gx-theme not checked out beside this repo — registry path not exercised');
+} else {
+  await GXStores.load('https://example.invalid/exec');
+  const on = mk(build(GXStores));
+
+  console.log('\n6. the three gaps this change exists to close');
+  on('South',         'Commercial', '"South" -> Commercial (the old name for that store)');
+  on('Commercial St', 'Commercial', '"Commercial St" -> Commercial');
+  on('Century',       'Bend',       '"Century" -> Bend (display name -> Dutchie name)');
+  on('Century Dr',    'Bend',       '"Century Dr" -> Bend');
+
+  console.log('\n7. display names now fold too, not just Dutchie names');
+  on('Baseline', 'Hillsboro',   '"Baseline" -> Hillsboro');
+  on('Portland', 'Portland Rd', '"Portland" -> Portland Rd');
+  on('River',    'River Rd',    '"River" -> River Rd');
+
+  console.log('\n8. everything from PART 1 still holds with the registry loaded');
+  on('Portland Rd - Green Cross Cannabis Emporium', 'Portland Rd', 'suffix strip still applies first');
+  on('bend',              'Bend',        'case-insensitive exact match');
+  on('Center St Suite 200','Center',     'registry misses, hand-written prefix rule still catches it');
+  on('Portland Roadhouse','Portland Rd', 'and the Portland prefix rule');
+  on('Nowhere',           'Nowhere',     'unknown store still passes through');
+  on('',                  '',            'empty stays empty');
+  on(null,                '',            'null stays empty');
+
+  console.log('\n9. short codes resolve, and the client refuses to guess');
+  on('CEN', 'Bend',   'short_code resolves via the registry');
+  const amb = GXStores.resolve('nonsense-not-a-store');
+  if (amb === null) { pass++; console.log('  PASS  an unknown string resolves to null rather than a wrong store'); }
+  else { fail++; console.log('  FAIL  expected null, got ' + JSON.stringify(amb)); }
+}
 
 console.log('\n──────────────────────────────');
-console.log(pass + ' passed, ' + fail + ' failed');
+console.log(pass + ' passed, ' + fail + ' failed' + (skip ? ', ' + skip + ' skipped' : ''));
 process.exit(fail ? 1 : 0);
+
+})();

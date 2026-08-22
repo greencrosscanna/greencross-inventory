@@ -2460,6 +2460,18 @@ function normalizeStore(raw) {
   if (!raw) return '';
   // Strip " - Green Cross Cannabis Emporium" suffix if present
   let s = raw.replace(/\s*-\s*Green Cross Cannabis Emporium\s*/i, '').trim();
+  // GX Core's `stores` registry is the one alias list, and it knows spellings the hand-written rules
+  // below never did: "South" and "Commercial St" for the Commercial store, "Century"/"Century Dr" for
+  // Bend. resolve() returns a store_id and REFUSES ambiguous input rather than guessing (two stores
+  // share short_code CEN), so a null here means "not confident", not "not found". Map the id back to
+  // the Dutchie name, which is what this app keys on everywhere else.
+  // Falls through when the registry has not loaded — first paint, or GX Core unreachable — so the
+  // offline path below is unchanged and still authoritative on its own.
+  if (typeof GXStores !== 'undefined' && GXStores && typeof GXStores.resolve === 'function') {
+    var _id = GXStores.resolve(s);
+    var _row = _id && GXStores.get(_id);
+    if (_row && _row.dutchie_name) return _row.dutchie_name;
+  }
   if (/^Center\s*St/i.test(s))   return 'Center';
   if (/^Portland\s*Road/i.test(s)) return 'Portland Rd';
   if (/^Portland\s*Rd/i.test(s))  return 'Portland Rd';
