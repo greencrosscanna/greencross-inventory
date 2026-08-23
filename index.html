@@ -586,56 +586,9 @@
     .ll-sheet-print { display:none; }
   }
 
-  /* ── Bug report button + modal ── */
-  .bug-btn {
-    position:fixed; bottom:20px; right:20px; z-index:200;
-    width:44px; height:44px; border-radius:50%;
-    background:var(--card); border:1px solid var(--border);
-    color:var(--muted); font-size:18px; cursor:pointer;
-    display:flex; align-items:center; justify-content:center;
-    box-shadow:0 2px 8px rgba(0,0,0,.4); transition:border-color .15s, color .15s;
-  }
-  .bug-btn:hover { border-color:var(--amber); color:var(--amber); }
-  .bug-overlay {
-    display:none; position:fixed; inset:0;
-    background:rgba(0,0,0,.6); z-index:300;
-    align-items:center; justify-content:center; padding:16px;
-  }
-  .bug-overlay.open { display:flex; }
-  .bug-modal {
-    background:var(--card); border:1px solid var(--border); border-radius:12px;
-    width:100%; max-width:420px; padding:20px;
-    display:flex; flex-direction:column; gap:14px;
-  }
-  .bug-modal-hdr {
-    display:flex; justify-content:space-between; align-items:center;
-    font-size:14px; font-weight:600;
-  }
-  .bug-modal-close { background:none; border:none; color:var(--muted); cursor:pointer; font-size:18px; line-height:1; }
-  .bug-modal-close:hover { color:var(--text); }
-  .bug-label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
-  .bug-input, .bug-textarea {
-    width:100%; background:var(--bg); border:1px solid var(--border); border-radius:7px;
-    color:var(--text); padding:8px 10px; font-size:13px; box-sizing:border-box; font-family:inherit;
-  }
-  .bug-input:focus, .bug-textarea:focus { outline:none; border-color:var(--amber); }
-  .bug-textarea { resize:vertical; min-height:80px; }
-  .bug-priority { display:flex; gap:8px; }
-  .bug-pri-btn {
-    flex:1; padding:9px 0; border-radius:8px; border:1px solid var(--border);
-    background:none; color:var(--muted); font-size:12px; font-weight:600; cursor:pointer;
-    transition:all .15s;
-  }
-  .bug-pri-btn.sel-low    { border-color:#1D9E75; color:#1D9E75; background:rgba(29,158,117,.12); }
-  .bug-pri-btn.sel-medium { border-color:var(--amber); color:var(--amber); background:rgba(239,159,39,.12); }
-  .bug-pri-btn.sel-high   { border-color:var(--red); color:var(--red); background:rgba(240,149,149,.12); }
-  .bug-submit {
-    padding:10px; border-radius:8px; border:none;
-    background:var(--amber); color:#111; font-size:13px; font-weight:700; cursor:pointer;
-  }
-  .bug-submit:hover { opacity:.9; }
-  .bug-submit:disabled { opacity:.4; cursor:default; }
-  .bug-success { text-align:center; padding:10px 0; font-size:13px; color:var(--green); }
+  /* Bug report: the button, modal and 21 local .bug-* rules that used to live here are now
+     gx-bugreport.js + .gx-bug-* in gx-theme. Leaderboard and Sales carried byte-alike copies of the
+     same block; adding one field meant editing it in three places, which is why nobody ever did. */
 
   /* ── Settings drawer ── */
   .settings-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:100; }
@@ -1511,6 +1464,7 @@
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-avatar.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-topnav.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-stores.js"></script>
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-bugreport.js"></script>
 </head>
 <body>
 
@@ -1593,38 +1547,7 @@
     <div class="ll-sheet" id="llSheetContent"></div>
   </div>
 
-  <!-- Bug report button + modal -->
-  <button class="bug-btn" id="bugBtn" onclick="openBugReport()" title="Report a bug">🐞</button>
-  <div class="bug-overlay" id="bugOverlay" onclick="if(event.target===this)closeBugReport()">
-    <div class="bug-modal">
-      <div class="bug-modal-hdr">
-        <span>🐛 Report a Bug</span>
-        <button class="bug-modal-close" onclick="closeBugReport()">✕</button>
-      </div>
-      <div id="bugFormBody">
-        <div>
-          <div class="bug-label">Title <span style="color:var(--red)">*</span></div>
-          <input class="bug-input" id="bugTitle" type="text" placeholder="Short description of what went wrong" maxlength="120">
-        </div>
-        <div>
-          <div class="bug-label">Details (optional)</div>
-          <textarea class="bug-textarea" id="bugDesc" placeholder="Steps to reproduce, what you expected vs. what happened…"></textarea>
-        </div>
-        <div>
-          <div class="bug-label">Priority</div>
-          <div class="bug-priority">
-            <button class="bug-pri-btn" id="bpLow"    onclick="selectPri('low')">Low</button>
-            <button class="bug-pri-btn sel-medium" id="bpMedium" onclick="selectPri('medium')">Medium</button>
-            <button class="bug-pri-btn" id="bpHigh"   onclick="selectPri('high')">High</button>
-          </div>
-        </div>
-        <button class="bug-submit" id="bugSubmitBtn" onclick="submitBugReport()">Submit</button>
-      </div>
-      <div class="bug-success" id="bugSuccess" style="display:none">
-        <span id="bugSuccessMsg">✓ Bug reported — thank you!</span>
-        <div id="bugSuccessTime" style="margin-top:6px;font-size:12px;opacity:.7;font-weight:400"></div>
-      </div>
-    </div>
+  <!-- Bug report button + modal: built by gx-bugreport.js (gx-theme). No markup here. -->
   </div>
 
   <!-- Settings backdrop + drawer -->
@@ -7979,7 +7902,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.01';
+const APP_VERSION = 'v3.02';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8224,77 +8147,27 @@ function closeLLSheet() {
 // ════════════════════════════════════════════════════════
 // BUG REPORT
 // ════════════════════════════════════════════════════════
+/* The form, the modal and the submit are gx-bugreport.js in gx-theme. What stays here is the part
+   that is genuinely Inventory's: who is signed in, which tab and store they are on, and how this app
+   talks to its proxy. Everything else was a copy of Leaderboard's and Sales' copy of the same thing.
 
-let _bugPri = 'medium';
+   proxyFetch already resolves on a JSON body and throws on {error}, and gx-bugreport treats a
+   resolved {ok:false} as failure too — so a rejected report can no longer show "Bug reported". That
+   combination is not incidental: this app used to report success unconditionally. */
 
 function _getSessionUser() {
   try { return JSON.parse(localStorage.getItem(GC_AUTH_KEY))?.user || 'unknown'; } catch { return 'unknown'; }
 }
 
-function selectPri(p) {
-  _bugPri = p;
-  ['low','medium','high'].forEach(v => {
-    document.getElementById('bp' + v.charAt(0).toUpperCase() + v.slice(1))
-      .className = 'bug-pri-btn' + (v === p ? ' sel-' + v : '');
+if (window.GXBugReport) {
+  GXBugReport.init({
+    app: 'inventory',
+    action: 'bugreport',
+    reporter: _getSessionUser,
+    version:  function () { return APP_VERSION; },
+    context:  function () { return { tab: state.tab || '', store: state.store || '' }; },
+    submit:   function (payload) { return proxyFetch(payload); },
   });
-}
-
-function openBugReport() {
-  // reset form
-  document.getElementById('bugTitle').value = '';
-  document.getElementById('bugDesc').value = '';
-  document.getElementById('bugSuccess').style.display = 'none';
-  document.getElementById('bugFormBody').style.display = '';
-  const _bugBtn = document.getElementById('bugSubmitBtn');
-  _bugBtn.disabled = false;
-  _bugBtn.textContent = 'Submit';
-  selectPri('medium');
-  document.getElementById('bugOverlay').classList.add('open');
-  setTimeout(() => document.getElementById('bugTitle').focus(), 50);
-}
-
-function closeBugReport() {
-  document.getElementById('bugOverlay').classList.remove('open');
-}
-
-async function submitBugReport() {
-  const title = document.getElementById('bugTitle').value.trim();
-  if (!title) { document.getElementById('bugTitle').focus(); return; }
-
-  const btn = document.getElementById('bugSubmitBtn');
-  btn.disabled = true;
-  btn.textContent = 'Sending…';
-
-  const payload = {
-    action:   'bugreport',
-    title,
-    desc:     document.getElementById('bugDesc').value.trim(),
-    priority: _bugPri,
-    reporter: _getSessionUser(),
-    appTab:   state.tab   || '',
-    appStore: state.store || '',
-    appVer:   APP_VERSION,
-  };
-
-  try {
-    await proxyFetch(payload);
-    const _who = String(_getSessionUser() || '').split('@')[0].split(/[.\s_]/)[0].trim();
-    const _first = (_who && _who !== 'unknown') ? _who.charAt(0).toUpperCase() + _who.slice(1) : '';
-    document.getElementById('bugSuccessMsg').textContent =
-      _first ? `✓ Bug reported — thanks ${_first}!` : '✓ Bug reported — thank you!';
-    document.getElementById('bugSuccessTime').textContent =
-      'Reported ' + new Date().toLocaleString('en-US', {
-        timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric',
-        hour: 'numeric', minute: '2-digit'
-      });
-    document.getElementById('bugFormBody').style.display = 'none';
-    document.getElementById('bugSuccess').style.display = '';
-    setTimeout(closeBugReport, 2600);
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = 'Submit';
-    alert('Could not send — check your connection and try again.');
-  }
 }
 
 // ════════════════════════════════════════════════════════
