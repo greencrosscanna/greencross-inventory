@@ -1,4 +1,13 @@
 .DS_Store
-.claude/
+# .claude/* not .claude/ — git does not descend into an EXCLUDED DIRECTORY, so `!` exceptions
+# under a bare `.claude/` are silently ignored and every shared file stays untracked. This repo was
+# the only one of seven not tracking its hook scripts and settings because of exactly that.
+.claude/*
+!.claude/settings.json
+!.claude/launch.json
+!.claude/gx-brain-notes.sh
+!.claude/gx-posttool-tests.sh
+# stays ignored: local permission grants, and agent worktrees (a 3.8M stale copy of the source
+# lived in .claude/worktrees for three months, marked prunable by git the whole time)
 .last_backend_deploy
 .gx_deploy_secret
