@@ -1635,14 +1635,11 @@
       <button class="settings-close" onclick="closeSettings()">✕</button>
     </div>
 
-    <!-- Account -->
-    <div class="settings-sec" style="padding-bottom:10px">
-      <div class="settings-sec-title">Account</div>
-      <div class="settings-row">
-        <span class="settings-label">Signed in as <b id="settingsUser">—</b></span>
-        <button class="settings-btn-sm danger" onclick="logout()" style="margin-left:auto">Log out</button>
-      </div>
-    </div>
+    <!-- Account section removed (v3.01): "Signed in as …" + Log out were the drawer's copy of
+         identity, and identity moved to the shared user tray -- GXTopNav paints the name, role and
+         Sign out in the header of every GX app. Two Sign-outs one click apart is how a tray migration
+         rots: the drawer copy drifts (it showed the user_id slug, the tray shows the display name) and
+         nobody notices which one is canonical. The tray is canonical. -->
 
     <!-- Data freshness -->
     <div class="settings-sec" style="padding-bottom:10px">
@@ -1668,21 +1665,6 @@
         <button class="settings-btn-sm danger" onclick="clearGasErrorsNow()" style="margin-left:auto">Clear</button>
       </div>
       <div id="gasErrorList" style="display:none;font-size:10px;color:var(--muted);padding:4px 0 0 0;max-height:100px;overflow-y:auto"></div>
-    </div>
-
-    <!-- Category Labels -->
-    <div class="settings-sec">
-      <div class="settings-sec-title">Category Labels</div>
-      <div id="aliasRows"></div>
-      <div class="settings-row" style="margin-top:10px">
-        <input class="settings-input" id="aliasFullInput" placeholder="Full category name">
-      </div>
-      <div class="settings-row" style="margin-top:4px">
-        <input class="settings-input" id="aliasShortInput" placeholder="Short label">
-      </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:6px">
-        <button class="settings-btn-sm" onclick="addCatAlias()">Add label</button>
-      </div>
     </div>
 
     <!-- Reorder Target -->
@@ -1749,6 +1731,21 @@
       </div>
     </div>
 
+    <!-- Category Labels -->
+    <div class="settings-sec">
+      <div class="settings-sec-title">Category Labels</div>
+      <div id="aliasRows"></div>
+      <div class="settings-row" style="margin-top:10px">
+        <input class="settings-input" id="aliasFullInput" placeholder="Full category name">
+      </div>
+      <div class="settings-row" style="margin-top:4px">
+        <input class="settings-input" id="aliasShortInput" placeholder="Short label">
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:6px">
+        <button class="settings-btn-sm" onclick="addCatAlias()">Add label</button>
+      </div>
+    </div>
+
     <!-- Export -->
     <div class="settings-sec">
       <div class="settings-sec-title">Export</div>
@@ -1763,14 +1760,10 @@
       <div class="settings-sec-title">SKU Room Probe</div>
       <div class="settings-row" style="gap:6px">
         <input class="settings-input" id="probeSkuInput" placeholder="SKU (e.g. 41965128)" style="flex:2">
-        <select class="settings-input" id="probeStoreSelect" style="flex:1;min-width:0">
-          <option value="Bend">Century</option>
-          <option value="Center">Center</option>
-          <option value="Commercial">Commercial</option>
-          <option value="Hillsboro">Baseline</option>
-          <option value="Portland Rd">Portland</option>
-          <option value="River Rd">River</option>
-        </select>
+        <!-- Painted from the live STORES list in openSettings(). This used to be a second hardcoded
+             store table, so a rename or a new store in Command Center reached every other store
+             control in the app and silently missed this one. -->
+        <select class="settings-input" id="probeStoreSelect" style="flex:1;min-width:0"></select>
         <button class="settings-btn-sm" onclick="runSkuProbe()">Probe</button>
       </div>
       <div id="probeResult" style="margin-top:8px;font-size:11px;color:var(--muted)">Enter a SKU and select a store.</div>
@@ -7986,7 +7979,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.0';
+const APP_VERSION = 'v3.01';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8343,10 +8336,22 @@ document.addEventListener('gx-topnav:action', (e) => {
   else if (action === 'logout')   logout();
 });
 
+// The SKU probe's store picker is the one store control the drawer owns. STORES is replaced wholesale
+// once GX Core answers `?action=stores`, so paint on open (not once at boot) -- that way a drawer opened
+// after the registry lands shows the current stores, and one opened before it falls back to the same
+// hardcoded list every other store control uses. Selection is preserved across repaints.
+function paintProbeStoreOptions() {
+  const sel = document.getElementById('probeStoreSelect');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = STORES.map(s =>
+    '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(storeDisplay(s.name)) + '</option>'
+  ).join('');
+  if (prev && STORE_BY_NAME[prev]) sel.value = prev;
+}
+
 function openSettings() {
-  const _sess = getAuthSession();
-  const _userEl = document.getElementById('settingsUser');
-  if (_userEl) _userEl.textContent = (_sess && _sess.user) ? _sess.user : 'unknown';
+  paintProbeStoreOptions();
   renderCatAliases();
   document.getElementById('reorderBufferInput').value = getReorderBuffer();
   document.getElementById('transferMinQtyInput').value = getTransferMinQty();
