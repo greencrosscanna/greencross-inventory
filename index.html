@@ -1462,7 +1462,7 @@
      the shared .gx-btn-green, so this one button looked unlike every other primary button in the
      suite. Do not restyle it here; change .gx-btn-green in gx-theme if the treatment should move. */
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/vendor/xlsx@0.18.5/xlsx.full.min.js"></script>
 <!-- Shared GX Core client (retry-aware): the canonical resilient wrapper for GX Core's flaky two-hop
      /exec endpoint. Loaded here (before the app script) so window.GXClient is defined when loadChangelog
      runs. Canonical source: greencross-gx-theme/gx-client.js — keep GX Core calls routed through it. -->
@@ -1502,8 +1502,8 @@
     'decisionqueue', 'fattytracker', 'gaserrors', 'getqueue', 'getstate', 'getupcmap',
     'grants',
     'inventory', 'leadtimes', 'llorders', 'loadingquotes', 'login', 'lostsales', 'oosmap',
-    'operationalbundle', 'operationalstatus', 'quarantine', 'sales_dutchie', 'skuprobe',
-    'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
+    'operationalbundle', 'operationalstatus', 'quarantine', 'queuecount', 'sales_dutchie',
+    'skuprobe', 'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
   ];
 </script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-client.js"></script>
@@ -6998,7 +6998,7 @@ function loadJsQR() {
   if (window.jsQR || _jsQrLoading) return;
   _jsQrLoading = true;
   const s = document.createElement('script');
-  s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+  s.src = 'https://greencrosscanna.github.io/greencross-gx-theme/vendor/jsqr@1.4.0/jsQR.js';
   s.onload = () => { _jsQrLoading = false; SCAN_DIAG.jq = 'loaded'; };
   s.onerror = () => {
     _jsQrLoading = false;
@@ -7283,11 +7283,11 @@ function initScanner() {
     }
   }
 
-  // Lazy-load html5-qrcode from CDN
+  // Lazy-load html5-qrcode from our vendored copy on gx-theme Pages
   if (window.Html5Qrcode) { startCamera(); return; }
   hint.textContent = 'Loading scanner…';
   const s = document.createElement('script');
-  s.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+  s.src = 'https://greencrosscanna.github.io/greencross-gx-theme/vendor/html5-qrcode@2.3.8/html5-qrcode.min.js';
   s.onload = startCamera;
   s.onerror = () => {
     hint.textContent = '';
@@ -7447,7 +7447,7 @@ function handleScannerFile(input) {
     if (window.Html5Qrcode) { doScan(); return; }
     _decoderLog += 'H5:load ';
     const s = document.createElement('script');
-    s.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+    s.src = 'https://greencrosscanna.github.io/greencross-gx-theme/vendor/html5-qrcode@2.3.8/html5-qrcode.min.js';
     s.onload  = doScan;
     s.onerror = () => { _decoderLog += 'H5:cdn-err '; tryZXing(canvas); };
     document.head.appendChild(s);
@@ -7488,7 +7488,7 @@ function handleScannerFile(input) {
     if (window.ZXing) { doScan(); return; }
     _decoderLog += 'ZX:load ';
     const s = document.createElement('script');
-    s.src = 'https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js';
+    s.src = 'https://greencrosscanna.github.io/greencross-gx-theme/vendor/zxing@0.19.1/index.min.js';
     s.onload  = doScan;
     s.onerror = () => { _decoderLog += 'ZX:cdn-err '; onFail(); };
     document.head.appendChild(s);
@@ -7986,7 +7986,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v2.99';
+const APP_VERSION = 'v3.0';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
