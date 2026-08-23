@@ -1463,6 +1463,7 @@
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-session.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-avatar.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-topnav.js"></script>
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-changelog.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-stores.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-bugreport.js"></script>
 </head>
@@ -7902,7 +7903,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.02';
+const APP_VERSION = 'v3.020';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8186,6 +8187,9 @@ function paintUserTray() {
   try { sess = JSON.parse(localStorage.getItem(GC_AUTH_KEY) || '{}') || {}; } catch (e) {}
   const name = sess.displayName || sess.user || '';
   if (!name) { slot.innerHTML = ''; return; }
+  if (window.GXChangelog) {
+    GXChangelog.init({ app: 'inventory', title: 'GX Inventory', version: APP_VERSION });
+  }
   GXTopNav.renderUser(slot, {
     name,
     role: String(sess.role || '').replace(/_/g, ' '),
@@ -8203,9 +8207,10 @@ document.addEventListener('gx-topnav:action', (e) => {
   const action = e.detail && e.detail.action;
   if (action === 'refresh')  window.hardRefresh && window.hardRefresh();
   else if (action === 'settings') openSettings();
-  // checkWhatsNew() only surfaces UNSEEN entries and self-suppresses once caught up. Clicking
-  // Version is a deliberate ask for the changelog, so show the whole list.
-  else if (action === 'version')  { if (CHANGELOG_DATA.length) showWhatsNew(CHANGELOG_DATA); }
+  // No 'version' branch: GXTopNav opens the shared release-history popup (gx-changelog.js), which
+  // is the same popup all seven apps now get. The local showWhatsNew() stays — it still drives the
+  // once-per-login unseen-releases prompt; it just no longer has a second, hand-wired entry point
+  // that had to be kept in step with six other copies of itself.
   else if (action === 'logout')   logout();
 });
 
