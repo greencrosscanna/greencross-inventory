@@ -430,9 +430,13 @@ const ROOM_DATA_CACHE_PREFIX = 'roomdata4_';
 // was 'distro', hiding its whole floor — the Tawny bug). Fix: query the endpoint in dated
 // ≤31-day windows covering ROOM_TX_LOOKBACK_DAYS of history; the latest toRoom per
 // inventoryId gives each package's current room. More windows = deeper history but more
-// API calls; 4×30d = 120 days covers essentially all currently-held stock's last move.
+// API calls; 6×30d = 180 days covers essentially all currently-held stock's last move.
+// Widened from 4 windows (2026-08-24): the unknown-room DEFAULT below is now 'distro' at a
+// DC, so a package whose last Move aged out of the window would be hidden as distro rather
+// than counted as on-hand. Every extra window shrinks that tail — at River, stock untouched
+// for >120d was ~1,700 units, >240d only ~500.
 const ROOM_TX_WINDOW_DAYS   = 30;  // per-request span, must stay ≤ 31 (API cap)
-const ROOM_TX_WINDOW_COUNT  = 4;   // → 120 days of move history
+const ROOM_TX_WINDOW_COUNT  = 6;   // → 180 days of move history
 
 // Build the parallel requests for one store's room data.
 // Layout: [ /room/rooms, ...N inventorytransaction windows, /reporting/transactions ].
@@ -620,6 +624,29 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
   const { roomNameType, roomIdType, invRoomMap, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store, params.force === '1');
   const returnedPackageIds = new Set(returnedPkgArr || []);
 
+  // ── What room is a package in when Dutchie will not say? ──────────────────────────────────
+  // Dutchie gives this app NO room data on the inventory payload: /reporting/inventory returns
+  // roomQuantities:null with no roomName/roomId, ?roomId= is ignored (every room returns all rows),
+  // and /room/<id>/inventory 404s. The ONLY room signal is toRoom on an inventory TRANSACTION, and
+  // just Move rows carry one — Receive and "Create Package" carry none. So a package that was
+  // created into a room and never moved is invisible, and the default decides where it lands.
+  //
+  // Both defaults have already been wrong in production, in opposite directions:
+  //   v2.51  default 'distro' at River hid its ENTIRE floor, because the transaction endpoint was
+  //          400ing at the time so NOTHING had a room signal (Tawny's bug).
+  //   after  default 'back' merged River's DC stock into on-hand — 40 units of a cartridge showing
+  //          as 48 in stock instead of 8 floor | 40 distro (Sky's bug, 2026-08-24).
+  //
+  // River is the DC: stock LANDS in Distro and is moved out to the floor (confirmed by Sky), so
+  // "never moved" means "still in Distro" — but only if we can actually SEE moves. Hence the gate:
+  // default to distro only where a Distro room exists AND this store's Move history has produced at
+  // least one floor-classified package, which proves floor stock is detectable right now. If that
+  // signal goes dark again (the v2.51 failure), this silently reverts to 'back' and can never hide
+  // the floor a second time. Stores with no Distro room are unaffected.
+  const hasDistroRoom  = Object.keys(roomNameType).some(function(n) { return roomNameType[n] === 'distro'; });
+  const floorSignalSeen = Object.keys(invRoomMap).some(function(id) { return invRoomMap[id] === 'floor'; });
+  const unknownRoomType = (hasDistroRoom && floorSignalSeen) ? 'distro' : 'back';
+
   const cutoff90   = new Date(Date.now() - 90 * 86400000).toISOString();
   const productMap = {};
 
@@ -705,15 +732,7 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
         ? roomIdType[item.roomId]
         : safeTxRoom
         ? safeTxRoom
-        : 'back'; // unknown room → active/back at EVERY store, incl. River Rd.
-        // River Rd formerly defaulted to 'distro' (distribution-hub assumption: unmoved
-        // packages staged for inter-store distribution). But Dutchie now returns NO room
-        // data for any store — roomQuantities is empty, /reporting/inventory has no
-        // roomName/roomId, and River has no Move transactions — so 100% of River's packages
-        // hit this default and its entire (retail) floor stock was hidden as qtyDistro
-        // (Tawny bug, v2.51). Defaulting to 'back' keeps River consistent with every other
-        // store and never hides available inventory. Genuine distro staging is still split
-        // out correctly whenever Dutchie DOES supply a "Distro" roomName/roomId/Move-tx above.
+        : unknownRoomType; // no room signal at all → see the gate above (distro at a DC, else back)
 
       const itemCost = Number(item.unitCost || 0);
       if (itemCost > 0) p.unitCost = itemCost;
