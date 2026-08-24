@@ -735,6 +735,8 @@
 
   /* ── Inventory table ── */
   .inv-table-wrap { overflow-x: auto; }
+  .inv-load-warn { margin: 6px 2px 10px; padding: 9px 12px; border-radius: 8px; line-height: 1.45;
+    background: rgba(239,159,39,.13); border: 1px solid rgba(239,159,39,.42); color: var(--amber); font-size: 13px; }
   table.inv-table {
     width: 100%; border-collapse: collapse; font-size: 13px; min-width: 800px; table-layout: fixed;
   }
@@ -4242,6 +4244,7 @@ function setLoadingAll() {
 // INVENTORY STATE
 // ════════════════════════════════════════════════════════
 state.inventoryData = null; // merged + enriched product array
+state.inventoryLoadFailures = []; // stores whose inventory fetch failed this load — surfaced as a banner
 state.oosMap        = {};   // "store::sku" → last-in-stock date (YYYY-MM-DD)
 state.llOrders      = [];   // open LeafLink orders
 state.llProductMap  = {};   // normName → [{status,seller,orderId,qty}]
@@ -4605,11 +4608,22 @@ async function loadInventoryData() {
     }
 
     // Step 3: enrich with velocity → DOH → status → reorder
+    // A store that errors (or comes back empty — never legitimate, every store carries 1,000+ products)
+    // used to be skipped with only a console.warn. The store then vanished from EVERY product, so the
+    // app quietly showed "4 of 6 stores" as though the other two held no stock. Record the casualties
+    // and surface them, so a partial load can never again read as a complete one.
     const allProducts = [];
+    const loadFailures = [];
     for (const { store, products, error } of invResults) {
-      if (error) { console.warn('Inventory error for', store, error); continue; }
+      if (error || !(products && products.length)) {
+        const why = error || 'no products returned';
+        console.warn('Inventory load failed for', store, why);
+        loadFailures.push({ store, error: why });
+        continue;
+      }
       for (const p of products) allProducts.push(enrichProduct(p, store, velMap));
     }
+    state.inventoryLoadFailures = loadFailures;
 
     // Step 4: inject OOS products — in velocity data with recent sales but absent from Dutchie inventory
     // (Dutchie archives zero-qty packages; velocity data is our source of truth for what WAS selling)
@@ -5624,6 +5638,22 @@ function renderAssortmentView(el) {
     </table></div>`;
 }
 
+// Partial-load warning. Silence here is the dangerous state: with a store missing, every total,
+// DOH and reorder number on screen is computed over fewer stores than the user believes, and
+// nothing else on the page says so. Reloading is the fix, so the banner says that.
+function inventoryLoadFailureHtml() {
+  const fails = state.inventoryLoadFailures || [];
+  if (!fails.length) return '';
+  const names = fails.map(f => storeDisplay(f.store)).join(', ');
+  const detail = fails.map(f => storeDisplay(f.store) + ': ' + f.error).join(' · ');
+  const them = fails.length === 1 ? 'it' : 'them';
+  return `<div class="inv-load-warn" title="${escapeHtml(detail)}">
+    ⚠️ <b>Showing ${STORES.length - fails.length} of ${STORES.length} stores.</b>
+    ${escapeHtml(names)} did not load, so totals, DOH and reorder figures below exclude ${them}.
+    Reload to try again.
+  </div>`;
+}
+
 function renderInventory() {
   const el = document.getElementById('inventoryContent');
   if (!el) return;
@@ -6439,6 +6469,7 @@ function renderInventory() {
     : `${visibleGroups.length} product${visibleGroups.length !== 1 ? 's' : ''}`;
 
   el.innerHTML = `
+    ${inventoryLoadFailureHtml()}
     ${inventoryDecisionHealthHtml()}
     <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">
       <span>${countLabel}</span>
@@ -7903,7 +7934,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.021';
+const APP_VERSION = 'v3.022';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
