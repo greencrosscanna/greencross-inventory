@@ -1456,7 +1456,13 @@ function buildDecisionFeedRows(targetStores) {
   const betaStores = betaStoreKeys_();
   const shared = getSharedState({ beta: '1' });
   const killed = shared.killed || {};
-  const flagged = new Set(shared.flagged || []);
+  // getSharedState normalises `flagged` to an OBJECT ({key:{ts,by}}), converting the legacy array
+  // form on read. This consumer still assumed the array, and `new Set(obj)` throws
+  // "object is not iterable" — which killed the nightly decision-feed build every morning at
+  // 09:48 for weeks, silently (warmDecisionFeedOnly catches and logs, so the snapshot still
+  // finished "completed_with_warnings"). Accept both shapes.
+  const flaggedRaw = shared.flagged || [];
+  const flagged = new Set(Array.isArray(flaggedRaw) ? flaggedRaw : Object.keys(flaggedRaw));
   const oosLastSeen = buildOosLastSeenMap_();
   const byKey = {};
   const rows = [];
