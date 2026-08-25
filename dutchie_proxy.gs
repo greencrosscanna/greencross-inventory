@@ -23,12 +23,6 @@ const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 const STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
 const DUTCHIE_STORE_KEYS_PROP = 'DUTCHIE_STORE_KEYS_JSON';
 
-const SHEET_GIDS = {
-  budget: 1092240858,
-  atm:    1349619595,
-  sublet: 1274502465,
-};
-
 // ── GX Core business config (Phase C) — constants live in GX Core (?action=config); these hardcodes
 // are the offline fallback. Fetched once per 6h via CacheService (no per-request endpoint hit).
 const GX_CORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
@@ -172,12 +166,25 @@ function getDataSpreadsheetId() {
 // The inventory tool's own data sheets (Vel Cache, Inv Snapshot, ProductCatalog,
 // Product SKU Dict, Operational Snapshot, Loading Quotes) live in a DEDICATED spreadsheet so
 // they don't consume the financial workbook's 10,000,000-cell cap (they had filled it, which
-// blocked velocity sync, snapshot builds and everything else). The id is stored in a script
-// property after migration; until then this falls back to the financial workbook so behavior
-// is unchanged. Financial reads (income/budget via getSheetByGid) and the BETA-spreadsheet
-// sheets (Decision Feed, Shared State) are unaffected — they keep using their own ids.
+// blocked velocity sync, snapshot builds and everything else). The id is stored in the
+// INV_DATA_SS_ID script property, set when the migration was activated.
+//
+// There is deliberately NO fallback to the financial workbook: that workbook is the legacy
+// "2026 GX2 Dashboard" we are retiring, and a silent fallback is how a dependence on it goes
+// invisible again. If the property is missing we fail loudly and name it.
+//
+// As of 2026-08-25 no request-path route reads the financial workbook at all — the last one
+// was getBudget() (?action=budget), removed with getSheetByGid and SHEET_GIDS. What still
+// calls getDataSpreadsheetId() is the BETA-spreadsheet sheets (Decision Feed, Shared State)
+// and the one-time migration/diagnostic routes below.
 function getInvDataSpreadsheetId() {
-  return PropertiesService.getScriptProperties().getProperty('INV_DATA_SS_ID') || getDataSpreadsheetId();
+  const id = PropertiesService.getScriptProperties().getProperty('INV_DATA_SS_ID');
+  if (!id) {
+    throw new Error('INV_DATA_SS_ID script property is not set. Inventory data no longer lives in ' +
+      'the financial workbook — set INV_DATA_SS_ID (Project Settings → Script Properties) to the ' +
+      '"Green Cross — Inventory Data" spreadsheet id. Refusing to fall back to the financial workbook.');
+  }
+  return id;
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -292,7 +299,6 @@ function doGet(e) {
     if (params.action === 'assortment')     return jsonOut(getAssortmentHealth(params));
     if (params.action === 'assortmentconfig') return jsonOut(getSubstitutionConfig_());
     if (params.action === 'storetxhistory') return jsonOut(getStoreTxHistory(params));
-    if (params.action === 'budget')         return jsonOut(getBudget());
     if (params.action === 'schema')         return jsonOut(getSchema());
     if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
     if (params.action === 'stores')         return jsonOut(getStoresConfig());
@@ -5014,15 +5020,6 @@ function setupOperationalCacheTrigger() {
   return { ok: true, message: 'Three nightly triggers installed: velocity at midnight, bundle at 1am, feed at 2am.' };
 }
 
-// ─── SHEET HELPERS ────────────────────────────────────────────────────────────
-function getSheetByGid(gid) {
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
-  for (const s of ss.getSheets()) {
-    if (s.getSheetId() === gid) return s;
-  }
-  throw new Error('Sheet GID not found: ' + gid);
-}
-
 // ─── COGS (DUTCHIE) ───────────────────────────────────────────────────────────
 // Returns daily COGS from GXCore (Dutchie-sourced, settled days only).
 // Same response shape as getCOGS: {data:[{date,store,cogs}]}.
@@ -5072,47 +5069,6 @@ function getSalesDutchie(params) {
     }
   }
   return { data: results };
-}
-
-// ─── BUDGET ───────────────────────────────────────────────────────────────────
-function getBudget() {
-  const sheet = getSheetByGid(SHEET_GIDS.budget);
-  const data  = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
-
-  let expensesSectionStart = -1;
-  for (let i = 0; i < data.length; i++) {
-    if (String(data[i][1] || '').toUpperCase().includes('EXPENSES BUDGET')) {
-      expensesSectionStart = i; break;
-    }
-  }
-
-  let monthHeaderRow = -1;
-  for (let i = 0; i < Math.min(5, data.length); i++) {
-    if (data[i].filter(v => v !== '').length > 6) { monthHeaderRow = i; break; }
-  }
-
-  const months = monthHeaderRow >= 0
-    ? data[monthHeaderRow].slice(2, 14)
-    : Array.from({ length: 12 }, (_, i) => i + 1);
-
-  const revenueRows = [];
-  const limit = expensesSectionStart >= 0 ? expensesSectionStart : data.length;
-  for (let i = monthHeaderRow + 1; i < limit; i++) {
-    const storeName = String(data[i][1] || '').trim();
-    if (!storeName || storeName.toUpperCase().includes('TOTAL')) continue;
-    revenueRows.push({ store: storeName, monthlyGoals: data[i].slice(2, 14).map(v => parseFloat(v) || 0) });
-  }
-
-  const expenseRows = [];
-  if (expensesSectionStart >= 0) {
-    for (let i = expensesSectionStart + 1; i < data.length; i++) {
-      const label = String(data[i][1] || '').trim();
-      if (!label) continue;
-      expenseRows.push({ label, monthlyValues: data[i].slice(2, 14).map(v => parseFloat(v) || 0) });
-    }
-  }
-
-  return { months, revenueGoals: revenueRows, expenseBudget: expenseRows };
 }
 
 // ─── ONE-TIME BACKFILL ─────────────────────────────────────────────────────────

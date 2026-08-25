@@ -310,27 +310,6 @@
   .badge-amber { background: rgba(239,159,39,.18); color: var(--amber); }
   .badge-red   { background: rgba(240,149,149,.18); color: var(--red); }
 
-  /* ── Pacing bar ── */
-  .pacing-wrap { padding: 4px 16px 14px; }
-  .pacing-bar-bg {
-    position: relative; height: 6px; border-radius: 3px;
-    background: #2a2a2a; overflow: visible; margin-top: 6px;
-  }
-  .pacing-bar-fill {
-    height: 100%; border-radius: 3px;
-    background: var(--green); max-width: 100%;
-    transition: width .4s ease;
-  }
-  .pacing-bar-fill.over { background: var(--amber); }
-  .pacing-line {
-    position: absolute; top: -3px; bottom: -3px; width: 2px;
-    background: var(--text); border-radius: 1px; opacity: .6;
-  }
-  .pacing-labels {
-    display: flex; justify-content: space-between;
-    font-size: 10px; color: var(--muted); margin-top: 4px;
-  }
-
   /* ── Trend chart ── */
   .chart-wrap { padding: 12px 16px 16px; }
   canvas { width: 100% !important; height: 160px !important; }
@@ -1453,7 +1432,7 @@
   // carrying an action are checked, action-less requests (local assets) pass through untouched.
   // Guarded writes: bugreport, clearerrors, installwarmtrigger, schedulewarmcaches, setleadtimes, setupcentry
   window.GX_DEV_READS = [
-    'assortmentconfig', 'betadecisionfeed', 'budget', 'cogs_dutchie', 'decisionfeed',
+    'assortmentconfig', 'betadecisionfeed', 'cogs_dutchie', 'decisionfeed',
     'decisionqueue', 'fattytracker', 'gaserrors', 'getqueue', 'getstate', 'getupcmap',
     'grants',
     'inventory', 'leadtimes', 'llorders', 'loadingquotes', 'login', 'lostsales', 'oosmap',
@@ -2331,7 +2310,6 @@ let state = {
   to: '',
   cogsData: null,
   salesData: null,
-  budgetData: null,
   inv28Sales: null, // 28-day sales for inventory summary bar
   inv28Cogs:  null, // 28-day cogs for inventory summary bar
   betaEnabled: false,
@@ -2366,8 +2344,6 @@ function monthStartStr() {
   const d = new Date(); d.setDate(1);
   return d.toISOString().slice(0, 10);
 }
-function dayOfMonth() { return new Date().getDate(); }
-function daysInMonth() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); }
 
 // ── Store filter & toggle logic ──────────────────────────
 function filterByStore(rows, storeKey = 'store') {
@@ -2425,27 +2401,6 @@ function groupByDate(rows, valueKey) {
     map[d] += r[valueKey] || 0;
   }
   return map;
-}
-
-// ── Pacing bar HTML ──────────────────────────────────────
-function pacingBarHtml(actual, goal) {
-  const elapsed = dayOfMonth() / daysInMonth();
-  const pct = goal > 0 ? actual / goal : 0;
-  const fillPct = Math.min(pct * 80, 100); // 80% width = 100% of goal
-  const linePos = elapsed * 80;
-  const isOver = pct > 1;
-  return `
-    <div class="pacing-wrap">
-      <div class="pacing-bar-bg">
-        <div class="pacing-bar-fill${isOver ? ' over' : ''}" style="width:${fillPct}%"></div>
-        <div class="pacing-line" style="left:${linePos}%"></div>
-      </div>
-      <div class="pacing-labels">
-        <span>${fmtK(actual)}</span>
-        <span>${Math.round(pct * 100)}% of goal</span>
-        <span>${fmtK(goal)}</span>
-      </div>
-    </div>`;
 }
 
 // ── Mini sparkline (pure SVG, no deps) ──────────────────
@@ -2786,29 +2741,12 @@ function renderCOGS() {
   const cogsRows = filterByStore(state.cogsData, 'store');
   const salesRows = filterByStore(state.salesData || [], 'store');
 
-  // Monthly total with pacing vs budget
   const totalCogs = sumBy(cogsRows, 'cogs');
 
   // Group by date for daily table
   const cogsByDate = groupByDate(cogsRows, 'cogs');
   const salesByDate = groupByDate(salesRows, 'sales');
   const dates = Object.keys(cogsByDate).sort().reverse(); // newest first
-
-  // Budget context
-  let budgetHtml = '';
-  if (state.budgetData) {
-    const month = new Date().getMonth(); // 0-based
-    const expRows = state.budgetData.expenseBudget || [];
-    // Sum all expense budget lines for this month as COGS budget proxy
-    const cogsBudget = expRows.reduce((sum, r) => sum + (r.monthlyValues[month] || 0), 0);
-    if (cogsBudget > 0) {
-      budgetHtml = `
-        <div class="section-label">vs. Budget (This Month)</div>
-        <div class="card">
-          ${pacingBarHtml(totalCogs, cogsBudget)}
-        </div>`;
-    }
-  }
 
   el.innerHTML = `
     <div class="summary-grid">
@@ -2823,8 +2761,6 @@ function renderCOGS() {
         <div class="stat-sub">per day</div>
       </div>
     </div>
-
-    ${budgetHtml}
 
     <div class="section-label">Daily Breakdown</div>
     <div class="card">
@@ -3119,14 +3055,12 @@ async function loadData() {
   const cacheKey = `data_${state.from}_${state.to}`;
 
   try {
-    const [cogsRes, salesRes, budgetRes] = await Promise.all([
+    const [cogsRes, salesRes] = await Promise.all([
       proxyFetch({ action: 'cogs_dutchie', from: state.from, to: state.to }, cacheKey + '_cogs', 30 * 60 * 1000),
       proxyFetch({ action: 'sales_dutchie', from: state.from, to: state.to }, cacheKey + '_sales', 30 * 60 * 1000),
-      proxyFetch({ action: 'budget' }, 'budget', 12 * 60 * 60 * 1000),
     ]);
     state.cogsData  = cogsRes.data  || [];
     state.salesData = salesRes.data || [];
-    state.budgetData = budgetRes;
   } catch (err) {
     const errHtml = `<div class="state-msg error-msg">Error: ${err.message}</div>`;
     ['overviewContent','cogsContent','marginContent','flagsContent'].forEach(id => {
@@ -4190,7 +4124,6 @@ function init() {
     cacheClear();
     state.cogsData = null;
     state.salesData = null;
-    state.budgetData = null;
     state.inv28Sales = null;
     state.inv28Cogs  = null;
     state.inventoryData = null;
@@ -7934,7 +7867,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.022';
+const APP_VERSION = 'v3.023';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
