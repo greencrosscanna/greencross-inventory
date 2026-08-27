@@ -8132,6 +8132,10 @@ if (window.GXBugReport) {
     version:  function () { return APP_VERSION; },
     context:  function () { return { tab: state.tab || '', store: state.store || '' }; },
     submit:   function (payload) { return proxyFetch(payload); },
+    // Screenshot upload. Separate from `submit` because the image cannot ride the report payload —
+    // see gx-bugreport.js. gxCoreUploader is the shared transport; this app supplies only its own
+    // session token, so auth still comes from here.
+    uploadShot: GXBugReport.gxCoreUploader(GXCORE_EXEC_URL, getAuthToken),
   });
 }
 
