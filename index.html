@@ -3946,6 +3946,15 @@ function scheduleBetaDecisionsForInventory(delayMs = 900) {
 // ════════════════════════════════════════════════════════
 // INITIALIZATION & EVENT WIRING
 // ════════════════════════════════════════════════════════
+/* PRE-LAUNCH HOLD (2026-08-28). SPIFF is finished enough to demo but has NOT been handed to anyone,
+   and this tab is the only way a non-superadmin would ever learn the app exists -- Tawny has no link
+   and has not been told about it. So while SPIFF_LAUNCHED is false the tab is hidden from EVERYONE
+   except a superadmin, whatever the grant table says. Deliberately NOT done by revoking Tawny's
+   `spiff` grant: the grant is what makes launch day a one-line flip instead of a scramble to remember
+   who was supposed to have it, and shared access data should not be edited to achieve a UI outcome.
+   LAUNCH = set this to true. Nothing else. */
+var SPIFF_LAUNCHED = false;
+
 /* The SPIFF tab is hidden until GX Core confirms this user actually holds SPIFF.
    WHY GATE IT AT ALL: SPIFF and Inventory are NOT the same audience and are about to diverge sharply.
    Inventory has 2 grants; SPIFF is heading to ~12 managers for the bi-weekly announcement. Sky's rule:
@@ -3971,7 +3980,11 @@ function revealSpiffTab() {
      can only make the tab appear a few seconds early for someone who legitimately had it last time.
      It is a UI affordance either way: SPIFF gates itself, so this never grants anyone anything. */
   var CACHE = 'gcInvSpiffTab';
-  try { if (localStorage.getItem(CACHE) === '1') btn.style.display = ''; } catch (e) {}
+  /* The cache is per-browser and predates the launch hold, so a '1' left over from before would
+     flash the tab for a few seconds on Tawny's next load -- long enough to click. Clear it, and do
+     not take the fast path, while the hold is on. */
+  if (!SPIFF_LAUNCHED) { try { localStorage.removeItem(CACHE); } catch (e) {} }
+  else { try { if (localStorage.getItem(CACHE) === '1') btn.style.display = ''; } catch (e) {} }
   /* try/catch AS WELL AS .catch(), because GXDev.check throws SYNCHRONOUSLY from inside jsonp when an
      action is undeclared on localhost -- a synchronous throw sails straight past .catch() and, since
      this runs from init(), would abort every line of boot after it. That is a RACE, not a certainty:
@@ -3982,8 +3995,11 @@ function revealSpiffTab() {
   _GX.jsonp('grants', { token: tok })
     .then(function (r) {
       if (!r || !r.ok) return;
+      /* Pre-launch, a grant is not enough -- only a superadmin sees it. Post-launch this reverts to
+         the original rule (superadmin OR an explicit `spiff` grant) with no further edit. */
       var has = r.isSuperadmin === true
-        || (Array.isArray(r.grants) && r.grants.some(function (g) { return g && g.app === 'spiff'; }));
+        || (SPIFF_LAUNCHED
+            && Array.isArray(r.grants) && r.grants.some(function (g) { return g && g.app === 'spiff'; }));
       btn.style.display = has ? '' : 'none';           // also HIDES it again if access was revoked
       try { localStorage.setItem(CACHE, has ? '1' : '0'); } catch (e) {}
     })
@@ -7880,7 +7896,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.026';
+const APP_VERSION = 'v3.027';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
