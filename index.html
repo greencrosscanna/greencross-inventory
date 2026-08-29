@@ -1460,6 +1460,7 @@
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-stores.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-bugreport.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-updatecheck.js"></script>
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-maintenance.js"></script>
 </head>
 <body>
 
@@ -7896,6 +7897,17 @@ let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled b
 // + the v2.75 bespoke retry loop. _GX is null only if the shared client somehow failed to load (guarded).
 const _GX = (typeof GXClient === 'function') ? GXClient(GXCORE_EXEC_URL) : null;
 
+/* Shared maintenance gate (gx-maintenance.js, loaded above). Overlays at z-index 10000 when the app is
+   deliberately down, so it sits above the login gate and leaves the bug reporter reachable underneath.
+   Two independent levers gate it: gx-maintenance.json on gx-theme Pages, and cfg.maint.inventory in GX
+   Core kv from Master Control. Anything unreadable counts as UP.
+
+   Placed HERE, not beside the <script> tag, because it needs GXCORE_EXEC_URL — a `const` declared on the
+   line above. Sales reported the install snippet verbatim throws for exactly this reason. */
+if (typeof GXMaintenance !== 'undefined') {
+  GXMaintenance.init({ app: 'inventory', appName: 'Inventory', gxcore: GXCORE_EXEC_URL });
+}
+
 /* Shared header chrome, started at load rather than behind app state: the clock is chrome, not session
    data, and a header showing placeholder dashes while the app boots looks broken. */
 (function startChrome(){
@@ -8190,6 +8202,27 @@ function paintUserTray() {
     name,
     role: String(sess.role || '').replace(/_/g, ' '),
     avatar: window.GXAvatar ? GXAvatar.chip(sess.avatarConfig, name, sess.user || name) : null,
+    /* Opt-in avatar row. Omitted unless we can actually SAVE -- an Avatar row whose Save button
+       cannot work is the SPIFF gear all over again, which is why gx-topnav makes this opt-in.
+       seed matches the chip above (sess.user, the stable user_id slug) so the editor preview and
+       the rendered chip agree; the stored session carries no employee_number to use instead. */
+    avatarEdit: (window.GXAvatar && _GX && sess.token) ? {
+      token:  sess.token,
+      app:    'inventory',
+      client: _GX,
+      seed:   sess.user || name,
+      config: sess.avatarConfig,
+      onSaved: function (cfg) {
+        // Persist first: without this the new face reverts on the next reload, because the tray
+        // reads avatarConfig back out of localStorage rather than from memory.
+        try {
+          const a = JSON.parse(localStorage.getItem(GC_AUTH_KEY) || '{}') || {};
+          a.avatarConfig = cfg;
+          localStorage.setItem(GC_AUTH_KEY, JSON.stringify(a));
+        } catch (e) {}
+        paintUserTray();
+      },
+    } : undefined,
     items: [
       { action: 'refresh',  label: '↺ Refresh' },
       { action: 'settings', label: 'Settings' },
