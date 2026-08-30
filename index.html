@@ -7888,7 +7888,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.029';
+const APP_VERSION = 'v3.030';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -9005,6 +9005,23 @@ function fattySeriesFor(sel, d, vints) {
   const nowRow = { t: new Date(todayStr() + 'T00:00:00Z').getTime(), vals: nowVals, total: vints.reduce((a, v) => a + nowVals[v], 0) };
   if (rows.length && (nowRow.t - rows[rows.length - 1].t) <= 4 * FATTY_DAY) rows[rows.length - 1] = nowRow;
   else rows.push(nowRow);
+  // Production ("new joints added") per week = the week-over-week INCREASE per vintage — the mirror of the
+  // sell-through decline calc below. On-hand nets production against sales, so neither the total nor its
+  // delta shows what was actually made; the rise inside a vintage does. At All stores, transfers between
+  // stores cancel out, so this is true production; at a single store an increase can also be a transfer in.
+  //
+  // Spread over the gap, so every bar means the same thing: joints added PER WEEK. Gaps are real — the
+  // All-stores seed ends on a fixed date and the live "now" point lands weeks later, and a store's snapshot
+  // history can skip a week. Charging that whole interval to one bar would print a spike that dwarfs the
+  // series and grows as the seed ages. Clamped at one week so a short gap is never scaled UP.
+  rows.forEach((r, i) => {
+    const pr = i > 0 ? rows[i - 1] : null;
+    const gapWk = pr ? Math.max(1, (r.t - pr.t) / (7 * FATTY_DAY)) : 1;
+    const add = {};
+    vints.forEach(v => add[v] = pr ? Math.max(0, (r.vals[v] || 0) - (pr.vals[v] || 0)) / gapWk : 0);
+    r.add = add;
+    r.addTotal = vints.reduce((a, v) => a + add[v], 0);
+  });
   return rows;
 }
 
@@ -9021,6 +9038,17 @@ function fattyVelocity(rows, v, win) {
   return sum / n;
 }
 function fattyBurn(rows, vints, win) { return vints.reduce((a, v) => a + fattyVelocity(rows, v, win), 0); }
+
+// Production rate = mean of weekly INCREASES per vintage over the last `win` weeks. Same shape as
+// fattyVelocity, opposite sign — rows carry .add from fattySeriesFor.
+function fattyAdded(rows, v, win) {
+  const n = Math.min(win, rows.length - 1);
+  if (n < 1) return 0;
+  let sum = 0;
+  for (let i = rows.length - n; i < rows.length; i++) sum += (rows[i].add || {})[v] || 0;
+  return sum / n;
+}
+function fattyProduction(rows, vints, win) { return vints.reduce((a, v) => a + fattyAdded(rows, v, win), 0); }
 
 // Hero count-up: animate the displayed total to `target` over 550ms, cubic ease-out; cancel any in-flight.
 function fattyAnimateHero(target) {
@@ -9058,19 +9086,23 @@ function fattyHoverMove(e) {
     const dot = document.getElementById('fattyDot' + i); if (!dot) continue;
     if (g.mode === 'lines' && i < g.vints.length) {
       const v = g.vints[i]; dot.setAttribute('cx', p.xpx.toFixed(1)); dot.setAttribute('cy', p.vy[v].toFixed(1)); dot.setAttribute('fill', fattyColor(v)); dot.setAttribute('opacity', '1');
-    } else if (g.mode === 'stack' && i === 0) {
-      dot.setAttribute('cx', p.xpx.toFixed(1)); dot.setAttribute('cy', p.ty.toFixed(1)); dot.setAttribute('fill', 'var(--text)'); dot.setAttribute('opacity', '1');
+    } else if ((g.mode === 'stack' || g.mode === 'production') && i === 0) {
+      dot.setAttribute('cx', p.xpx.toFixed(1)); dot.setAttribute('cy', (g.mode === 'production' ? p.aty : p.ty).toFixed(1)); dot.setAttribute('fill', 'var(--text)'); dot.setAttribute('opacity', '1');
     } else dot.setAttribute('opacity', '0');
   }
   const tip = document.getElementById('fattyTip');
   if (tip) {
     tip.style.left = Math.min(88, Math.max(12, (p.xpx / 1000) * 100)) + '%';
     tip.style.opacity = '1';
-    document.getElementById('fattyTipDate').textContent = p.isLast ? 'now · ' + p.label : p.label;
+    const prod = g.mode === 'production';
+    const src = prod ? (p.add || {}) : p.vals;
+    document.getElementById('fattyTipDate').textContent = (p.isLast ? 'now · ' + p.label : p.label) + (prod ? ' · added/wk' : '');
     document.getElementById('fattyTipRows').innerHTML = g.vints.map(v =>
-      `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${fattyColor(v)}"></span><span style="color:var(--muted)">${v}</span><span style="margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600">${fattyFmt(p.vals[v] || 0)}</span></div>`).join('');
-    document.getElementById('fattyTipTotal').textContent = fattyFmt(p.total);
-    document.getElementById('fattyTipDelta').textContent = p.prev != null ? ((p.total - p.prev >= 0 ? '+' : '−') + fattyFmt(Math.abs(p.total - p.prev)) + ' vs prior week') : 'first week with data';
+      `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${fattyColor(v)}"></span><span style="color:var(--muted)">${v}</span><span style="margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600">${prod && (src[v] || 0) > 0 ? '+' : ''}${fattyFmt(src[v] || 0)}</span></div>`).join('');
+    document.getElementById('fattyTipTotal').textContent = (prod && p.addTotal > 0 ? '+' : '') + fattyFmt(prod ? p.addTotal : p.total);
+    document.getElementById('fattyTipDelta').textContent = prod
+      ? (p.addTotal > 0 ? 'new joints added per week' : 'nothing added')
+      : (p.prev != null ? ((p.total - p.prev >= 0 ? '+' : '−') + fattyFmt(Math.abs(p.total - p.prev)) + ' vs prior week') : 'first week with data');
   }
 }
 function fattyHoverLeave() {
@@ -9105,9 +9137,15 @@ function renderFatty() {
   }).join('');
   const compareBtn = `<button onclick="toggleFattyCompare()" style="flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid ${cmp ? 'var(--green)' : 'var(--border)'};background:${cmp ? 'rgba(74,222,128,.12)' : 'transparent'};color:${cmp ? 'var(--green)' : 'var(--muted)'};font-size:12px;cursor:pointer;margin-left:4px">⊞ Compare</button>`;
 
-  const burnLabel = burn > 0 ? `selling ${fmt(burn)}/wk (${WIN}-wk sell-through)` : 'no depletion in window';
+  const made = fattyProduction(rows, vints, WIN);
+  const burnLabel = (burn > 0 ? `selling ${fmt(burn)}/wk` : 'no depletion')
+    + ' · ' + (made > 0 ? `adding ${fmt(made)}/wk` : 'nothing added') + ` (${WIN}-wk avg)`;
   const weeksSupply = burn > 0 ? runWeeks.toFixed(1) : '—';
   const runOut = (burn > 0 && runWeeks < 60) ? fattyDateLabel(last.t + runWeeks * 7 * FATTY_DAY) : '—';
+  // In production mode the two footer stats answer "are we making more than we're selling?" instead.
+  const heroStats = mode === 'production'
+    ? [['Added latest week', fmt(last.addTotal || 0)], ['Net vs sell-through', (made - burn >= 0 ? '+' : '−') + fmt(Math.abs(made - burn)) + '/wk']]
+    : [['Weeks of supply', weeksSupply], ['Est. run-out', runOut]];
   const hero = `<div style="background:var(--card);border:1px solid var(--green);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;justify-content:space-between">
       <div>
         <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Total on hand · ${escapeHtml(sel === 'All stores' ? 'all stores' : storeDisplay(sel))}</div>
@@ -9115,13 +9153,12 @@ function renderFatty() {
         <div style="display:flex;align-items:center;gap:10px;margin-top:6px">${wowChip(total - totalPrev)}<span style="font-size:12px;color:var(--muted)">${escapeHtml(burnLabel)}</span></div>
       </div>
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:18px">
-        <div><div style="font-size:11px;color:var(--muted)">Weeks of supply</div><div style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums">${weeksSupply}</div></div>
-        <div><div style="font-size:11px;color:var(--muted)">Est. run-out</div><div style="font-size:20px;font-weight:700">${runOut}</div></div>
+        ${heroStats.map(st => `<div><div style="font-size:11px;color:var(--muted)">${st[0]}</div><div style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums">${st[1]}</div></div>`).join('')}
       </div>
     </div>`;
 
   const tiles = vints.map((v, i) => {
-    const n = last.vals[v] || 0, p = prev.vals[v] || 0, vel = fattyVelocity(rows, v, WIN);
+    const n = last.vals[v] || 0, p = prev.vals[v] || 0, vel = fattyVelocity(rows, v, WIN), addv = fattyAdded(rows, v, WIN);
     const dim = iso && iso !== v;
     const share = total ? (n / total) * 100 : 0;
     const older = vints.slice(0, i).some(o => (last.vals[o] || 0) > 0);
@@ -9131,7 +9168,7 @@ function renderFatty() {
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${fattyColor(v)}"></span>${v} harvest<span style="margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.4px;color:${tagColor}">${tag}</span></div>
         <div style="font-size:26px;font-weight:700;line-height:1.1;margin:6px 0 4px;font-variant-numeric:tabular-nums;transition:color .2s">${fmt(n)}</div>
         <div style="height:3px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${share.toFixed(1)}%;background:${fattyColor(v)};transition:width .4s ease"></div></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span style="color:${(n - p) >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${(n - p) >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(n - p))} wk</span><span>${vel > 0 ? '−' + fmt(vel) + '/wk' : 'flat'}</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span style="color:${(n - p) >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${(n - p) >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(n - p))} wk</span><span title="new joints added / sold per week (${WIN}-wk avg)"><span style="color:${addv > 0 ? 'var(--green)' : 'inherit'}">${addv > 0 ? '+' + fmt(addv) : '0'}</span> / ${vel > 0 ? '−' + fmt(vel) : '0'} wk</span></div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px">${vel > 0 ? 'clears in ~' + (n / vel).toFixed(1) + ' wk' : (n > 0 ? 'no depletion' : 'cleared')}</div>
       </div>`;
   }).join('');
@@ -9140,9 +9177,9 @@ function renderFatty() {
       <div class="fatty-fifo-grid">${tiles}</div>
     </div>`;
 
+  const segBtn = (m, label, title) => `<button onclick="setFattyMode('${m}')" title="${title}" style="font-size:11px;padding:3px 10px;border-radius:999px;cursor:pointer;border:none;background:${mode === m ? 'rgba(74,222,128,.14)' : 'transparent'};color:${mode === m ? 'var(--green)' : 'var(--muted)'}">${label}</button>`;
   const seg = `<div style="display:flex;gap:2px;border:1px solid var(--border);border-radius:999px;padding:2px">
-      <button onclick="setFattyMode('stack')" style="font-size:11px;padding:3px 10px;border-radius:999px;cursor:pointer;border:none;background:${mode === 'stack' ? 'rgba(74,222,128,.14)' : 'transparent'};color:${mode === 'stack' ? 'var(--green)' : 'var(--muted)'}">Stacked</button>
-      <button onclick="setFattyMode('lines')" style="font-size:11px;padding:3px 10px;border-radius:999px;cursor:pointer;border:none;background:${mode === 'lines' ? 'rgba(74,222,128,.14)' : 'transparent'};color:${mode === 'lines' ? 'var(--green)' : 'var(--muted)'}">Lines</button>
+      ${segBtn('stack', 'Stacked', 'Units on hand, vintages stacked')}${segBtn('lines', 'Lines', 'Units on hand, one line per vintage')}${segBtn('production', 'Production', 'New joints added each week, by vintage — the week-over-week rise inside each harvest year')}
     </div>`;
   const rangeBtns = `<div style="display:flex;gap:3px">${[['1m', '1M'], ['3m', '3M'], ['6m', '6M'], ['1y', '1Y'], ['all', 'All']].map(r => `<button class="fatty-range-btn${state.fattyRange === r[0] ? ' on' : ''}" onclick="setFattyRange('${r[0]}')">${r[1]}</button>`).join('')}</div>`;
   const legend = vints.map(v => {
@@ -9152,12 +9189,12 @@ function renderFatty() {
   const tooltip = `<div id="fattyTip" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);pointer-events:none;opacity:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:150px;box-shadow:0 6px 18px rgba(0,0,0,.5);transition:opacity .1s">
       <div id="fattyTipDate" style="font-size:11px;color:var(--muted);margin-bottom:5px"></div>
       <div id="fattyTipRows"></div>
-      <div style="display:flex;gap:10px;font-size:12px;font-weight:700;border-top:1px solid var(--border);margin-top:5px;padding-top:5px"><span>Total</span><span id="fattyTipTotal" style="margin-left:auto;font-variant-numeric:tabular-nums"></span></div>
+      <div style="display:flex;gap:10px;font-size:12px;font-weight:700;border-top:1px solid var(--border);margin-top:5px;padding-top:5px"><span>${mode === 'production' ? 'Added' : 'Total'}</span><span id="fattyTipTotal" style="margin-left:auto;font-variant-numeric:tabular-nums"></span></div>
       <div id="fattyTipDelta" style="font-size:11px;color:var(--muted);margin-top:3px"></div>
     </div>`;
   const chartCard = `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px 10px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">On hand by week</span>${seg}${rangeBtns}</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">${mode === 'production' ? 'New joints added by week' : 'On hand by week'}</span>${seg}${rangeBtns}</div>
         <div style="display:flex;gap:6px;align-items:center">${legend}</div>
       </div>
       <div style="position:relative">${fattyChartSvg(rows, vints, state.fattyRange, mode, iso)}${tooltip}</div>
@@ -9213,7 +9250,8 @@ function fattyChartSvg(rows, vints, range, mode, iso) {
   const domStart = vis[0].t, plotW = W - padL - padR;
   const span = Math.max(FATTY_DAY, nowT - domStart);
   const x = t => padL + plotW * ((t - domStart) / span);
-  const maxY = Math.max(1, ...vis.map(p => p.total)) * 1.12;
+  const isProd = mode === 'production';
+  const maxY = Math.max(1, ...vis.map(p => isProd ? (p.addTotal || 0) : p.total)) * 1.12;
   const y = val => padT + plotH * (1 - val / maxY);
 
   const grid = [0, 0.25, 0.5, 0.75, 1].map(f => {
@@ -9233,6 +9271,21 @@ function fattyChartSvg(rows, vints, range, mode, iso) {
     vis.forEach((_, i) => { cum[i] = top[i]; });
   });
 
+  // Production mode: stacked bars of joints ADDED that week, by vintage. Bars (not an area) because
+  // production is a per-week flow, not a level — an area would imply values between the weeks.
+  const prodW = Math.max(3, Math.min(22, (plotW / Math.max(vis.length, 2)) * 0.62));
+  const prodBars = !isProd ? '' : vis.map(p => {
+    let acc = 0;
+    return vints.map(v => {
+      const val = (p.add || {})[v] || 0;
+      if (val <= 0) return '';
+      const yTop = y(acc + val), yBot = y(acc);
+      acc += val;
+      const dim = iso && iso !== v;
+      return `<rect x="${(x(p.t) - prodW / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${prodW.toFixed(1)}" height="${Math.max(0.5, yBot - yTop).toFixed(1)}" fill="${fattyColor(v)}" fill-opacity="${dim ? 0.14 : 0.85}" style="transition:fill-opacity .25s"/>`;
+    }).join('');
+  }).join('');
+
   const step = Math.ceil(vis.length / 9);
   const xticks = vis.map((p, i) => {
     const isLast = i === vis.length - 1;
@@ -9250,11 +9303,11 @@ function fattyChartSvg(rows, vints, range, mode, iso) {
 
   _fattyGeo = { padL, mode, vints, pts: vis.map((p, i) => {
     const vy = {}; vints.forEach(v => vy[v] = y(p.vals[v] || 0));
-    return { xpx: x(p.t), ty: y(p.total), vy, vals: p.vals, total: p.total, label: fattyDateLabel(p.t), isLast: i === vis.length - 1, prev: i > 0 ? vis[i - 1].total : null };
+    return { xpx: x(p.t), ty: y(p.total), vy, vals: p.vals, total: p.total, add: p.add || {}, addTotal: p.addTotal || 0, aty: y(p.addTotal || 0), label: fattyDateLabel(p.t), isLast: i === vis.length - 1, prev: i > 0 ? vis[i - 1].total : null };
   }) };
 
-  return `<svg viewBox="0 0 1000 320" width="100%" style="max-width:100%;height:auto;display:block" onmousemove="fattyHoverMove(event)" onmouseleave="fattyHoverLeave()" role="img" aria-label="FATTY joints on hand by harvest vintage over time">
-      ${grid}${areas}${lines}${bars}
+  return `<svg viewBox="0 0 1000 320" width="100%" style="max-width:100%;height:auto;display:block" onmousemove="fattyHoverMove(event)" onmouseleave="fattyHoverLeave()" role="img" aria-label="${isProd ? 'New FATTY joints added per week by harvest vintage' : 'FATTY joints on hand by harvest vintage over time'}">
+      ${grid}${areas}${lines}${prodBars}${bars}
       <line x1="52" y1="272" x2="984" y2="272" stroke="var(--border)" stroke-width="1"/>
       <text x="46" y="262" text-anchor="end" font-size="9" fill="var(--muted)">+</text>
       <text x="46" y="292" text-anchor="end" font-size="9" fill="var(--muted)">−</text>
