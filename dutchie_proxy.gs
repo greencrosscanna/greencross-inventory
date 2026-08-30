@@ -4572,7 +4572,12 @@ function purgeOldSnapshots(sheet) {
   const dates = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
   let firstKeep = lastRow + 1;
   for (let i = 0; i < dates.length; i++) {
-    if (String(dates[i][0]) >= cutoff) { firstKeep = i + 2; break; }
+    // _velDateToYMD, not String(). String(a Date) is "Sat Aug 29 2026 ..." and "S" sorts ABOVE
+    // "2", so EVERY row compared >= a YYYY-MM-DD cutoff, firstKeep landed on row 2, the
+    // `firstKeep > 2` guard failed, and this 90-day purge silently deleted NOTHING for its whole
+    // life. Confirmed by execution, not by reading. _velDateToYMD reads in the script timezone with
+    // no service call, which is what the per-row sites in this file already use.
+    if (_velDateToYMD(dates[i][0]) >= cutoff) { firstKeep = i + 2; break; }
   }
   if (firstKeep > 2) {
     sheet.deleteRows(2, firstKeep - 2);
