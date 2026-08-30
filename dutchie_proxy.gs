@@ -3,9 +3,19 @@
 // Execute as: USER_DEPLOYING | Access: ANYONE_ANONYMOUS
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const LIVE_SPREADSHEET_ID         = '1OBNzkBrJtLIlf8xknVlGd6Jb8nlkg4_KG-Gq6BD7HHY';
+// This app is SEVERED from the legacy "2026 GX2 Dashboard" financial workbook (Sky's call,
+// 2026-08-30). Its id used to sit here as LIVE_SPREADSHEET_ID, with SPREADSHEET_ID aliasing it and
+// getDataSpreadsheetId() handing it out as the "live" half of a beta/live switch. Nothing reads
+// that workbook any more, so the id is DELETED rather than left unused: an id in scope is one
+// SpreadsheetApp.openById() away from being a dependency again, and that line reads as harmless.
+// tests/gx2_severance_test.js keeps it gone.
+//
+// The two ids below plus INV_DATA_SS_ID are the only workbooks this script may open. WORKBOOKS is
+// the single place that names them and workbookTarget_() is the only way to ask for one by name.
+//
+// Despite its name BETA_SPREADSHEET_ID is PRODUCTION — Decision Feed, Shared State and the four
+// "Config - *" tabs live there and are read on the request path. It is not scratch space.
 const BETA_SPREADSHEET_ID         = '1expq2qh9uRU51BdBKq_GmYgyHLrRhmryPtWjDJsWdxg';
-const SPREADSHEET_ID              = LIVE_SPREADSHEET_ID;
 const SALES_HISTORY_SPREADSHEET_ID = '18f8iwnnMucXog5fMsLN2VwEoC6kFu3h-b8MDpZlc7ks';
 const SALES_HISTORY_GID            = 1938453538;
 const SNAPSHOT_SHEET_NAME          = 'Inv Snapshot';
@@ -159,9 +169,34 @@ function getDataMode() {
   return (PropertiesService.getScriptProperties().getProperty('GC_DATA_MODE') || 'live').toLowerCase();
 }
 
-function getDataSpreadsheetId() {
-  return getDataMode() === 'beta' ? BETA_SPREADSHEET_ID : LIVE_SPREADSHEET_ID;
+// ?action=datamode. This used to answer {mode, spreadsheetId}, where spreadsheetId was whatever
+// getDataSpreadsheetId() returned — in live mode, the legacy financial workbook. That field named a
+// workbook nothing read, which is a worse failure than omitting it: a diagnostic that reports a
+// dependency the app does not have is how the severance stayed unfinished this long.
+//
+// It is not renamed to some other single id either, because there is no longer a "the" workbook to
+// name. The honest answer is the full set this script can open, resolved live, with a failure
+// reported in place rather than thrown — an unset INV_DATA_SS_ID is exactly what you would be
+// running this route to find out.
+function getDataModeReport() {
+  const workbooks = {};
+  Object.keys(WORKBOOKS).forEach(k => {
+    try { workbooks[k] = { label: WORKBOOKS[k].label, spreadsheetId: WORKBOOKS[k].id() }; }
+    catch (e) { workbooks[k] = { label: WORKBOOKS[k].label, spreadsheetId: null, error: e.message }; }
+  });
+  return { ok: true, mode: getDataMode(), workbooks: workbooks };
 }
+
+// getDataSpreadsheetId() USED TO LIVE HERE, returning BETA_SPREADSHEET_ID in beta mode and the
+// legacy financial workbook otherwise. It was the last thing in this file that could name that
+// workbook. It is deleted, not repointed, for two reasons: the "live" branch had no workbook left
+// to point at, and the beta branch was never how the beta sheets were actually reached — every
+// real reader of Decision Feed, Shared State and the "Config - *" tabs names BETA_SPREADSHEET_ID
+// directly. A one-armed switch is just a misleading name for a constant.
+//
+// getDataMode() above survives untouched: it is the beta/live SWITCH, and it still gates
+// betadecisionfeed, decisionfeed, decisionqueue and the beta bundle. Only the id lookup died.
+// To open a workbook, name it: workbookTarget_('invdata'|'beta'|'saleshistory').id
 
 // The inventory tool's own data sheets (Vel Cache, Inv Snapshot, ProductCatalog,
 // Product SKU Dict, Operational Snapshot, Loading Quotes) live in a DEDICATED spreadsheet so
@@ -173,10 +208,11 @@ function getDataSpreadsheetId() {
 // "2026 GX2 Dashboard" we are retiring, and a silent fallback is how a dependence on it goes
 // invisible again. If the property is missing we fail loudly and name it.
 //
-// As of 2026-08-25 no request-path route reads the financial workbook at all — the last one
-// was getBudget() (?action=budget), removed with getSheetByGid and SHEET_GIDS. What still
-// calls getDataSpreadsheetId() is the BETA-spreadsheet sheets (Decision Feed, Shared State)
-// and the one-time migration/diagnostic routes below.
+// As of 2026-08-30 NOTHING in this script can open the financial workbook. The last request-path
+// reader was getBudget() (?action=budget), removed 2026-08-25 along with getSheetByGid and
+// SHEET_GIDS. What outlived it were the one-time migration routes (migrateinvdata, copyinvsnap,
+// deletemigrated) that used that workbook as their SOURCE — and deletemigrated deleted sheets in
+// it. The migration is complete and activated, so those routes went with the id.
 function getInvDataSpreadsheetId() {
   const id = PropertiesService.getScriptProperties().getProperty('INV_DATA_SS_ID');
   if (!id) {
@@ -185,6 +221,39 @@ function getInvDataSpreadsheetId() {
       '"Green Cross — Inventory Data" spreadsheet id. Refusing to fall back to the financial workbook.');
   }
   return id;
+}
+
+// The COMPLETE set of workbooks this script may open, addressed by name. Deliberately an allowlist
+// and deliberately NOT a free-form id parameter: the diagnostics that use it are reachable by URL,
+// and ?action=sheetsinfo&spreadsheetId=<legacy id> would hand the severed workbook straight back
+// through a route that reads as harmless. Naming the targets makes "which workbooks can this script
+// open" a fact about this file — which is the thing tests/gx2_severance_test.js can then assert.
+//
+// Object.create(null) is not style: this map is indexed by user input, and a plain literal inherits
+// toString/constructor/valueOf, so WORKBOOKS['toString'] would be truthy and the lookup would answer
+// yes to a target nobody defined. Same reasoning as WRITE_ACTIONS below.
+//
+//   invdata      — "Green Cross — Inventory Data": Vel Cache, Inv Snapshot, ProductCatalog,
+//                  Product SKU Dict, Operational Snapshot, Loading Quotes. Ours; trimmable.
+//   beta         — Decision Feed, Shared State, "Config - *". Production despite the name; ours.
+//   saleshistory — owned elsewhere, read-only to us. Reportable, NOT trimmable.
+const WORKBOOKS = Object.assign(Object.create(null), {
+  invdata:      { label: 'Green Cross — Inventory Data', trimmable: true,  id: () => getInvDataSpreadsheetId() },
+  beta:         { label: 'Inventory Beta / Config',      trimmable: true,  id: () => BETA_SPREADSHEET_ID },
+  saleshistory: { label: 'Sales History',                trimmable: false, id: () => SALES_HISTORY_SPREADSHEET_ID },
+});
+
+// Resolves a target name to {key,label,trimmable,id}. Defaults to invdata. Throws on anything not
+// in the allowlist — including a raw spreadsheet id, which is the case this exists to refuse.
+function workbookTarget_(name) {
+  const key = String(name || 'invdata').toLowerCase().trim();
+  const wb = WORKBOOKS[key];
+  if (!wb) {
+    throw new Error('Unknown workbook target "' + key + '". Valid targets: ' +
+      Object.keys(WORKBOOKS).join(', ') + ' (plus "all" where supported). Raw spreadsheet ids are ' +
+      'not accepted — this app opens only the workbooks it owns.');
+  }
+  return { key: key, label: wb.label, trimmable: wb.trimmable, id: wb.id() };
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -279,9 +348,6 @@ function doGet(e) {
     if (params.action === 'skudebug')       return jsonOut(skuDebug(params));
     if (params.action === 'sheetsinfo')     return jsonOut(sheetsInfo(params));
     if (params.action === 'trimempty')      return jsonOut(trimEmptySheetSpace(params));
-    if (params.action === 'migrateinvdata') return jsonOut(migrateInventoryData(params));
-    if (params.action === 'copyinvsnap')    return jsonOut(copyInvSnapshotRecent(params));
-    if (params.action === 'deletemigrated') return jsonOut(deleteMigratedFromFinancial(params));
     if (params.action === 'roomdata')       return jsonOut(buildRoomData(params.store || 'Hillsboro'));
     if (params.action === 'retiredprobe')   return jsonOut(retiredProbe(params));
     if (params.action === 'returnprobe')    return jsonOut(returnProbe(params));
@@ -300,7 +366,7 @@ function doGet(e) {
     if (params.action === 'assortmentconfig') return jsonOut(getSubstitutionConfig_());
     if (params.action === 'storetxhistory') return jsonOut(getStoreTxHistory(params));
     if (params.action === 'schema')         return jsonOut(getSchema());
-    if (params.action === 'datamode')       return jsonOut({ mode: getDataMode(), spreadsheetId: getDataSpreadsheetId() });
+    if (params.action === 'datamode')       return jsonOut(getDataModeReport());
     if (params.action === 'stores')         return jsonOut(getStoresConfig());
     if (params.action === 'betadecisionfeed') return jsonOut(generateBetaDecisionFeed(params));
     if (params.action === 'decisionfeed')   return jsonOut(readBetaDecisionFeed(params));
@@ -813,8 +879,17 @@ const DECISION_FEED_COLS = [
   'imageUrl','lastSeen','notes'
 ];
 
+// spreadsheetId is REQUIRED. It used to fall back to getDataSpreadsheetId() — i.e. to the legacy
+// financial workbook — which meant a future caller could reacquire that dependency by forgetting an
+// argument, and nothing would look wrong at the call site. There is no default workbook now; a
+// missing id is a bug and says so.
 function sheetToObjects_(sheetName, spreadsheetId) {
-  const ss = SpreadsheetApp.openById(spreadsheetId || getDataSpreadsheetId());
+  if (!spreadsheetId) {
+    throw new Error('sheetToObjects_("' + sheetName + '") requires an explicit spreadsheetId — ' +
+      'there is no default workbook. Pass getInvDataSpreadsheetId(), BETA_SPREADSHEET_ID, or ' +
+      'workbookTarget_(name).id.');
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet || sheet.getLastRow() < 2) return [];
   const values = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
@@ -3078,12 +3153,30 @@ function skuDebug(params) {
   return { store, sku, packageCount: packages.length, appTotals: totals, packages };
 }
 
-// Diagnostic: report every sheet's grid size in the data spreadsheet, to find what is
-// consuming the 10,000,000-cell workbook cap. ?action=sheetsinfo
+// Diagnostic: report every sheet's grid size in a workbook, to find what is consuming the
+// 10,000,000-cell workbook cap. ?action=sheetsinfo[&target=invdata|beta|saleshistory|all]
 // A sheet's cell cost is maxRows × maxColumns (the GRID, not the used range) — a sheet
 // with millions of empty rows or hundreds of untrimmed columns is the usual culprit.
+//
+// This used to report the legacy financial workbook, because that is the workbook whose cap the
+// inventory sheets had filled — which blocked velocity sync and snapshot builds. That data moved to
+// its own workbook, so invdata is the default. But a cell cap is a PER-WORKBOOK fact and this script
+// now owns two, so "&target=all" exists and is the honest answer to "are we near a cap anywhere":
+// reporting one workbook while the response implies "the" workbook is how the last cap filled up
+// unnoticed. target=all never throws for one bad workbook — it reports the failure in place, so an
+// unset INV_DATA_SS_ID doesn't hide the beta workbook's numbers.
 function sheetsInfo(params) {
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  if (String(params.target || '').toLowerCase() === 'all') {
+    return { ok: true, target: 'all', workbooks: Object.keys(WORKBOOKS).map(k => {
+      try { return sheetsInfoFor_(workbookTarget_(k)); }
+      catch (e) { return { ok: false, target: k, error: e.message }; }
+    }) };
+  }
+  return sheetsInfoFor_(workbookTarget_(params.target));
+}
+
+function sheetsInfoFor_(target) {
+  const ss = SpreadsheetApp.openById(target.id);
   const sheets = ss.getSheets();
   let totalCells = 0;
   const rows = sheets.map(sh => {
@@ -3099,6 +3192,9 @@ function sheetsInfo(params) {
   });
   rows.sort((a, b) => b.gridCells - a.gridCells);
   return {
+    ok: true,
+    target: target.key,
+    label: target.label,
     spreadsheetId: ss.getId(),
     sheetCount: sheets.length,
     totalGridCells: totalCells,
@@ -3111,9 +3207,20 @@ function sheetsInfo(params) {
 // Reclaim workbook cells by deleting empty trailing rows/columns beyond each sheet's used
 // range (the grid cost is maxRows × maxColumns, not the used range, so untrimmed empty rows
 // waste cells and can fill the 10,000,000-cell cap). Non-destructive: only removes space past
-// getLastRow()/getLastColumn(), keeping a small buffer. ?action=trimempty (optionally &sheet=Name)
+// getLastRow()/getLastColumn(), keeping a small buffer.
+// ?action=trimempty[&target=invdata|beta][&sheet=Name]
+//
+// Targeted the same way as sheetsinfo, and for the same reason — except this one DELETES rows and
+// columns, so it additionally refuses any workbook this app does not own. It previously pointed at
+// the legacy financial workbook, i.e. a destructive route aimed by default at a workbook that was
+// never ours to trim.
 function trimEmptySheetSpace(params) {
-  const ss = SpreadsheetApp.openById(getDataSpreadsheetId());
+  const target = workbookTarget_(params.target);
+  if (!target.trimmable) {
+    return { ok: false, error: 'Workbook "' + target.key + '" (' + target.label + ') is read-only to ' +
+      'this app — refusing to delete rows or columns in a workbook Inventory does not own.' };
+  }
+  const ss = SpreadsheetApp.openById(target.id);
   const only = params.sheet || null;
   const ROW_BUFFER = 2, COL_BUFFER = 1;
   const results = [];
@@ -3135,121 +3242,22 @@ function trimEmptySheetSpace(params) {
       results.push({ sheet: sh.getName(), deletedRows: dRows, deletedCols: dCols, newRows: maxR - dRows, newCols: maxC - dCols });
     }
   }
-  return { ok: true, freedCells, trimmed: results };
+  return { ok: true, target: target.key, spreadsheetId: ss.getId(), freedCells, trimmed: results };
 }
 
-// ─── INVENTORY-DATA SPREADSHEET MIGRATION ─────────────────────────────────────
-// Sheets moved out of the financial workbook into their own dedicated spreadsheet.
-const INV_DATA_MOVE_SHEETS = ['Vel Cache', 'Inv Snapshot', 'ProductCatalog', 'Product SKU Dict', 'Operational Snapshot'];
-
-// Create the dedicated inventory-data spreadsheet (if needed) and copy the sheets over with
-// sheet.copyTo (server-side, handles the 400k+ row sheets without loading them into memory).
-// Idempotent + resumable: skips sheets already copied, so a 6-min timeout mid-run is safe to
-// re-invoke. Pass &sheet=Name to copy just one (use for the biggest sheets). Pass &activate=1
-// to flip getInvDataSpreadsheetId() over to the new spreadsheet once every sheet is present.
-// Does NOT delete anything from the financial workbook — that's deletemigrated, run last.
-function migrateInventoryData(params) {
-  const props = PropertiesService.getScriptProperties();
-  const oldSS = SpreadsheetApp.openById(getDataSpreadsheetId()); // financial workbook = source
-  let newId = props.getProperty('INV_DATA_SS_ID') || props.getProperty('INV_DATA_SS_PENDING');
-  let created = false;
-  let newSS;
-  if (newId) {
-    newSS = SpreadsheetApp.openById(newId);
-  } else {
-    newSS = SpreadsheetApp.create('Green Cross — Inventory Data');
-    newId = newSS.getId();
-    props.setProperty('INV_DATA_SS_PENDING', newId);
-    created = true;
-  }
-  const only = params.sheet || null;
-  const copied = [], skipped = [], errors = [];
-  for (const name of INV_DATA_MOVE_SHEETS) {
-    if (only && name !== only) continue;
-    if (newSS.getSheetByName(name)) { skipped.push(name + ' (already in new SS)'); continue; }
-    const src = oldSS.getSheetByName(name);
-    if (!src) { skipped.push(name + ' (not in financial workbook)'); continue; }
-    try {
-      const dest = src.copyTo(newSS);
-      dest.setName(name);
-      copied.push(name + ' (' + src.getLastRow() + ' rows)');
-    } catch (e) { errors.push(name + ': ' + e.message); }
-  }
-  // Drop the default empty "Sheet1" once real sheets exist.
-  const def = newSS.getSheetByName('Sheet1');
-  if (def && newSS.getSheets().length > 1) { try { newSS.deleteSheet(def); } catch (e) {} }
-
-  // A sheet is "handled" if it's now in the new SS, or it never existed in the old SS.
-  const allPresent = INV_DATA_MOVE_SHEETS.every(n => newSS.getSheetByName(n) || !oldSS.getSheetByName(n));
-  let activated = false;
-  if (params.activate === '1' && allPresent && !errors.length) {
-    props.setProperty('INV_DATA_SS_ID', newId);
-    props.deleteProperty('INV_DATA_SS_PENDING');
-    activated = true;
-  }
-  return {
-    ok: true, created, newSpreadsheetId: newId,
-    newUrl: 'https://docs.google.com/spreadsheets/d/' + newId + '/edit',
-    copied, skipped, errors, allPresent, activated,
-    activeSpreadsheetId: props.getProperty('INV_DATA_SS_ID') || null,
-  };
-}
-
-// Copy only the RECENT tail of 'Inv Snapshot' into the new spreadsheet. The full sheet has
-// grown to 400k+ rows, which (a) copyTo can't load from the maxed-out financial workbook and
-// (b) is the growth we wanted to cap anyway. A range read of the last N rows is far lighter
-// than copyTo, and keeping the recent tail preserves current OOS "last-seen" dates (older
-// products are stale). ?action=copyinvsnap&rows=80000
-function copyInvSnapshotRecent(params) {
-  const props = PropertiesService.getScriptProperties();
-  const keepRows = parseInt(params.rows || '80000', 10);
-  const oldSS = SpreadsheetApp.openById(getDataSpreadsheetId());
-  const src = oldSS.getSheetByName(SNAPSHOT_SHEET_NAME);
-  if (!src) return { ok: false, error: 'Inv Snapshot not in financial workbook' };
-  const newId = props.getProperty('INV_DATA_SS_ID') || props.getProperty('INV_DATA_SS_PENDING');
-  if (!newId) return { ok: false, error: 'Run migrateinvdata first (no target spreadsheet yet).' };
-  const newSS = SpreadsheetApp.openById(newId);
-  if (newSS.getSheetByName(SNAPSHOT_SHEET_NAME)) return { ok: true, note: 'Inv Snapshot already in new SS', skipped: true };
-
-  const lastRow = src.getLastRow(), lastCol = src.getLastColumn();
-  const startRow = Math.max(2, lastRow - keepRows + 1); // keep header + last N data rows
-  const nData = lastRow - startRow + 1;
-  const dest = newSS.insertSheet(SNAPSHOT_SHEET_NAME);
-  // header
-  dest.getRange(1, 1, 1, lastCol).setValues(src.getRange(1, 1, 1, lastCol).getValues());
-  // recent rows in batches (avoids a single oversized read)
-  const BATCH = 20000; let copied = 0, cur = startRow;
-  while (cur <= lastRow) {
-    const n = Math.min(BATCH, lastRow - cur + 1);
-    const vals = src.getRange(cur, 1, n, lastCol).getValues();
-    dest.getRange(dest.getLastRow() + 1, 1, n, lastCol).setValues(vals);
-    cur += n; copied += n;
-  }
-  return { ok: true, srcRows: lastRow, keptRows: copied, droppedOldRows: (startRow - 2), destRows: dest.getLastRow() };
-}
-
-// Final step: after the migration is activated AND verified, delete the moved sheets from the
-// financial workbook to reclaim its cells. Refuses to delete any sheet unless a populated copy
-// exists in the new SS. Requires &confirm=1.
-function deleteMigratedFromFinancial(params) {
-  if (params.confirm !== '1') return { ok: false, error: 'Pass confirm=1 to delete (guard).' };
-  const props = PropertiesService.getScriptProperties();
-  const activeId = props.getProperty('INV_DATA_SS_ID');
-  if (!activeId) return { ok: false, error: 'Migration not activated yet (INV_DATA_SS_ID unset).' };
-  const newSS = SpreadsheetApp.openById(activeId);
-  const oldSS = SpreadsheetApp.openById(getDataSpreadsheetId());
-  const deleted = [], skipped = [];
-  for (const name of INV_DATA_MOVE_SHEETS) {
-    const inOld = oldSS.getSheetByName(name);
-    if (!inOld) { skipped.push(name + ' (not in financial workbook)'); continue; }
-    const inNew = newSS.getSheetByName(name);
-    if (!inNew || inNew.getLastRow() < Math.min(inOld.getLastRow(), 1)) {
-      skipped.push(name + ' (NOT safely present in new SS — refused)'); continue;
-    }
-    try { oldSS.deleteSheet(inOld); deleted.push(name); } catch (e) { skipped.push(name + ': ' + e.message); }
-  }
-  return { ok: true, deleted, skipped };
-}
+// ─── INVENTORY-DATA SPREADSHEET MIGRATION — COMPLETE, ROUTES REMOVED 2026-08-30 ───────────────
+// Vel Cache, Inv Snapshot, ProductCatalog, Product SKU Dict and Operational Snapshot were moved out
+// of the legacy financial workbook into "Green Cross — Inventory Data" (INV_DATA_SS_ID) in August
+// 2026, because they had filled that workbook's 10,000,000-cell cap.
+//
+// The routes that did it — ?action=migrateinvdata, ?action=copyinvsnap and ?action=deletemigrated —
+// are gone. They were one-time and they have run, but that is not why they were removed: all three
+// opened the legacy workbook as their SOURCE, and deletemigrated DELETED sheets inside it. They were
+// the last executable path from this app to that workbook, and they were the most dangerous kind of
+// leftover — a completed migration that still holds write access to the thing it migrated away from.
+//
+// If a future migration is needed, write it then, against workbooks that still exist. Re-adding
+// these will fail tests/gx2_severance_test.js, which is the intended conversation.
 
 function clearProductCatalogCache() {
   const sc = CacheService.getScriptCache();
@@ -5477,8 +5485,10 @@ const WRITE_ACTIONS = Object.assign(Object.create(null), {
   velbackfill: 1, clearerrors: 1, prodcatclear: 1, roomcacheclear: 1,
   warmcaches: 1, warmvelocity: 1, warmbundle: 1, warmdecision: 1,
   schedulewarmcaches: 1, installwarmtrigger: 1, betadecisionfeed: 1,
-  // destructive data moves
-  trimempty: 1, migrateinvdata: 1, copyinvsnap: 1, deletemigrated: 1,
+  // destructive maintenance. migrateinvdata/copyinvsnap/deletemigrated used to sit here; they were
+  // removed with the legacy-workbook severance, so their gate entries went too — a WRITE_ACTIONS key
+  // for a route that no longer exists is a hint to re-add it.
+  trimempty: 1,
 });
 
 // The DECISION — what we do with whatever GX Core said — extracted so the probe below can exercise
