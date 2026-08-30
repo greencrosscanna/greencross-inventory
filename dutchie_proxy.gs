@@ -459,8 +459,15 @@ function _roomDataRequests_(store) {
     // Window w covers [today - (w+1)*30d, today - w*30d]. w=0's end is tomorrow so today is included.
     const endMs   = now - (w * spanMs) + (w === 0 ? 86400000 : 0);
     const startMs = now - ((w + 1) * spanMs);
-    const startD  = new Date(startMs).toISOString().slice(0, 10);
-    const endD    = new Date(endMs).toISOString().slice(0, 10);
+    // These two bounds are UTC ON PURPOSE. Nothing downstream is keyed by them — the windows only
+    // decide how much history to scan, and the result is 'latest toRoom per inventoryId' — but the
+    // endpoint REJECTS a range over 31 days, and each window's start must equal the previous
+    // window's end or the history gets a hole. UTC has no DST, so every span here is exactly 31
+    // days and consecutive windows tile exactly. Read in Pacific, a span straddling the March
+    // transition can measure 32 calendar days → HTTP 400 → empty invRoomMap → every package falls
+    // to the default room. That is the Tawny bug again, one hour a night for a month each spring.
+    const startD  = new Date(startMs).toISOString().slice(0, 10); // @utc-ok exact 31-day span, no DST — see above
+    const endD    = new Date(endMs).toISOString().slice(0, 10);   // @utc-ok exact 31-day span, no DST — see above
     reqs.push({ url: DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + startD + '&endDate=' + endD, headers: hdrs, muteHttpExceptions: true });
   }
   // Register transactions (last 14 days) — used to detect customer returns → quarantine.
@@ -1015,9 +1022,7 @@ function buildOosLastSeenMap_() {
       const dateRaw = row[0], store = String(row[1] || '').trim();
       const name = String(row[2] || '').trim(), sku = String(row[5] || '').trim();
       if (!store || (!name && !sku)) continue;
-      const dateStr = dateRaw instanceof Date
-        ? dateRaw.toISOString().slice(0, 10)
-        : String(dateRaw).slice(0, 10);
+      const dateStr = _velDateToYMD(dateRaw);
       const key = store + '::' + (sku || name);
       if (!lastSeen[key] || dateStr > lastSeen[key]) lastSeen[key] = dateStr;
       if (sku) {
@@ -1077,7 +1082,7 @@ function buildOosLastSeenCostMap_() {
       const name = String(row[2] || '').trim(), sku = String(row[5] || '').trim();
       if (!store || (!name && !sku)) continue;
       const dateRaw = row[0];
-      const dateStr = dateRaw instanceof Date ? dateRaw.toISOString().slice(0, 10) : String(dateRaw).slice(0, 10);
+      const dateStr = _velDateToYMD(dateRaw);
       const qty = Number(row[6] || 0), value = Number(row[7] || 0);
       const cost = qty > 0 ? Math.round((value / qty) * 100) / 100 : 0;
       const price = Number(row[8] || 0);
@@ -1094,8 +1099,8 @@ function buildOosLastSeenCostMap_() {
 // Gross margin % per store over the last `days` (default 28), from Dutchie (GXCore.getSalesDaily).
 // Returns { byStore:{store:gm}, all:gm } with gm in [0,1).
 function computeGmByStore_(days) {
-  const to = new Date().toISOString().slice(0, 10);
-  const from = new Date(Date.now() - (days || 28) * 86400000).toISOString().slice(0, 10);
+  const to = todayPT_();
+  const from = daysAgoPT_(days || 28);
   const acc = {}; let sAll = 0, cAll = 0;
   const bump = (store, s, c) => { const e = acc[store] || (acc[store] = { s: 0, c: 0 }); e.s += s; e.c += c; };
   try { (getSalesDutchie({ from, to }).data || []).forEach(r => { bump(r.store, Number(r.sales || 0), 0); sAll += Number(r.sales || 0); }); }
@@ -1336,9 +1341,9 @@ function readLatestSnapshotInventory_() {
       const lastRow = sheet.getLastRow();
       const tail = Math.min(lastRow - 1, 15000);
       const rows = sheet.getRange(lastRow - tail + 1, 1, tail, 7).getValues(); // 7 cols → includes qty (col 7)
-      rows.forEach(r => { const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10); if (d > latest) latest = d; });
+      rows.forEach(r => { const d = _velDateToYMD(r[0]); if (d > latest) latest = d; });
       rows.forEach(r => {
-        const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10);
+        const d = _velDateToYMD(r[0]);
         if (d !== latest) return;
         const store = String(r[1] || '').trim(); if (!store) return;
         (invByStore[store] || (invByStore[store] = [])).push({ name: String(r[2] || ''), brand: String(r[3] || ''), category: String(r[4] || ''), sku: String(r[5] || ''), qty: Number(r[6] || 0) });
@@ -2023,6 +2028,22 @@ const VEL_WINDOW_DAYS = 180;
 // Sheet columns: date(0) store(1) productId(2) productName(3) brand(4) category(5) sku(6) qty(7)
 const VEL_COLS = ['date','store','productId','productName','brand','category','sku','qty'];
 
+// ─── PACIFIC CALENDAR DAYS ───────────────────────────────────────────────────
+// A calendar day is never derived from UTC. new Date().toISOString().slice(0,10) is UTC no matter
+// what the project timezone is set to, so from 17:00 PT until midnight — seven hours of every day,
+// eight in winter — it returns TOMORROW. Every day these produce is compared against, or written
+// alongside, a Pacific-local day: Dutchie's transactionDateLocalTime, the date column of Inv
+// Snapshot / Vel Cache, GXCore.getSalesDaily. So they must be Pacific too.
+// The timezone is spelled out at each call site rather than held in a shared constant: an
+// undeclared identifier inside a time-based trigger throws a ReferenceError, and a dead trigger
+// looks exactly like nothing being wrong.
+// NOT for per-row loops — Utilities.formatDate is a service round-trip and calling it per row over
+// a 150K-row sheet blows the 6-minute limit. Use _velDateToYMD/_dateToYMDFast_ below, which read in
+// the script timezone (also America/Los_Angeles) with no service call.
+function ymdPT_(d)     { return Utilities.formatDate(d, 'America/Los_Angeles', 'yyyy-MM-dd'); }
+function todayPT_()    { return Utilities.formatDate(new Date(), 'America/Los_Angeles', 'yyyy-MM-dd'); }
+function daysAgoPT_(n) { return Utilities.formatDate(new Date(Date.now() - n * 86400000), 'America/Los_Angeles', 'yyyy-MM-dd'); }
+
 // Convert a Vel Cache date cell to a canonical "YYYY-MM-DD" string.
 // Google Sheets auto-converts "2026-05-20" strings to Date objects when stored,
 // so getValues() returns Date objects, not strings. Using String(dateObj) gives
@@ -2379,8 +2400,9 @@ function syncVelocityCache() {
 function _syncChunk(props, fromDate, toDate, updateProp, productDict) {
   const fromISO = fromDate.toISOString();
   const toISO   = toDate.toISOString();
-  const now     = Date.now();
-  const cutoff180Str = new Date(now - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10); // 180-day retention cutoff
+  // 180-day retention cutoff. Pacific, because every date it is compared against is a LOCAL date
+  // (transactionDateLocalTime below, and _velDateToYMD on the sheet's own rows).
+  const cutoff180Str = daysAgoPT_(VEL_WINDOW_DAYS);
 
   if (!productDict) productDict = buildProductIdDict(); // fallback for single-call sites
 
@@ -2657,7 +2679,7 @@ function velBackfillChunk(params) {
   const props   = PropertiesService.getScriptProperties();
   const now     = new Date();
   const cutoff  = new Date(now.getTime() - VEL_WINDOW_DAYS * 86400000);
-  const fromStr = (params && params.from) || cutoff.toISOString().slice(0, 10);
+  const fromStr = (params && params.from) || ymdPT_(cutoff);
   const fromDate = new Date(fromStr + 'T00:00:00Z');
   if (fromDate > now) return { ok: false, message: 'from date is in the future' };
   props.setProperty('backfillFrom', fromStr);
@@ -2688,12 +2710,15 @@ function _runBackfillTrigger() {
 
   try {
     const result = _syncChunk(props, fromDate, toDate, false, productDict); // don't touch velSyncDate
-    Logger.log('_runBackfillTrigger: synced ' + fromStr + ' → ' + toDate.toISOString().slice(0,10) + ' (' + (result.synced || 0) + ' rows)');
+    // toDate is a UTC-midnight chunk boundary (fromStr + 'T00:00:00Z', plus whole days), so these
+    // three reads round-trip exactly. Formatting them in Pacific would land on the previous day —
+    // nextFrom would advance 6 days per 7-day chunk and the backfill would crawl and re-fetch.
+    Logger.log('_runBackfillTrigger: synced ' + fromStr + ' → ' + toDate.toISOString().slice(0,10) + ' (' + (result.synced || 0) + ' rows)'); // @utc-ok UTC-midnight chunk boundary
     // Update velLastWriteDate so the gap self-heal in syncVelocityCache can see backfill progress.
     // We can't use updateProp=true (that would clobber velSyncDate), so update it explicitly here.
     if (result.synced > 0) {
       const prevLast = props.getProperty('velLastWriteDate') || '';
-      const chunkMax = toDate.toISOString().slice(0, 10);
+      const chunkMax = toDate.toISOString().slice(0, 10); // @utc-ok UTC-midnight chunk boundary, round-trips
       if (chunkMax > prevLast) props.setProperty('velLastWriteDate', chunkMax);
     }
   } catch(e) {
@@ -2705,7 +2730,7 @@ function _runBackfillTrigger() {
     return;
   }
 
-  const nextFrom = toDate.toISOString().slice(0, 10);
+  const nextFrom = toDate.toISOString().slice(0, 10); // @utc-ok re-parsed as fromStr + 'T00:00:00Z' next chunk
   const done = toDate >= now;
   if (done) {
     props.deleteProperty('backfillFrom');
@@ -2817,8 +2842,8 @@ function velProductDiagnostic(params) {
 // ?action=velgapcheck&store=Bend&from=2026-05-04&to=2026-05-18
 function velGapCheck(params) {
   const store   = params.store || 'Bend';
-  const fromStr = params.from  || new Date(Date.now() - 28 * 86400000).toISOString().slice(0, 10);
-  const toStr   = params.to    || new Date().toISOString().slice(0, 10);
+  const fromStr = params.from  || daysAgoPT_(28);
+  const toStr   = params.to    || todayPT_();
 
   const sheet   = getVelSheet();
   const lastRow = sheet.getLastRow();
@@ -2843,7 +2868,7 @@ function velGapCheck(params) {
   const cur = new Date(fromStr + 'T12:00:00Z');
   const end = new Date(toStr   + 'T12:00:00Z');
   while (cur <= end) {
-    const d = cur.toISOString().slice(0, 10);
+    const d = cur.toISOString().slice(0, 10); // @utc-ok cur is anchored at T12:00:00Z and stepped with setUTCDate
     if (datesWithData.has(d)) present.push(d); else gaps.push(d);
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
@@ -2934,7 +2959,7 @@ function roomEndpointProbe(params) {
 
   // 4) Move-transaction endpoint (the code's invRoomMap fallback source). Report count and
   // whether rows carry toRoom/roomId, since an empty/roomless tx feed is why invRoomMap is 0.
-  const date150 = new Date(Date.now() - 150 * 86400000).toISOString().slice(0, 10);
+  const date150 = daysAgoPT_(150);
   const txReqs = [
     ['inventorytransaction_all',        DUTCHIE_BASE + '/inventory/inventorytransaction'],
     ['inventorytransaction_150d',       DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + date150],
@@ -2960,8 +2985,8 @@ function txFullProbe(params) {
   const store = params.store || 'River Rd';
   const days  = parseInt(params.days || '30', 10);
   const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
-  const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const end   = new Date(Date.now() + 86400000).toISOString().slice(0, 10); // tomorrow, inclusive
+  const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10); // @utc-ok 31-day-capped window, as in _roomDataRequests_
+  const end   = new Date(Date.now() + 86400000).toISOString().slice(0, 10); // tomorrow, inclusive. @utc-ok same fixed-span reason
   const variants = [
     ['date_only',      DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + start + '&endDate=' + end],
     ['utc_iso',        DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + encodeURIComponent(new Date(Date.now()-days*86400000).toISOString()) + '&endDate=' + encodeURIComponent(new Date().toISOString())],
@@ -3002,8 +3027,8 @@ function skuDebug(params) {
   const { roomNameType, roomIdType, invRoomMap } = rd;
 
   // Latest Move-tx toRoom per inventoryId for THIS sku (last 30 days, one window)
-  const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const end   = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10); // @utc-ok 31-day-capped window, as in _roomDataRequests_
+  const end   = new Date(Date.now() + 86400000).toISOString().slice(0, 10); // @utc-ok same fixed-span reason
   const txResp = UrlFetchApp.fetch(DUTCHIE_BASE + '/inventory/inventorytransaction?startDate=' + start + '&endDate=' + end, { headers: hdrs, muteHttpExceptions: true });
   const txBySku = {};
   if (txResp.getResponseCode() === 200) {
@@ -3241,7 +3266,7 @@ function velDedup() {
   if (lastRow < 2) return { ok: true, message: 'Sheet empty', removed: 0 };
 
   const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
-  const cutoff = new Date(Date.now() - VEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const cutoff = daysAgoPT_(VEL_WINDOW_DAYS); // Pacific — compared against _velDateToYMD of the sheet's rows
 
   // Walk in reverse so the LAST written row wins (most recent sync data kept).
   const seen    = new Set();
@@ -3536,7 +3561,7 @@ function getSalesHistoryDiagnostics() {
   for (let i = 0; i < dates.length; i++) {
     const d = parseSaleDate(dates[i][0]);
     if (!d) continue;
-    const key = d.toISOString().slice(0, 10);
+    const key = _dateToYMDFast_(d); // Pacific; also per-row, so no Utilities.formatDate here
     dayCounts[key] = (dayCounts[key] || 0) + 1;
     if (d.getTime() < minTs) minTs = d.getTime();
     if (d.getTime() > maxTs) maxTs = d.getTime();
@@ -3562,8 +3587,8 @@ function getSalesHistoryDiagnostics() {
 
   return {
     totalRows:    lastRow - 1,
-    firstDate:    minTs === Infinity ? null : new Date(minTs).toISOString().slice(0, 10),
-    lastDate:     maxTs === -Infinity ? null : new Date(maxTs).toISOString().slice(0, 10),
+    firstDate:    minTs === Infinity ? null : ymdPT_(new Date(minTs)),
+    lastDate:     maxTs === -Infinity ? null : ymdPT_(new Date(maxTs)),
     uniqueDays:   sortedDays.length,
     gaps,
     monthlyCounts,
@@ -3660,8 +3685,8 @@ function txProbe(params) {
   // Test inventoryId-specific filtering (what Dutchie's Package History UI uses)
   // Also test startDate filter which we confirmed works.
   const invId = params.inventoryId || '';
-  const date90  = new Date(Date.now() - 90  * 86400000).toISOString().slice(0, 10);
-  const date150 = new Date(Date.now() - 150 * 86400000).toISOString().slice(0, 10);
+  const date90  = daysAgoPT_(90);
+  const date150 = daysAgoPT_(150);
   const variants = [
     '/inventory/inventorytransaction',
     '/inventory/inventorytransaction?startDate=' + date90,
@@ -3967,7 +3992,7 @@ function isoWeekStart_(dateStr) {
   const d = new Date(dateStr + 'T00:00:00Z');
   const dow = (d.getUTCDay() + 6) % 7; // 0 = Monday
   d.setUTCDate(d.getUTCDate() - dow);
-  return d.toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10); // @utc-ok d was parsed as T00:00:00Z and walked with setUTCDate
 }
 
 // Weekly on-hand history for FATTY by store × vintage, from the Inv Snapshot. For each (store, week) we take
@@ -3990,7 +4015,7 @@ function buildFattyWeekly_(skuVintage) {
       if (!v) continue;
       const store = String(row[1] || '').trim();
       const dateRaw = row[0];
-      const dateStr = dateRaw instanceof Date ? dateRaw.toISOString().slice(0, 10) : String(dateRaw).slice(0, 10);
+      const dateStr = _velDateToYMD(dateRaw);
       const week = isoWeekStart_(dateStr);
       const k = store + '|' + week + '|' + dateStr;
       (byKeyDate[k] || (byKeyDate[k] = {}))[v] = (byKeyDate[k][v] || 0) + (Number(row[6] || 0) || 0);
@@ -4063,7 +4088,7 @@ function invTxLookup(params) {
   const invId   = params.inventoryId || params.invId || '1591266';
   const hdrs    = { Authorization: dutchieAuth(store), Accept: 'application/json' };
 
-  const date30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const date30 = daysAgoPT_(30);
   const [byInvId, allTx, recent30] = UrlFetchApp.fetchAll([
     { url: DUTCHIE_BASE + '/inventory/inventorytransaction?inventoryId=' + invId,      headers: hdrs, muteHttpExceptions: true },
     { url: DUTCHIE_BASE + '/inventory/inventorytransaction',                            headers: hdrs, muteHttpExceptions: true },
@@ -4133,7 +4158,7 @@ function invRoomsProbe(params) {
 
 function snapshotProbe(params) {
   const store = params.store || 'River Rd';
-  const date  = params.date  || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const date  = params.date  || daysAgoPT_(30);
   const hdrs  = { Authorization: dutchieAuth(store), Accept: 'application/json' };
   const url   = DUTCHIE_BASE + '/inventory/snapshot?fromDate=' + date;
   const resp  = UrlFetchApp.fetch(url, { headers: hdrs, muteHttpExceptions: true });
@@ -4337,9 +4362,7 @@ function getOOSMap() {
     const dateRaw = row[0], store = String(row[1] || '').trim();
     const name = String(row[2] || '').trim(), sku = String(row[5] || '').trim();
     if (!store || (!name && !sku)) continue;
-    const dateStr = dateRaw instanceof Date
-      ? dateRaw.toISOString().slice(0, 10)
-      : String(dateRaw).slice(0, 10);
+    const dateStr = _velDateToYMD(dateRaw);
     const key = store + '::' + (sku || name);
     if (!lastSeen[key] || dateStr > lastSeen[key]) lastSeen[key] = dateStr;
   }
@@ -4445,7 +4468,7 @@ function snapshotInventory() {
     ensureSnapshotTrigger_(); // keep our own nightly trigger alive on every healthy run
     const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
     const sheet = getOrCreateSnapshotSheet(ss);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayPT_();
     status.date = today;
 
     // Idempotency: skip stores already captured today, so a second run (trigger + manual) can't dup rows.
@@ -4455,7 +4478,7 @@ function snapshotInventory() {
       const tail = Math.min(lastRow - 1, 15000); // recent rows only — today's rows are always near the end
       const recent = sheet.getRange(lastRow - tail + 1, 1, tail, 2).getValues();
       for (const r of recent) {
-        const d = r[0] instanceof Date ? r[0].toISOString().slice(0, 10) : String(r[0]).slice(0, 10);
+        const d = _velDateToYMD(r[0]);
         if (d === today) doneToday[String(r[1] || '').trim()] = true;
       }
     }
@@ -4542,7 +4565,7 @@ function getOrCreateSnapshotSheet(ss) {
 }
 
 function purgeOldSnapshots(sheet) {
-  const cutoff = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  const cutoff = daysAgoPT_(90);
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
 
@@ -4786,7 +4809,7 @@ function getOperationalBundle(params) {
   // we don't pile up triggers if many users hit this simultaneously.
   const props = PropertiesService.getScriptProperties();
   const throttleKey = 'gc_snapshot_autoschedule_day';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayPT_();
   if (props.getProperty(throttleKey) !== today) {
     props.setProperty(throttleKey, today);
     try { scheduleOperationalWarmRun(); } catch (e) { Logger.log('Auto-schedule snapshot failed: ' + e.message); }
