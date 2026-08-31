@@ -441,14 +441,69 @@ function dutchieAuth(store) {
   return 'Basic ' + Utilities.base64Encode(key + ':');
 }
 
+/* ─── KEYS COME FROM GX CORE. THIS APP STORES NONE. ──────────────────────────────────────────────
+ *
+ * Until 2026-08-31 this read a local DUTCHIE_STORE_KEYS_JSON, one of five copies across the suite.
+ * Rotating the six POS keys meant five paste jobs in two different spellings, and the May leak was
+ * a copy nobody remembered. GX Core holds them alone now.
+ *
+ * WHY THIS APP GETS THE KEY rather than calling GX Core's ?action=dutchie_inventory the way Price
+ * Cards does: there are 17 UrlFetchApp.fetchAll batches and 22 direct calls below, against Dutchie
+ * endpoints GX Core does not proxy at all (/room/rooms, /inventory?roomId=, inventorytransaction).
+ * Proxying would mean inventing a dozen routes and still moving every batch twice through one web
+ * app. Same call the Leaderboard kiosk made, for the same reason.
+ *
+ * FAILS CLOSED, no local fallback. A fallback property is the fifth copy this deletes — it would
+ * sit unread and unrotated until the day something read it, then serve a dead key.
+ * ------------------------------------------------------------------------------------------------ */
+const GX_KEYS_CACHE_KEY_ = 'gx_dutchie_keys_byname';
+const GX_KEYS_CACHE_S_   = 600;   // 10 min; a rotation lands within one window
+let _gxKeyMemo_ = null;           // per-execution
+
 function getDutchieStoreKeys_() {
-  const raw = PropertiesService.getScriptProperties().getProperty(DUTCHIE_STORE_KEYS_PROP);
-  if (!raw) throw new Error('Dutchie store keys are not configured.');
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    throw new Error('Dutchie store keys are invalid JSON.');
+  if (_gxKeyMemo_) return _gxKeyMemo_;
+
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get(GX_KEYS_CACHE_KEY_);
+  if (hit) { try { return (_gxKeyMemo_ = JSON.parse(hit)); } catch (e) {} }
+
+  // NOT the deploy secret. GX Core refuses it on this route deliberately — it is held by five
+  // spokes and opens dozens of routes, and this is the one route that returns credentials.
+  const secret = PropertiesService.getScriptProperties().getProperty('GX_CONNECTOR_SECRET');
+  if (!secret) throw new Error('GX_CONNECTOR_SECRET is not set on this script — cannot reach GX Core for Dutchie keys');
+
+  const url = GX_CORE_EXEC_URL + '?action=dutchie_keys&connector_secret=' + encodeURIComponent(secret);
+  let byStoreId = null, lastErr = '';
+  for (let i = 0; i < 5; i++) {
+    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    let data = null;
+    try { data = JSON.parse(resp.getContentText()); } catch (e) { lastErr = 'unparseable body'; }
+    if (data && data.ok === true && data.keys && Object.keys(data.keys).length) { byStoreId = data.keys; break; }
+    if (data && data.ok === false) throw new Error('GX Core dutchie_keys: ' + data.error);
+    lastErr = lastErr || 'no keys in response';
+    Utilities.sleep(400);   // the /exec second hop 404s on ~6% of rapid calls
   }
+  if (!byStoreId) throw new Error('GX Core dutchie_keys unreachable after 5 tries — ' + lastErr);
+
+  /* GX Core answers in store_id, which is the suite's one vocabulary and the reason the transposed
+     Bend/Hillsboro labels cannot come back. This app is keyed on the Dutchie NAME throughout — every
+     `store` parameter in the 4,000 lines below is one — so the translation happens HERE, at the one
+     door, rather than renaming a vocabulary that appears everywhere. GXCore.getStores() is a library
+     call reading a spreadsheet by id, so unlike ScriptProperties it works fine from a spoke. */
+  const out = {};
+  try {
+    (GXCore.getStores() || []).forEach(function (s) {
+      const dn = String(s.dutchie_name || '').trim();
+      const id = String(s.store_id || '').trim().toLowerCase();
+      if (dn && byStoreId[id]) out[dn] = byStoreId[id];
+    });
+  } catch (e) {
+    throw new Error('GX Core store registry unreachable, cannot map keys to Dutchie names: ' + ((e && e.message) || e));
+  }
+  if (!Object.keys(out).length) throw new Error('No Dutchie key resolved for any store after mapping store_id to name');
+
+  cache.put(GX_KEYS_CACHE_KEY_, JSON.stringify(out), GX_KEYS_CACHE_S_);
+  return (_gxKeyMemo_ = out);
 }
 
 function isKnownStore(store) {
