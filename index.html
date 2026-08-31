@@ -1421,7 +1421,7 @@
           kiosk downloaded a dev-only script it can never use.
        2. A RELATIVE src cannot resolve on a GAS-served page -- HtmlService sandboxes the document to a
           different origin -- so on that path the guard was silently ABSENT rather than inert. Nothing
-          signalled it, which is worse than the 404.
+          signaled it, which is worse than the 404.
 
      Loading it only on localhost fixes both: production never makes the request at all, and the URL is
      absolute so it resolves from any origin, GAS included. Nothing to commit per repo, which also
@@ -1491,10 +1491,10 @@
 <div id="velTooltip"></div>
 <!-- Off-screen decode canvas — kept outside .app so CSS zoom doesn't affect canvas dimensions -->
 <div id="scannerDecodeEl" style="position:fixed;left:-9999px;top:-9999px;width:300px;height:300px;overflow:hidden;"></div>
-<!-- The nav sits OUTSIDE .app deliberately. .app is a centred content wrapper
+<!-- The nav sits OUTSIDE .app deliberately. .app is a centered content wrapper
      (max-width:1400px; margin:0 auto), so a header rendered inside it stops short of the
      window edges on any display wider than 1400px while the bar's own border ends with it.
-     Full-bleed chrome over centred content is the suite pattern -- Leaderboard's nav was
+     Full-bleed chrome over centered content is the suite pattern -- Leaderboard's nav was
      moved out of its .app-page wrapper for exactly this reason. The header keeps its own
      padding (header{padding:0 20px}) and stays position:sticky. -->
 <!-- .gx-topnav supplies the shared surface, border and typography. .header-row stays as the inner
@@ -7913,7 +7913,7 @@ if (typeof GXMaintenance !== 'undefined') {
 (function startChrome(){
   function go(){
     if (window.GXTopNav) GXTopNav.startClock();
-    if (window.GXStores) GXStores.load(GXCORE_EXEC_URL).catch(function(){ /* colours are a nicety */ });
+    if (window.GXStores) GXStores.load(GXCORE_EXEC_URL).catch(function(){ /* colors are a nicety */ });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
 })();

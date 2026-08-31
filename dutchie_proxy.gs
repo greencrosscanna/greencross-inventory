@@ -1542,7 +1542,7 @@ function buildDecisionFeedRows(targetStores) {
   const betaStores = betaStoreKeys_();
   const shared = getSharedState({ beta: '1' });
   const killed = shared.killed || {};
-  // getSharedState normalises `flagged` to an OBJECT ({key:{ts,by}}), converting the legacy array
+  // getSharedState normalizes `flagged` to an OBJECT ({key:{ts,by}}), converting the legacy array
   // form on read. This consumer still assumed the array, and `new Set(obj)` throws
   // "object is not iterable" — which killed the nightly decision-feed build every morning at
   // 09:48 for weeks, silently (warmDecisionFeedOnly catches and logs, so the snapshot still
@@ -2859,7 +2859,7 @@ function velProductDiagnostic(params) {
   }
   if (!matches.length) return { found: false, searchId, searchName, totalRows: filterData.length };
 
-  // Summarise by store: earliest date, latest date, total qty, row count
+  // Summarize by store: earliest date, latest date, total qty, row count
   const byStore = {};
   for (const r of matches) {
     const store = String(r[1]);
@@ -5498,7 +5498,7 @@ function writeAuthDecision_(res) {
   if (!res || res.ok !== true) {
     return { ok: false, error: (res && res.error) || 'Write blocked: access revoked or session no longer valid', via: 'gxcore' };
   }
-  // canEdit is honoured only when GX Core states it OUTRIGHT. A missing field means Core expressed
+  // canEdit is honored only when GX Core states it OUTRIGHT. A missing field means Core expressed
   // no opinion, not that the answer is no. Treating undefined as false would lock out every user at
   // once the first time Core stopped populating it, and that outage would look exactly like a bug in
   // this deploy. The live grant re-check is the guarantee; this is the refinement on top.
