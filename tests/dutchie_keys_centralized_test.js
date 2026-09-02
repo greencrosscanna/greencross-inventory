@@ -6,7 +6,7 @@
  * leak survived a cleanup pass precisely because a copy nobody remembered was left behind. GX Core
  * is now the only holder; this app asks for them over ?action=dutchie_keys.
  *
- * Modelled on gx2_severance_test.js, and for the same reason: this is an INVARIANT, not a one-time
+ * Modeled on gx2_severance_test.js, and for the same reason: this is an INVARIANT, not a one-time
  * edit, and it is unusually easy to undo by accident. Reading a script property is a one-liner, the
  * property still exists in the live project, and a future session debugging a Core outage will be
  * sorely tempted to "just add a fallback". A fallback IS the fifth copy — unread and unrotated

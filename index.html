@@ -4332,7 +4332,7 @@ function enrichProduct(p, storeName, velMap) {
   //  1. Had sales history (appeared in 180d cache) but zero sales in 90 days → truly gone cold
   //  2. High DOH (3+ months of stock) with negligible velocity on BOTH 30d and 90d windows
   //     → stagnant regardless of history
-  // Explicitly never penalise products with no sales history yet (new/unproven items).
+  // Explicitly never penalize products with no sales history yet (new/unproven items).
   const isDead = p.qty > 0 && !isNew && !isBackstock && (
     (v90 === 0 && vel.hasSalesHistory) ||
     (doh !== null && doh > 90 && v30 < 0.05 && v90 < 0.1)

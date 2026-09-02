@@ -5599,7 +5599,7 @@ function writeAuthProbe_() {
     ok: true, pinned: null, hasVerifySession: false,
     refusesGarbage: null,     // real library + garbage token  -> must refuse
     inverseHolds: null,       // a verifier that ACCEPTS       -> must NOT refuse (the probe can report failure)
-    honoursReadOnly: null,    // canEdit:false stated outright  -> must refuse
+    honorsReadOnly: null,    // canEdit:false stated outright  -> must refuse
     failsClosedOnError: null, // verifier throws                -> must refuse
     protoSafe: null,          // WRITE_ACTIONS must not inherit from Object.prototype
     gatedActions: Object.keys(WRITE_ACTIONS).length,
@@ -5613,12 +5613,12 @@ function writeAuthProbe_() {
       out.refusesGarbage = !verifyWrite_(function (t, a) { return GXCore.verifySession(t, a); }, BOGUS).ok;
     }
     out.inverseHolds       =  verifyWrite_(function () { return { ok: true, user: 'probe', role: 'manager', canEdit: true }; }, BOGUS).ok === true;
-    out.honoursReadOnly    = !verifyWrite_(function () { return { ok: true, user: 'probe', role: 'viewer', canEdit: false }; }, BOGUS).ok;
+    out.honorsReadOnly    = !verifyWrite_(function () { return { ok: true, user: 'probe', role: 'viewer', canEdit: false }; }, BOGUS).ok;
     out.failsClosedOnError = !verifyWrite_(function () { throw new Error('simulated Core outage'); }, BOGUS).ok;
     out.protoSafe          = (WRITE_ACTIONS['toString'] === undefined && WRITE_ACTIONS['constructor'] === undefined);
 
     out.ok = (out.hasVerifySession && out.refusesGarbage === true && out.inverseHolds === true &&
-              out.honoursReadOnly === true && out.failsClosedOnError === true && out.protoSafe === true);
+              out.honorsReadOnly === true && out.failsClosedOnError === true && out.protoSafe === true);
   } catch (e) { out.ok = false; out.error = e.message; }
   return out;
 }

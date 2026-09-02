@@ -5,7 +5,7 @@
  * (INV_DATA_SS_ID); Decision Feed, Shared State and the "Config - *" tabs live in
  * BETA_SPREADSHEET_ID, which is production despite its name.
  *
- * Modelled on greencross-sales/tests/sheet_severance_test.js, and for the same reason: a severance
+ * Modeled on greencross-sales/tests/sheet_severance_test.js, and for the same reason: a severance
  * is an invariant, not a one-time edit, and it is unusually easy to undo by accident because
  * reaching for a spreadsheet is a one-liner and the workbook still exists. So this asserts the
  * ABSENCE — no workbook id, no constant holding it, no function handing it out, and no path that
