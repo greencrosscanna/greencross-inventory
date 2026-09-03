@@ -16,11 +16,23 @@ and forwards bug reports to it).
 | version | the **`APP_VERSION = 'vN.NN'` constant** in `index.html` — no `?v=` cache-buster here (there's no external `.js` to hang one on); `deploy.sh` falls back to reading this constant |
 | run | `python3 serve.py` → <http://localhost:3001> (`--lan` to bind 0.0.0.0 for a kiosk/phone) |
 | ship | commit → push (Pages) → `./deploy.sh` records the release to `version_history` |
-| tests | no automated suite in this repo — verify against the live app |
+| tests | `tests/*_test.js` — **6 suites**, run by the pre-push hook via `gx-preflight.sh`; a failure blocks the push. Run them yourself with `ls tests/*_test.js \| xargs -n1 node`. Still verify against the live app — see below |
 
 The dev server talks to the **live** backend; `gx-dev.js` paints a banner saying so and **blocks writes
 until you arm them**. `gx-preflight.sh` is installed as a **pre-push hook** and refuses to ship dev
 leftovers — fixtures on, writes armed, localhost URLs, or anything tagged `@devonly`.
+
+*Corrected 2026-09-03: the tests row said "no automated suite in this repo" while six suites were
+already running behind the pre-push hook. A doc that tells a session there is nothing to run invites
+skipping a gate that works — the same correction Sales made to its own CLAUDE.md on 2026-08-25, for
+the same reason.*
+
+**A green suite is not a verified app here, and today proved it twice.** Every suite in this repo
+reads the source as TEXT — they assert that a call site is bounded, that a helper exists, that a
+pattern is absent. None of them runs the page. On 2026-09-03 the Sales session shipped a fix with a
+green suite that was aimed at the wrong function, and the same day this app's own live screen sat on
+"Loading inventory…" for over a minute while every test passed. **Open the app signed in before
+calling anything done** — `python3 serve.py`, or the deployed page with a `?cb=` cache-buster.
 
 **Sub-apps:** Price Cards and SPIFF embed here as tabs, and their bug reports bucket to **this** app
 (`app=inventory`, `tab=pricecards` / `tab=spiff`) rather than to their own streams.

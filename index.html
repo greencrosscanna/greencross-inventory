@@ -2420,16 +2420,36 @@ function isUnconfigured() {
   return PROXY_URL === 'YOUR_APPS_SCRIPT_URL_HERE' || !PROXY_URL;
 }
 
-// ── Date helpers ─────────────────────────────────────────
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+/* ── Date helpers — A CALENDAR DAY IS LOS ANGELES, NOT UTC ────────────────────────────────────
+ *
+ * All three of these used to end in `.toISOString().slice(0, 10)`, which is UTC no matter what the
+ * browser's timezone is. From 17:00 PT to midnight — seven hours of every day, eight in winter —
+ * that returns TOMORROW. `todayStr()` is used for the "as of" date on exports and for the two
+ * order/transfer CSV builders, so from 5pm onward every one of those was stamped with the wrong
+ * day; `daysAgoStr()` and `monthStartStr()` are window edges, and a window edge a day out quietly
+ * includes or excludes real sales.
+ *
+ * Nothing errored and nothing looked broken. That is the hazard with this whole class: it does not
+ * announce itself, it just hands someone a slightly wrong number in the evening.
+ *
+ * Derived in America/Los_Angeles rather than from the browser's own zone, deliberately. A laptop
+ * left on UTC, or taken out of state, must not change what "today" means to a company that trades
+ * in Oregon. en-CA is used because it formats as YYYY-MM-DD.
+ *
+ * daysAgoStr and monthStartStr do their arithmetic on the LA date, not on the local clock — take a
+ * calendar day first, then step it — so neither can cross a boundary the other side of midnight UTC.
+ * Pinned by tests/date_convention_test.js. */
+const _LA_YMD = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit'
+});
+function todayStr() { return _LA_YMD.format(new Date()); }
 function daysAgoStr(n) {
-  const d = new Date(); d.setDate(d.getDate() - n);
+  const p = todayStr().split('-').map(Number);
+  const d = new Date(Date.UTC(p[0], p[1] - 1, p[2]));
+  d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
 }
-function monthStartStr() {
-  const d = new Date(); d.setDate(1);
-  return d.toISOString().slice(0, 10);
-}
+function monthStartStr() { return todayStr().slice(0, 8) + '01'; }
 
 // ── Store filter & toggle logic ──────────────────────────
 function filterByStore(rows, storeKey = 'store') {
@@ -4990,7 +5010,7 @@ function exportRetireList() {
   const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = 'retire-in-dutchie-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.download = 'retire-in-dutchie-' + todayStr() + '.csv';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -7961,7 +7981,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.032';
+const APP_VERSION = 'v3.033';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -9679,7 +9699,7 @@ function exportOrdersToExcel() {
     byVendor.get(v).push(item);
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayStr();
 
   for (const [vendor, items] of [...byVendor.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const rows = [
@@ -10066,7 +10086,7 @@ function exportTransfersToExcel() {
     byDonor.get(item.fromStore).push(item);
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayStr();
 
   for (const [donor, items] of [...byDonor.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const rows = [
@@ -10125,7 +10145,7 @@ function exportCSV() {
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `greencross-inventory-${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `greencross-inventory-${todayStr()}.csv`;
   a.click();
 }
 
