@@ -17,7 +17,22 @@ clasp.sh
 #
 # Armed by the file LANDING, not by any change to this app, so it would have stopped the next deploy
 # whatever that deploy carried, and the error would have pointed at a file nobody had touched.
-# .claspignore is deliberately not a synced file, so every spoke that has run ./gx-sync.sh since
-# needs its own copy of this rule — this app and sales are done; crew, performance, pricecards and
-# spiff are not.
+#
+# THIS RULE IS NEEDED HERE AND IN SALES, AND NOWHERE ELSE. An earlier version of this comment said
+# every spoke that syncs needs its own copy. That was wrong, twice over, and both mistakes were the
+# same shape — testing for one spelling of a thing rather than for the mechanism:
+#   · spiff, crew and pricecards set rootDir to "apps-script", so a ROOT-level serve.js is never in
+#     the push at all. I first reported spiff as armed by assuming rootDir is always ".".
+#   · performance uses an ALLOWLIST .claspignore ("**" then !index.html, !goals.gs …), which
+#     excludes serve.js without ever naming it. A "does .claspignore mention serve.js" check calls
+#     that armed when it is structurally immune.
+# Measured against all six repos with serve.js forced present: every one is safe. inventory and
+# sales are the only two that needed a named rule, because they are the only two that combine a
+# repo-root rootDir with a DENYLIST .claspignore.
+#
+# The real category is narrower than "JS by extension" and worth stating: clasp pushes .js/.gs/.ts/
+# .html/.json and ignores everything else, and serve.js is the first root-level .js file gx-sync has
+# ever placed. deploy.sh, gx-preflight.sh and gxengine.sh are .sh; serve.py is .py. Months of clean
+# syncs were extension, not vigilance. gx-theme's gx-sync.sh now warns at the moment such a file
+# lands (0a53356), which is the durable fix; this rule is the local one.
 serve.js
