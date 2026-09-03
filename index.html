@@ -2256,6 +2256,80 @@ function addAuthParams(params = {}) {
 function proxyUrl(params = {}) {
   return PROXY_URL + '?' + new URLSearchParams(addAuthParams(params)).toString();
 }
+
+/* OUR OWN ENGINE GETS THE SAME RETRY GX CORE TRAFFIC ALREADY HAS.
+ *
+ * gx-client.js was written for the Apps Script second hop: /exec 302s to
+ * script.googleusercontent.com, and that hop sometimes answers with Google's HTML page —
+ * a cheerful 200 whose BODY is the only tell — instead of running the script. Every GX Core
+ * call in this file has been routed through it for months. Calls to THIS app's own engine
+ * were not: they were bare fetches, and they hit the identical hop.
+ *
+ * That was never a considered decision, just an assumption that the flake was a GX Core
+ * problem. It is a transport problem, and it is the reason a failed sign-in reaches Sky as
+ * "takes 5-10 seconds to log in" rather than as an error.
+ *
+ * GXClient is generic over the base URL — nothing in it is GX Core specific, and its shared
+ * callback nonce exists precisely because an app may hold two clients at once. So this is a
+ * second client, not a second implementation. Price Cards already does exactly this
+ * (engineGet in generator.js), including the fallback below.
+ *
+ * DELIBERATELY GENTLER THAN THE GX CORE LADDER. Measured 2026-09-03: this app's engine
+ * answers clean and steady at rest and only bounces under rapid back-to-back calls, while
+ * GX Core in the same windows was averaging an 18s wait against ~1.3s of actual execution.
+ * So: three attempts, short backoff, and NO patient 45s final attempt. That attempt exists
+ * because GX Core genuinely takes tens of seconds during a bad spell; an engine that has not
+ * answered in a few seconds has bounced, not stalled, and waiting 45s on it buys nothing but
+ * a longer stare at a spinner.
+ *
+ * getJSON RETRIES TRANSPORT FAILURES ONLY — a parsed {error:…} body is returned, never
+ * re-sent. That matters more than it looks: a bounce is a full RE-EXECUTION on the server,
+ * so retrying a slow-but-working endpoint multiplies real work at the worst possible moment.
+ * Writes must not use this path; see upcMapSave. */
+const _ENGINE = (typeof GXClient === 'function')
+  ? GXClient(PROXY_URL, { retries: 2, backoffMs: 400 })
+  : null;
+
+/* THE CEILING IS NOT OPTIONAL, AND IT IS THE PART THAT ALMOST GOT MISSED.
+ *
+ * gx-client's getJSON has no per-attempt timeout and no AbortController — its TIMEOUT and
+ * LAST_TIMEOUT belong to jsonp(), not to it. So retrying through it does not merely fail to
+ * help against a hung request, it MULTIPLIES it: one unbounded fetch becomes three in series.
+ *
+ * That is the worst failure this app has, not a hypothetical. The sales session measured it
+ * in Sky's browser on 2026-09-03 against a socket that accepts and never answers: a bare
+ * fetch had still not settled after 7.5 seconds. There is no error, no failed state and
+ * nothing to retry — the row just shimmers forever, which is exactly how "Portland is
+ * stalling" was reported. Adding retries without a ceiling would have made that three times
+ * longer while looking like a robustness improvement.
+ *
+ * So the whole ladder is bounded, not each attempt. A per-attempt abort is the better fix and
+ * it belongs in gx-client.js where every app gets it; that has been raised with core-admin,
+ * who own that file. This ceiling is the honest local version until it lands. */
+/* 45s, and the number was MEASURED, not chosen. The first cut used 20s on the reasoning that a
+ * healthy call takes 2-5s. Verified in a browser against the live engine on 2026-09-03: a plain
+ * request to `loadingquotes` took 43.0 SECONDS and then returned perfectly valid JSON. A 20s
+ * ceiling turns that into a failure — it converts slow-but-working into broken, which is a
+ * regression dressed as a safety fix.
+ *
+ * The bug being fixed is the request that NEVER returns, not the one that is slow. So the ceiling
+ * sits above a legitimately slow answer under today's conditions and below infinity. If GX Core's
+ * latency is brought back under control this should come down; leaving it at 45s forever means a
+ * genuinely hung call holds a spinner for 45 seconds. */
+const ENGINE_CEILING_MS = 45000;
+
+async function engineGet(params = {}, ceilingMs = ENGINE_CEILING_MS) {
+  const p      = addAuthParams(params);
+  const action = p.action || '';
+  delete p.action;                       // getJSON takes the action separately
+  if (_ENGINE) return withTimeout(_ENGINE.getJSON(action, p), ceilingMs, 'Engine request');
+
+  /* gx-client.js is a remote <script>. If it failed to load, one plain attempt still beats
+     nothing — this path is the OLD behavior, so it is a degradation, never an upgrade. */
+  const res = await withTimeout(fetch(proxyUrl(params)), ceilingMs, 'Engine request');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
 function withTimeout(promise, ms, label = 'Request') {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -2268,9 +2342,7 @@ async function proxyFetch(params, cacheKey = null, ttlMs = 0) {
     const cached = cacheGet(cacheKey);
     if (cached) return cached;
   }
-  const res = await fetch(proxyUrl(params));
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const json = await res.json();
+  const json = await engineGet(params);
   if (json && (json.error === 'Auth required' || json.error === 'Session expired' || json.error === 'Invalid session')) {
     try { localStorage.removeItem(LS.AUTH); } catch {}
     location.reload();
@@ -4007,15 +4079,13 @@ function init() {
   revealSpiffTab();
 
   // Pull loading quotes from the sheet (non-blocking; hardcoded array stays as fallback)
-  fetch(proxyUrl({ action: 'loadingquotes' }))
-    .then(r => r.json())
+  engineGet({ action: 'loadingquotes' })
     .then(d => { if (d.ok && Array.isArray(d.quotes) && d.quotes.length) LOADING_QUOTES = d.quotes; })
     .catch(() => {});
 
   // Pull the shared store list + display mapping from GX Core (non-blocking; hardcoded STORES stays
   // as fallback). Store renames/colors made in GX Core then flow to the UI with no code change.
-  fetch(proxyUrl({ action: 'stores' }))
-    .then(r => r.json())
+  engineGet({ action: 'stores' })
     .then(d => {
       if (!d || !d.ok || !Array.isArray(d.stores) || !d.stores.length) return;
       const next = d.stores
@@ -7094,8 +7164,7 @@ function initScanner() {
   // Load server-side UPC map once (lazy, non-blocking)
   if (!state.upcMap) {
     state.upcMap = {};
-    fetch(proxyUrl({ action: 'getupcmap' }))
-      .then(r => r.json())
+    engineGet({ action: 'getupcmap' })
       .then(m => { state.upcMap = m || {}; })
       .catch(() => {});
   }
@@ -7546,7 +7615,12 @@ function upcMapSave(code, name) {
   if (!code || !name) return;
   if (!state.upcMap) state.upcMap = {};
   state.upcMap[code] = name;
-  // Persist server-side so all devices benefit
+  /* DELIBERATELY NOT engineGet — this is a WRITE, and the retry ladder is for reads.
+     The second-hop miss happens AFTER the request reached Apps Script, so a write that
+     looks failed may already have run; retrying it re-runs it. Leave this a single bare
+     attempt unless someone makes setupcentry idempotent (it overwrites one UPC key, so it
+     very nearly is — but "very nearly" is not a thing to retry on). The same rule is why
+     gx-client's postJSON defaults to zero retries. */
   fetch(proxyUrl({ action: 'setupcentry', upc: code, name }))
     .catch(() => {});
 }
@@ -7818,8 +7892,7 @@ function toggleStoreHistory(rowEl, store, sku) {
   if (histEl.dataset.loaded) { histEl.style.display = 'block'; return; }
   histEl.style.display = 'block';
   histEl.innerHTML = '<div style="padding:8px;color:var(--muted);font-size:12px">Loading…</div>';
-  fetch(proxyUrl({ action: 'storetxhistory', store, name: sku, days: 30 }))
-    .then(r => r.json())
+  engineGet({ action: 'storetxhistory', store, name: sku, days: 30 })
     .then(data => {
       histEl.dataset.loaded = '1';
       const rows = data.rows || [];
@@ -7888,7 +7961,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.031';
+const APP_VERSION = 'v3.032';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10066,8 +10139,8 @@ async function runSkuProbe() {
 
   try {
     const [txRes, roomRes] = await Promise.all([
-      fetch(proxyUrl({ action: 'txprobe', store, sku })).then(r => r.json()),
-      fetch(proxyUrl({ action: 'skuprobe', store, sku })).then(r => r.json()),
+      engineGet({ action: 'txprobe', store, sku }),
+      engineGet({ action: 'skuprobe', store, sku }),
     ]);
 
     let html = '';
@@ -10208,8 +10281,7 @@ async function loadQuarantineItems() {
   try {
     const params = { action: 'quarantine' };
     if (store && store !== 'All') params.store = store;
-    const res  = await fetch(proxyUrl(params));
-    const data = await res.json();
+    const data = await engineGet(params);
     if (!data || data.length === 0) { el.textContent = 'No quarantine or sample items found.'; return; }
     el.innerHTML = `<table class="quar-table">
       <thead><tr><th>Product</th><th>Category</th><th>Store</th><th>Room</th><th>Qty</th></tr></thead>
