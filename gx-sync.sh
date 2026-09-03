@@ -64,6 +64,14 @@ fetch gx-brain-notes.sh    .claude/gx-brain-notes.sh    || true
 fetch gx-posttool-tests.sh .claude/gx-posttool-tests.sh || true
 fetch deploy.sh          deploy.sh                 || true
 fetch serve.py           serve.py                  || true
+# serve.js is a SECOND DOOR, not a replacement — serve.py stays and still works from a terminal, from
+# CI, from anywhere started by a shell. The managed dev-server launcher is the case it does not cover:
+# it spawns as a child of Claude's disclaimer helper, and in that context every APPLE-SIGNED binary is
+# denied the whole TCC-protected tree. Measured 2026-09-02 at the same instant on the same launcher:
+# /bin/ls BLOCKED, /bin/cat BLOCKED, /usr/bin/python3 BLOCKED, /opt/homebrew/bin/node OK. Not a Dropbox
+# problem (Documents and Desktop fail identically) and NOT fixable with Full Disk Access — Sky granted
+# it at three levels and restarted, with no change. Do not send anyone round that loop again.
+fetch serve.js           serve.js                  || true
 fetch gx-preflight.sh    gx-preflight.sh           || true
 fetch gxengine.sh        gxengine.sh               || true
 # chmod each file individually with an explicit mode. "chmod +x a b c" is subject to umask and skips
@@ -85,7 +93,7 @@ fetch gxengine.sh        gxengine.sh               || true
 # `sh` for exactly this reason -- gx-preflight, theme-preflight and run-tests alike. Keep it that way:
 # a hook that depends on a mode bit is a hook this filesystem can switch off without telling you.
 _notexec=""
-for f in .claude/gx-brain-notes.sh .claude/gx-posttool-tests.sh deploy.sh serve.py gx-preflight.sh gxengine.sh; do
+for f in .claude/gx-brain-notes.sh .claude/gx-posttool-tests.sh deploy.sh serve.py serve.js gx-preflight.sh gxengine.sh; do
   [ -f "$f" ] || continue
   chmod 755 "$f" 2>/dev/null || true
   [ -x "$f" ] || _notexec="$_notexec $f"
@@ -106,7 +114,7 @@ done
 # So `update-index` alone does NOT make it stick — 4f01457 proves that; the very next commit undid it.
 # The habit is the fix, which is why the message below leads with the habit.
 _badmode=""
-for f in .claude/gx-brain-notes.sh .claude/gx-posttool-tests.sh deploy.sh serve.py gx-preflight.sh gxengine.sh; do
+for f in .claude/gx-brain-notes.sh .claude/gx-posttool-tests.sh deploy.sh serve.py serve.js gx-preflight.sh gxengine.sh; do
   [ -f "$f" ] || continue
   case "$(git ls-files -s "$f" 2>/dev/null | awk '{print $1}')" in
     100644) [ -x "$f" ] && _badmode="$_badmode $f" ;;
