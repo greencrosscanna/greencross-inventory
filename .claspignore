@@ -9,3 +9,15 @@ tests/**
 .claude/
 .claude/**
 clasp.sh
+
+# Node-side DEV SERVER, synced in from gx-theme on 2026-09-03 (commit 333000c). Same failure mode as
+# tests/ above: rootDir is "." and nothing here excludes JS by extension, so clasp pushes serve.js as
+# serve.gs, where `#!/usr/bin/env node` on line 1 is a parse error that blocks the ENTIRE push —
+# backend fix and all. It fired for real in sales the same day.
+#
+# Armed by the file LANDING, not by any change to this app, so it would have stopped the next deploy
+# whatever that deploy carried, and the error would have pointed at a file nobody had touched.
+# .claspignore is deliberately not a synced file, so every spoke that has run ./gx-sync.sh since
+# needs its own copy of this rule — this app and sales are done; crew, performance, pricecards and
+# spiff are not.
+serve.js
