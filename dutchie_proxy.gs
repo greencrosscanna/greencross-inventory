@@ -391,48 +391,112 @@ function jsonOut(obj, callback) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+/* ONE CLICK OF "SUBMIT" CAN RUN THIS FUNCTION THREE TIMES, and until 2026-09-09 that meant three
+ * emails for one report. Apps Script's /exec second hop sometimes refuses the content key it just
+ * issued and 302s the caller back, which executes doGet from the top again; GX Core measured a
+ * five-redirect chain that was three complete executions of a single request (see the DE-DUPE note
+ * in gxIngestBug). The client's own retry lands the same way, and neither the browser nor the
+ * reporter ever sees it happen.
+ *
+ * GX Core already defends the BUG ROW — it merges an identical open bug from the same reporter filed
+ * inside three minutes — which is why a triple-executed report still shows up exactly once on the
+ * board while Sky's inbox showed it three times. The email was the one link in the chain with no
+ * guard on it, and it is the link a human actually reads. Reported by Sky on a report Mike filed
+ * once; fixed first in Leaderboard v1.761 and ported here.
+ *
+ * THE ORDER OF THE TWO HALVES IS PART OF THE FIX. The ingest used to run second with its return
+ * value discarded; it now runs FIRST, because that return value is the answer to "has this exact
+ * report already landed" and the email needs it before deciding to send.
+ *
+ * Two guards, because they cover different failures:
+ *   1. gxIngestBug's answer gets READ. It returns `deduped: true` when it merged into an existing
+ *      row, so a re-execution is identifiable and stays silent.
+ *   2. A short script-cache mark, on the same three-minute window, covers the case where central is
+ *      unreachable and there is no `deduped` to read. Without it the redirect chain would send three
+ *      copies of the very email that exists because the board did NOT get the report.
+ * Neither guard may ever swallow a first report: any failure inside them falls through to sending.
+ */
 function handleBugReport(b) {
-  // GX Command Center is now the SINGLE bug log — this app no longer writes its own
-  // "GC Bug Reports" sheet. The email below is both the alert and a no-lost-report
-  // fallback if GX Core is ever unavailable. (BUG_REPORTS_SS_ID script property is left
-  // in place, harmless; the old sheet is deleted separately once migration is verified.)
   const ts = new Date();
 
-  // Email notification (alert + durability fallback)
-  try {
-    const priorityEmoji = { low: '🟢', medium: '🟡', high: '🔴' }[b.priority] || '🟡';
-    MailApp.sendEmail({
-      to:      'sky@greencrosscanna.com',
-      subject: `${priorityEmoji} Bug [${b.priority || 'medium'}]: ${b.title}`,
-      body: [
-        `Reporter : ${b.reporter}`,
-        `Priority : ${b.priority}`,
-        `Tab      : ${b.appTab}`,
-        `Store    : ${b.appStore}`,
-        `Version  : ${b.appVer}`,
-        `Time     : ${ts.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`,
-        '',
-        b.desc || '(no details provided)',
-      ].join('\n'),
-    });
-  } catch(mailErr) { /* non-fatal */ }
-
-  // Central bug log — write into GX Core's shared bug_reports table (Command Center cockpit).
+  // Central bug log — GX Command Center is the SINGLE bug log; this app no longer writes its own
+  // "GC Bug Reports" sheet. (BUG_REPORTS_SS_ID script property is left in place, harmless.)
   // NOTE: the library function is gxIngestBug(app, reporter, payload) — NOT ingestBug, which
-  // does not exist in GX Core v12 and would throw, silently dropping every report.
-  // Route to the right Command Center project. Price Cards is a sub-app of Inventory with its own project
-  // key ('pricecards'), so a bug filed from its tab (state.tab === 'pricetags') goes there; everything else
-  // is Inventory. Keep this map in sync as more Inventory sub-apps get their own project keys.
+  // does not exist in GX Core and would throw, silently dropping every report.
+  // Route to the right Command Center project. Price Cards is a sub-app of Inventory with its own
+  // project key ('pricecards'), so a bug filed from its tab (state.tab === 'pricetags') goes there;
+  // everything else is Inventory. Keep this map in sync as more sub-apps get their own project keys.
   var TAB_TO_APP = { pricetags: 'pricecards' };
   var bugApp = TAB_TO_APP[String(b.appTab || '').toLowerCase()] || 'inventory';
+  var bugId = '';
+  var isRepeat = false;
   try {
-    GXCore.gxIngestBug(bugApp, b.reporter, {
+    const ing = GXCore.gxIngestBug(bugApp, b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
       store: b.appStore, tab: b.appTab, appVer: b.appVer
     });
-  } catch (e) { /* central unavailable — the email above is the fallback */ }
+    if (ing && ing.id) bugId = String(ing.id);
+    if (ing && ing.deduped) isRepeat = true;
+  } catch (e) { /* central unavailable — the email below is the no-lost-report fallback */ }
+
+  // Email notification (alert + durability fallback)
+  if (!isRepeat && bugMailOnce_(b, bugApp)) {
+    try {
+      const priorityEmoji = { low: '🟢', medium: '🟡', high: '🔴' }[b.priority] || '🟡';
+      MailApp.sendEmail({
+        to:      'sky@greencrosscanna.com',
+        subject: `${priorityEmoji} Bug [${b.priority || 'medium'}]: ${b.title}`,
+        body: [
+          `Reporter : ${b.reporter}`,
+          `Priority : ${b.priority}`,
+          `Tab      : ${b.appTab}`,
+          `Store    : ${b.appStore}`,
+          `Version  : ${b.appVer}`,
+          `Time     : ${Utilities.formatDate(ts, 'America/Los_Angeles', 'M/d/yy h:mm a')}`,
+          '',
+          b.desc || '(no details provided)',
+          '',
+          bugId ? `On the bug board as ${bugId} (${bugApp}) — open the Command Center cockpit to triage it.`
+                : 'NOT ON THE BUG BOARD — the central log could not be reached, so this email is the '
+                  + 'only record of this report. Please re-file it from the cockpit.',
+        ].join('\n'),
+      });
+    } catch(mailErr) { /* non-fatal */ }
+  }
 
   return { ok: true };
+}
+
+/* True the FIRST time a given report asks to be emailed, false for a repeat inside three minutes.
+ * The window matches GX Core's own bug dedupe so the email and the board agree on what "the same
+ * report" means; a fourth minute is a person filing again because nothing happened, which should mail.
+ * The lock makes check-and-set atomic — a redirect chain can re-enter fast enough for three
+ * executions to read an empty cache at once, and three simultaneous misses is exactly the bug being
+ * fixed.
+ * THE APP KEY IS IN THE DIGEST because this app files to TWO boards (pricecards and inventory). A
+ * re-execution of one request always carries the same key, so including it never weakens the guard;
+ * leaving it out would let a Price Cards report silence an Inventory one.
+ * FAILS OPEN on purpose: a cache or lock that is unavailable must never be the reason a bug report
+ * goes unread. Better a duplicate email than a silent one. */
+function bugMailOnce_(b, bugApp) {
+  var lock = null;
+  try {
+    const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5,
+      String(bugApp || '') + '\u0000' + String(b.reporter || '') + '\u0000'
+        + String(b.title || '') + '\u0000' + String(b.desc || ''),
+      Utilities.Charset.UTF_8);
+    const key = 'bugmail:' + Utilities.base64EncodeWebSafe(digest);
+    lock = LockService.getScriptLock();
+    try { lock.waitLock(5000); } catch (e) { lock = null; }   // busy → fall through and send
+    const cache = CacheService.getScriptCache();
+    if (cache.get(key)) return false;
+    cache.put(key, '1', 180);   // seconds; 3 min, same window as gxIngestBug's dedupe
+    return true;
+  } catch (e) {
+    return true;
+  } finally {
+    if (lock) { try { lock.releaseLock(); } catch (e) {} }
+  }
 }
 
 // ─── Store helpers ────────────────────────────────────────────────────────────
