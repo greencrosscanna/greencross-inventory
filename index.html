@@ -2980,6 +2980,30 @@ function renderBrandIssuesHtml() {
     html += '<div class="card">' + rows.join('') + '</div>';
   };
 
+  // 0 — on a shelf now, with nothing to attribute it to. Listed first: it is the only section about
+  // stock a customer can pick up today, and the only one with no cross-store answer to fall back on.
+  if (iss.missing.length) {
+    const rows = iss.missing.map(x => {
+      const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
+      const what = x.brandOk
+        ? 'no vendor'
+        : (x.alsoNoVendor ? 'no brand and no vendor' : 'no brand');
+      return `<div class="flag-item" style="align-items:center">
+        <div class="flag-icon" style="color:var(--amber)">●</div>
+        <div class="flag-text" style="flex:1">
+          <strong>${esc(x.name)}</strong>${sold(x.sold28)}<br>
+          <span style="font-size:11px"><strong style="color:var(--amber)">${what}</strong>${
+            x.category ? ` · ${esc(fmtCat(x.category))}` : ''
+          } · ${Math.round(x.qty)} on hand</span><br>${storeBits(x.stores)}
+        </div>
+        <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore this product">skip</button>
+      </div>`;
+    });
+    section('In stock with nothing to attribute it to',
+      'No other store has the answer either, so it has to be typed in. A missing <strong>vendor</strong> is stamped on the package at receiving — correcting the product record may not reach stock already on the shelf.',
+      rows);
+  }
+
   // 1 — the brand field holds a vendor's name. Needs a person: the data cannot tell a distributor
   // from a vertically integrated farm that is genuinely both.
   if (iss.vendorish.length) {
@@ -5064,6 +5088,17 @@ function updateCatToggleBtn() {
 // so answering it once answers it for everyone, including for products that do not exist yet.
 const DQ_VENDORISH_RATIO = 3;   // used as a vendor >=3x as often as a brand -> worth asking about
 
+// Shake and samples are hard-excluded from inventory everywhere else in this app (filterInventory,
+// the summary counts, the category pills), so asking anyone to go and fix their brand is asking for
+// work with no payoff. The first release of this section did not apply the rule and leaked rows like
+// "SAMPLE | PREROLL" and "Ghost OG | SHAKE" into the list. Same predicate as filterInventory.
+function dqIsTracked_(p) {
+  const name = String(p.name || '');
+  if (/\bshake\b/i.test(name) || p.category === 'Cannabis Bulk Shake') return false;
+  if (/\bsample\b/i.test(name)) return false;
+  return true;
+}
+
 function getDqOkObj() {
   try {
     const raw = JSON.parse(localStorage.getItem(LS.DQ_OK) || '{}');
@@ -5075,8 +5110,9 @@ function dqNameKey(name) { return 'name:' + String(name || '').trim().toLowerCas
 function dqSkuKey(sku)   { return 'sku:'  + String(sku  || '').trim(); }
 
 function computeBrandIssues() {
-  const data = state.inventoryData || [];
-  if (!data.length) return { disagree: [], conflict: [], vendorish: [], total: 0 };
+  const all = state.inventoryData || [];
+  const data = all.filter(dqIsTracked_);
+  if (!data.length) return { missing: [], disagree: [], conflict: [], vendorish: [], total: 0 };
   const ok = getDqOkObj();
   const txt = v => String(v || '').trim();
 
@@ -5099,7 +5135,7 @@ function computeBrandIssues() {
     (groups[k] || (groups[k] = [])).push(p);
   }
 
-  const out = { disagree: [], conflict: [], vendorish: [] };
+  const out = { missing: [], disagree: [], conflict: [], vendorish: [] };
   for (const k of Object.keys(groups)) {
     const g = groups[k];
     const sku = g[0].sku || '';
@@ -5127,6 +5163,36 @@ function computeBrandIssues() {
       }
     }
 
+    // 0 - IN STOCK and nobody anywhere has a brand for it. This is the restock case (Sky, 2026-09-08):
+    // the out-of-stock backlog is not worth chasing, but a product that comes back onto a shelf
+    // without a brand should be caught. The other checks cannot see these -- every one of them works
+    // by comparing stores, and there is nothing to compare when no store knows the answer. Measured
+    // the day this shipped: 167 in-stock rows had no brand and the cross-store checks caught 15.
+    // Vendor rides along here rather than in its own check. It is a much smaller problem (4 in-stock
+    // rows) and a different KIND of problem: vendor is stamped on the package at receiving, so unlike
+    // brand it probably cannot be corrected by editing the product -- see the header note. Flagged so
+    // it is visible, worded so nobody assumes the product screen is the place to fix it.
+    const live = g.filter(p => Number(p.qty) > 0);
+    if (live.length && !real.length) {
+      const noVendor = live.every(p => !txt(p.vendor));
+      out.missing.push({
+        sku, name: g[0].name, sold28, qty,
+        category: g[0].category || '',
+        stores: live.map(p => p.store),
+        alsoNoVendor: noVendor,
+      });
+      continue;
+    }
+    if (live.length && real.length && live.every(p => !txt(p.vendor))) {
+      out.missing.push({
+        sku, name: g[0].name, sold28, qty,
+        category: g[0].category || '',
+        stores: live.map(p => p.store),
+        alsoNoVendor: true, brandOk: true,
+      });
+      continue;
+    }
+
     if (brands.length < 2) continue;
     if (real.length === 1) {
       // 1 - some stores blank, one real answer. The blanks are just missing it.
@@ -5144,8 +5210,8 @@ function computeBrandIssues() {
     }
   }
   const bySold = (a, b) => b.sold28 - a.sold28 || String(a.name).localeCompare(String(b.name));
-  out.disagree.sort(bySold); out.conflict.sort(bySold); out.vendorish.sort(bySold);
-  out.total = out.disagree.length + out.conflict.length + out.vendorish.length;
+  out.missing.sort(bySold); out.disagree.sort(bySold); out.conflict.sort(bySold); out.vendorish.sort(bySold);
+  out.total = out.missing.length + out.disagree.length + out.conflict.length + out.vendorish.length;
   return out;
 }
 
@@ -8237,7 +8303,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.034';
+const APP_VERSION = 'v3.035';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
