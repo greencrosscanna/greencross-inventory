@@ -1407,6 +1407,29 @@
      disable it mid-request. Its styling is gone: it set white uppercase letterspaced text and beat
      the shared .gx-btn-green, so this one button looked unlike every other primary button in the
      suite. Do not restyle it here; change .gx-btn-green in gx-theme if the treatment should move. */
+
+/* Flags tab sub-navigation — filter pills over the section list. */
+.flags-subnav {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 0 0 14px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,.08));
+}
+.flags-pill {
+  background: var(--card, rgba(255,255,255,.04));
+  border: 1px solid var(--border, rgba(255,255,255,.1));
+  color: var(--muted, #8b949e);
+  border-radius: 999px; padding: 5px 12px;
+  font-size: 11px; font-weight: 600; letter-spacing: .3px;
+  cursor: pointer; white-space: nowrap;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.flags-pill:hover { color: var(--text, #e6edf3); border-color: var(--muted, #8b949e); }
+.flags-pill.active {
+  background: var(--green, #3fb950); border-color: var(--green, #3fb950);
+  color: #0b0f14;
+}
+.flags-pill-n { opacity: .65; font-weight: 700; margin-left: 3px; }
+.flags-pill.active .flags-pill-n { opacity: .8; }
 </style>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/vendor/xlsx@0.18.5/xlsx.full.min.js"></script>
 <!-- Shared GX Core client (retry-aware): the canonical resilient wrapper for GX Core's flaky two-hop
@@ -2973,8 +2996,8 @@ function renderBrandIssuesHtml() {
   let html = '';
 
   let first = true;
-  const section = (title, note, rows) => {
-    html += `<div class="section-label" style="margin-top:20px">${esc(title)} — ${rows.length}</div>`;
+  const section = (title, note, rows, nav) => {
+    html += `<div class="section-label" data-nav="${esc(nav)}" data-nav-count="${rows.length}" style="margin-top:20px">${esc(title)} — ${rows.length}</div>`;
     if (first) { html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px">Brand data ${asOf}</div>`; first = false; }
     if (note) html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 8px">${note}</div>`;
     html += '<div class="card">' + rows.join('') + '</div>';
@@ -3001,7 +3024,7 @@ function renderBrandIssuesHtml() {
     });
     section('In stock with nothing to attribute it to',
       'No other store has the answer either, so it has to be typed in. A missing <strong>vendor</strong> is stamped on the package at receiving — correcting the product record may not reach stock already on the shelf.',
-      rows);
+      rows, 'On the shelf');
   }
 
   // 1 — the brand field holds a vendor's name. Needs a person: the data cannot tell a distributor
@@ -3023,7 +3046,7 @@ function renderBrandIssuesHtml() {
         <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore just this product">skip</button>
       </div>`;
     });
-    section('Brand may be a vendor name', 'The data cannot decide these — a supplier can be both. "brand is right" answers for that name everywhere, for good.', rows);
+    section('Brand may be a vendor name', 'The data cannot decide these — a supplier can be both. "brand is right" answers for that name everywhere, for good.', rows, 'Vendor name');
   }
 
   // 2 — some stores blank, exactly one real answer. Say what to type.
@@ -3040,7 +3063,7 @@ function renderBrandIssuesHtml() {
         <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore this product">skip</button>
       </div>`;
     });
-    section('Brand missing at some stores', 'Another store already has the answer — copy it across in Dutchie.', rows);
+    section('Brand missing at some stores', 'Another store already has the answer — copy it across in Dutchie.', rows, 'Missing');
   }
 
   // 3 — two real brands on one SKU. Only a human knows which.
@@ -3057,10 +3080,85 @@ function renderBrandIssuesHtml() {
         <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore this product">skip</button>
       </div>`;
     });
-    section('Stores disagree on the brand', 'Two real brands on one SKU — nothing in the data says which is right.', rows);
+    section('Stores disagree on the brand', 'Two real brands on one SKU — nothing in the data says which is right.', rows, 'Disagree');
   }
 
   return html;
+}
+
+
+// ── Flags sub-navigation ──────────────────────────────────────────────────────
+// The Flags tab can render nine sections at once (flagged, hidden, to-retire, quarantine, financial,
+// and four brand checks) and had grown past the point where anything below the fold got found. This
+// turns them into filter pills.
+//
+// It works off the RENDERED DOM rather than the section-building code, on purpose: renderFlags builds
+// one long html string through a dozen conditional `html +=` branches, and threading a grouping
+// argument through all of them would have been a large edit to code that is not otherwise changing.
+// Each section already starts with a .section-label and runs until the next one, so the grouping is
+// already there to be read. A section added later gets a pill for free -- it only needs data-nav.
+const LS_FLAGS_NAV = 'gc_flags_nav';
+
+function installFlagsSubnav(el) {
+  const kids = [...el.children];
+  const groups = [];
+  let cur = null;
+  for (const node of kids) {
+    if (node.classList && node.classList.contains('section-label')) {
+      cur = { name: node.dataset.nav || (node.textContent || '').split('—')[0].trim() || 'Section',
+              count: node.dataset.navCount || '', nodes: [node] };
+      groups.push(cur);
+    } else if (cur) {
+      cur.nodes.push(node);
+    }
+  }
+  if (groups.length < 2) return;   // one section needs no navigation
+
+  groups.forEach((g, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'flags-group';
+    wrap.dataset.group = String(i);
+    g.nodes[0].parentNode.insertBefore(wrap, g.nodes[0]);
+    g.nodes.forEach(n => wrap.appendChild(n));
+    // The first section carries a margin-top of 0 so it sits tight under the header. Once a filter
+    // can make ANY section the first one visible, that has to move with the selection.
+    const lbl = wrap.querySelector('.section-label');
+    if (lbl) lbl.style.marginTop = '';
+  });
+
+  let saved = '';
+  try { saved = localStorage.getItem(LS_FLAGS_NAV) || ''; } catch {}
+  // A remembered pill whose section is empty today would show a blank page with no clue why.
+  if (saved !== '' && !groups.some((g, i) => String(i) === saved || g.name === saved)) saved = '';
+
+  const bar = document.createElement('div');
+  bar.className = 'flags-subnav';
+  // No count on "All": it would sum hidden SKUs, retire-queue entries and brand problems into one
+  // number that means nothing -- 228 is not 228 of anything.
+  bar.innerHTML =
+    `<button class="flags-pill" data-target="">All</button>` +
+    groups.map((g, i) =>
+      `<button class="flags-pill" data-target="${i}">${escapeHtml(g.name)}${g.count ? ` <span class="flags-pill-n">${escapeHtml(g.count)}</span>` : ''}</button>`
+    ).join('');
+  el.insertBefore(bar, el.firstChild);
+
+  const apply = target => {
+    el.querySelectorAll('.flags-group').forEach(gr => {
+      gr.hidden = target !== '' && gr.dataset.group !== target;
+    });
+    bar.querySelectorAll('.flags-pill').forEach(b => b.classList.toggle('active', b.dataset.target === target));
+    try { localStorage.setItem(LS_FLAGS_NAV, target === '' ? '' : (groups[Number(target)] || {}).name || ''); } catch {}
+  };
+  bar.querySelectorAll('.flags-pill').forEach(b => b.addEventListener('click', () => apply(b.dataset.target)));
+
+  // Resolve a remembered NAME back to its current index — section order shifts as sections empty out,
+  // so storing the index alone would land on the wrong pill tomorrow.
+  let start = '';
+  if (saved !== '') {
+    const byName = groups.findIndex(g => g.name === saved);
+    start = byName >= 0 ? String(byName) : (groups[Number(saved)] ? saved : '');
+  }
+  apply(start);
 }
 
 function renderFlags() {
@@ -3082,7 +3180,7 @@ function renderFlags() {
       flaggedSet.has(flagKey(p)) && (storeFilter === 'All' || p.store === storeFilter)
     );
     if (flaggedItems.length > 0) {
-      html += `<div class="section-label">Flagged for Review — ${flaggedItems.length} item${flaggedItems.length !== 1 ? 's' : ''}</div>
+      html += `<div class="section-label" data-nav="Flagged" data-nav-count="${flaggedItems.length}">Flagged for Review — ${flaggedItems.length} item${flaggedItems.length !== 1 ? 's' : ''}</div>
         <div class="card">`;
       for (const p of flaggedItems) {
         const key = flagKey(p).replace(/'/g, "\\'");
@@ -3118,7 +3216,7 @@ function renderFlags() {
       }
       const gids = Object.keys(groups);
       const storeItems = killedItems.length;
-      html += `<div class="section-label" style="margin-top:${html ? '20px' : '0'}">Hidden — ${gids.length} SKU${gids.length !== 1 ? 's' : ''}${storeItems !== gids.length ? ' · ' + storeItems + ' store-items' : ''}</div>
+      html += `<div class="section-label" data-nav="Hidden" data-nav-count="${gids.length}" style="margin-top:${html ? '20px' : '0'}">Hidden — ${gids.length} SKU${gids.length !== 1 ? 's' : ''}${storeItems !== gids.length ? ' · ' + storeItems + ' store-items' : ''}</div>
         <div class="card">`;
       for (const gid of gids) {
         const g = groups[gid];
@@ -3160,7 +3258,7 @@ function renderFlags() {
         (groups[gid] || (groups[gid] = { name: p.name, sku: p.sku, cat: p.category, items: [] })).items.push(p);
       }
       const gids = Object.keys(groups);
-      html += `<div class="section-label" style="margin-top:${html ? '20px' : '0'};display:flex;justify-content:space-between;align-items:center">
+      html += `<div class="section-label" data-nav="To Retire" data-nav-count="${gids.length}" style="margin-top:${html ? '20px' : '0'};display:flex;justify-content:space-between;align-items:center">
           <span>To Retire in Dutchie — ${gids.length} SKU${gids.length !== 1 ? 's' : ''}</span>
           <button onclick="exportRetireList()" class="cat-toggle-btn" style="font-size:11px" title="Download a CSV worklist to retire these in Dutchie">⬇ Export CSV</button>
         </div>
@@ -3205,7 +3303,7 @@ function renderFlags() {
         if (!byStore[p.store]) byStore[p.store] = [];
         byStore[p.store].push(p);
       }
-      html += `<div class="section-label">Quarantine &amp; Sample — ${filtered.length} item${filtered.length !== 1 ? 's' : ''}</div>
+      html += `<div class="section-label" data-nav="Quarantine" data-nav-count="${filtered.length}">Quarantine &amp; Sample — ${filtered.length} item${filtered.length !== 1 ? 's' : ''}</div>
         <div class="card">`;
       for (const [store, items] of Object.entries(byStore).sort()) {
         html += `<div style="padding:10px 16px 4px;font-size:11px;font-weight:700;color:${storeColor(store)};text-transform:uppercase;letter-spacing:.5px">${storeDisplay(store)}</div>`;
@@ -3230,7 +3328,7 @@ function renderFlags() {
   if (state.cogsData && state.salesData) {
     const flags = detectFlags(state.cogsData, state.salesData);
     if (flags.length > 0) {
-      html += `<div class="section-label" style="margin-top:${html ? '20px' : '0'}">${flags.length} Financial Issue${flags.length > 1 ? 's' : ''}</div>
+      html += `<div class="section-label" data-nav="Financial" data-nav-count="${flags.length}" style="margin-top:${html ? '20px' : '0'}">${flags.length} Financial Issue${flags.length > 1 ? 's' : ''}</div>
         <div class="card">
           ${flags.map(f => `
             <div class="flag-item">
@@ -3254,6 +3352,7 @@ function renderFlags() {
   }
 
   el.innerHTML = html;
+  installFlagsSubnav(el);
 }
 
 // ════════════════════════════════════════════════════════
@@ -8303,7 +8402,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.035';
+const APP_VERSION = 'v3.036';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
