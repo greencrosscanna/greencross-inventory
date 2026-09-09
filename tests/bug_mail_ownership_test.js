@@ -10,10 +10,15 @@
  * THAT MAKES THIS APP'S PINNED LIBRARY VERSION AND ITS LOCAL MailApp CALL ONE DECISION, not two.
  * Get the pairing wrong in either direction and it is silent:
  *
- *   pinned BELOW the consolidation + no local mail  ->  ZERO emails. A person reports something is
- *       broken and nobody hears it. This is the worse direction by a wide margin.
- *   pinned AT OR ABOVE it + local mail still here   ->  TWO emails. A smaller version of the exact
- *       bug this app shipped v3.039 to fix.
+ *   pinned BELOW the consolidation + the send narrowed to failures  ->  ZERO emails on every bug
+ *       that files successfully. A person reports something is broken and nobody hears it. This is
+ *       the worse direction by a wide margin.
+ *   pinned AT OR ABOVE it + the send still unconditional            ->  TWO emails. A smaller
+ *       version of the exact bug this app shipped v3.039 to fix.
+ *
+ * NOTE WHAT IS **NOT** THE ANSWER: deleting the local send. GX Core mails only when it wrote a row,
+ * so during a Core outage there is no row and no Core email — the local send is the only thing that
+ * speaks. It is narrowed to the failure path, never removed, and this test asserts that too.
  *
  * Neither shows up in a normal test run, because each half is correct on its own. Only the PAIR is
  * wrong, so the pair is what gets asserted — the manifest is read here, next to the source.
@@ -72,18 +77,29 @@ const mailsLocally = /MailApp\.sendEmail/.test(block);
 
 // ── The pairing ───────────────────────────────────────────────────────────────
 if (pinned >= CONSOLIDATED_FROM) {
-  ok(!mailsLocally,
-     'pinned at ' + pinned + ' (GX Core owns the email) — this app must NOT mail as well',
-     'handleBugReport still calls MailApp.sendEmail: Sky gets TWO emails per report. Delete the '
-     + 'local send (and bugMailOnce_ with it) in the same commit as the pin bump.');
-  ok(!/function\s+bugMailOnce_\s*\(/.test(SRC),
-     'and bugMailOnce_ is gone with it',
-     'the local de-dupe guards a send that no longer exists');
+  /* GX Core owns the send. This app must be SILENT on success — but NOT deleted: Core only mails
+     when it wrote a row, so a Core outage means nobody is told unless this app speaks. The local
+     send is therefore narrowed to the failure path, never removed. */
+  ok(mailsLocally,
+     'pinned at ' + pinned + ' — a local send still exists for the case GX Core never got the report',
+     'no MailApp.sendEmail in handleBugReport: a bug filed during a GX Core outage reaches NOBODY. '
+     + 'Narrow the send to the failure path, do not delete it.');
+  ok(/if \(!bugId && bugMailOnce_\(/.test(block),
+     'and it is gated on the row NOT landing, so it is never a second copy of Core\'s email',
+     'the send is not gated on !bugId — if it fires when the row landed, Sky gets TWO emails.');
+  ok(/NOT FILED|COULD NOT BE REACHED/.test(block),
+     'and it says plainly that the report never reached the board');
+  ok(/function\s+bugMailOnce_\s*\(/.test(SRC),
+     'bugMailOnce_ survives — an /exec re-execution during an outage would otherwise send three copies');
 } else {
   ok(mailsLocally,
      'pinned at ' + pinned + ' (below the consolidation) — this app is still the ONLY sender',
      'handleBugReport has no MailApp.sendEmail: a filed bug would reach NOBODY by email. If you '
      + 'meant to hand the email to GX Core, bump the pin to ' + CONSOLIDATED_FROM + '+ in the same commit.');
+  ok(!/if \(!bugId && bugMailOnce_\(/.test(block),
+     'and it is NOT narrowed to the failure path, which on this pin would silence the app entirely',
+     'the send is gated on !bugId, but GX Core does not mail below v' + CONSOLIDATED_FROM
+     + ' — every successfully filed bug would be silent. Bump the pin in the same commit.');
   ok(/function\s+bugMailOnce_\s*\(/.test(SRC),
      'and the local de-dupe that keeps it to one email is still in place',
      'without bugMailOnce_ an /exec re-execution sends three copies again — see '
@@ -93,8 +109,10 @@ if (pinned >= CONSOLIDATED_FROM) {
 /* Independent of who mails: the ROW must always be filed, and its result read. This is the part that
    survives either arrangement, and the part a "simplification" during the transition would drop. */
 ok(/GXCore\.gxIngestBug\(/.test(block), 'the report is filed to the central board either way');
-ok(/ing\s*&&\s*ing\.id/.test(block) && /ing\s*&&\s*ing\.deduped/.test(block),
-   'and gxIngestBug\'s answer is still read, not discarded');
+ok(/ing\s*&&\s*ing\.id/.test(block),
+   'and gxIngestBug\'s answer is still read, not discarded',
+   'the returned id is what tells this app whether the report landed — discarding it is the '
+   + 'original 2026-09-09 bug in a new shape');
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -391,30 +391,34 @@ function jsonOut(obj, callback) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/* ONE CLICK OF "SUBMIT" CAN RUN THIS FUNCTION THREE TIMES, and until 2026-09-09 that meant three
- * emails for one report. Apps Script's /exec second hop sometimes refuses the content key it just
- * issued and 302s the caller back, which executes doGet from the top again; GX Core measured a
- * five-redirect chain that was three complete executions of a single request (see the DE-DUPE note
- * in gxIngestBug). The client's own retry lands the same way, and neither the browser nor the
- * reporter ever sees it happen.
+/* WHO SENDS THE BUG EMAIL: GX CORE DOES. THIS APP ONLY SPEAKS WHEN CORE COULD NOT.
  *
- * GX Core already defends the BUG ROW — it merges an identical open bug from the same reporter filed
- * inside three minutes — which is why a triple-executed report still shows up exactly once on the
- * board while Sky's inbox showed it three times. The email was the one link in the chain with no
- * guard on it, and it is the link a human actually reads. Reported by Sky on a report Mike filed
- * once; fixed first in Leaderboard v1.761 and ported here.
+ * Until 2026-09-09 this function mailed unconditionally, and one click of Submit could run it three
+ * times: Apps Script's /exec second hop sometimes refuses the content key it just issued and 302s the
+ * caller back, re-running doGet from the top (GX Core measured a five-redirect chain that was three
+ * complete executions of one request). GX Core defended the bug ROW against that, which is why the
+ * board showed one row while Sky's inbox showed three. v3.039 fixed it here with a local de-dupe.
  *
- * THE ORDER OF THE TWO HALVES IS PART OF THE FIX. The ingest used to run second with its return
- * value discarded; it now runs FIRST, because that return value is the answer to "has this exact
- * report already landed" and the email needs it before deciding to send.
+ * GX Core PR #50 then moved the send ITSELF into gxIngestBug (library v310), and that is the better
+ * fix: only TWO of seven apps mailed at all, so five could file a bug and tell nobody. Core now mails
+ * once per newly created row, below its own de-dupe, and cc's the reporter a receipt.
  *
- * Two guards, because they cover different failures:
- *   1. gxIngestBug's answer gets READ. It returns `deduped: true` when it merged into an existing
- *      row, so a re-execution is identifiable and stays silent.
- *   2. A short script-cache mark, on the same three-minute window, covers the case where central is
- *      unreachable and there is no `deduped` to read. Without it the redirect chain would send three
- *      copies of the very email that exists because the board did NOT get the report.
- * Neither guard may ever swallow a first report: any failure inside them falls through to sending.
+ * SO THE LOCAL SEND IS NOT DELETED, IT IS NARROWED — and the distinction is the whole point.
+ * Core mails only when it successfully writes a row. If Core is unreachable the call throws, no row
+ * exists, and Core sends nothing. Deleting this send outright would mean a bug filed during a Core
+ * outage reaches NOBODY, which is the one failure this pipeline must never have. So:
+ *
+ *   the row landed (bugId set)  ->  GX Core mailed. Stay silent. No second copy.
+ *   the row did NOT land        ->  nobody has been told. Mail, and say so plainly.
+ *
+ * A de-duped re-execution returns the EXISTING id, so bugId is set and this stays quiet — the /exec
+ * re-execution case is handled by the same test, without needing the deduped flag to drive anything.
+ * bugMailOnce_ still guards this path, because a Core outage is exactly when a re-executed request
+ * would otherwise send three copies of the very email that exists because the board did not get it.
+ *
+ * THE PIN AND THIS BRANCH ARE ONE DECISION. On a library version below 310 Core does not mail, so
+ * narrowing this to failures-only would silence the app completely. tests/bug_mail_ownership_test.js
+ * reads appsscript.json next to this source and fails unless the two agree, in both directions.
  */
 function handleBugReport(b) {
   const ts = new Date();
@@ -432,7 +436,6 @@ function handleBugReport(b) {
   var bugStore = String(b.appStore || ctx.store || '');
   var bugApp = TAB_TO_APP[bugTab.toLowerCase()] || 'inventory';
   var bugId = '';
-  var isRepeat = false;
   try {
     const ing = GXCore.gxIngestBug(bugApp, b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
@@ -448,17 +451,21 @@ function handleBugReport(b) {
       context: b.context || ''
     });
     if (ing && ing.id) bugId = String(ing.id);
-    if (ing && ing.deduped) isRepeat = true;
   } catch (e) { /* central unavailable — the email below is the no-lost-report fallback */ }
 
-  // Email notification (alert + durability fallback)
-  if (!isRepeat && bugMailOnce_(b, bugApp)) {
+  /* THE FALLBACK, and only the fallback. See the block comment above: if bugId is set the report is
+     on the board and GX Core has already mailed about it, so a send here would be the second copy. */
+  if (!bugId && bugMailOnce_(b, bugApp)) {
     try {
       const priorityEmoji = { low: '🟢', medium: '🟡', high: '🔴' }[b.priority] || '🟡';
       MailApp.sendEmail({
         to:      'sky@greencrosscanna.com',
-        subject: `${priorityEmoji} Bug [${b.priority || 'medium'}]: ${b.title}`,
+        subject: `${priorityEmoji} Bug NOT FILED [${b.priority || 'medium'}]: ${b.title}`,
         body: [
+          'THE CENTRAL BUG BOARD COULD NOT BE REACHED, so this email is the only record of this',
+          'report. Nothing was written to the board and the reporter got no receipt.',
+          'Please re-file it from the Command Center cockpit.',
+          '',
           `Reporter : ${b.reporter}`,
           `Priority : ${b.priority}`,
           `Tab      : ${bugTab || '(unknown)'}`,
@@ -468,9 +475,7 @@ function handleBugReport(b) {
           '',
           b.desc || '(no details provided)',
           '',
-          bugId ? `On the bug board as ${bugId} (${bugApp}) — open the Command Center cockpit to triage it.`
-                : 'NOT ON THE BUG BOARD — the central log could not be reached, so this email is the '
-                  + 'only record of this report. Please re-file it from the cockpit.',
+          `Diagnostics: ${b.context || '(none captured)'}`,
         ].join('\n'),
       });
     } catch(mailErr) { /* non-fatal */ }

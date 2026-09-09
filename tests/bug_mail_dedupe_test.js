@@ -136,29 +136,45 @@ const REPORT = {
   reporter: 'mike', priority: 'high', appTab: 'inventory', appStore: 'river-rd', appVer: 'v3.038',
 };
 
-// ── 1. The reported symptom: three executions of one request ──────────────────
+// ── 1. The reported symptom, under the v310 arrangement ───────────────────────
+/* GX Core mails on every row it creates (library v310, PR #50), so a report that LANDS must be
+   silent here or Sky gets two. The original three-email symptom is now impossible in two independent
+   ways, and this asserts both: the send is gated on the row not landing, AND bugMailOnce_ still
+   guards the outage path underneath it. */
 reset();
 {
   const m = M();
-  m.handleBugReport(REPORT);           // first execution — Core mints a fresh row
-  CORE_MODE = 'dup';                   // Core now merges, as it does inside its 3-min window
+  m.handleBugReport(REPORT);           // first execution — Core mints a fresh row and mails
+  CORE_MODE = 'dup';                   // Core merges, as it does inside its 3-min window
   m.handleBugReport(REPORT);
   m.handleBugReport(REPORT);
-  ok(SENT.length === 1, 'a triple-executed report sends ONE email', 'sent ' + SENT.length);
+  ok(SENT.length === 0, 'a triple-executed report that LANDS sends no local email — Core mailed',
+     'sent ' + SENT.length);
   ok(INGESTED.length === 3, 'all three still reach GX Core (its own dedupe owns the row)',
      'ingested ' + INGESTED.length);
 }
 
-// ── 2. `deduped` is actually read, not just received ──────────────────────────
+// ── 2. A merged re-execution is silent, and for the right reason ──────────────
 reset();
 {
   const m = M();
   CORE_MODE = 'dup';
   m.handleBugReport(REPORT);
   ok(SENT.length === 0, 'a report Core says it merged sends NO email', 'sent ' + SENT.length);
+  ok(INGESTED.length === 1, 'and it was still offered to the board',
+     'ingested ' + INGESTED.length);
 }
 
-// ── 3. Fallback: Core unreachable, so there is no `deduped` to read ───────────
+// ── 2b. A successful first filing is silent here too ──────────────────────────
+reset();
+{
+  const m = M();
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 0, 'a report that files cleanly sends no local email at all',
+     'sent ' + SENT.length + ' — that would be a second copy of GX Core\'s');
+}
+
+// ── 3. The fallback: Core unreachable, so NOBODY has been told ────────────────
 reset();
 {
   const m = M();
@@ -168,37 +184,35 @@ reset();
   m.handleBugReport(REPORT);
   ok(SENT.length === 1, 'with GX Core down, three executions still send ONE email',
      'sent ' + SENT.length);
-  ok(/NOT ON THE BUG BOARD/.test(SENT[0].body),
+  ok(/COULD NOT BE REACHED/.test(SENT[0].body),
      'that email says plainly the report never reached the board');
+  ok(/NOT FILED/.test(SENT[0].subject),
+     'and the subject says so too, before Sky opens it', SENT[0].subject);
+  ok(/no receipt/.test(SENT[0].body),
+     'and warns that the reporter was not acknowledged either');
 }
 
 // ── 4. Fail open — every guard failure falls through to SENDING ───────────────
-reset();
-{
+/* All three run with Core DOWN, because that is now the only path that reaches the mail at all —
+   and it is the path where failing closed would be worst: the board does not have the report. */
+[['CACHE_MODE', 'dead', 'a dead cache'],
+ ['LOCK_MODE',  'busy', 'a busy lock'],
+ ['DIGEST_MODE','throw','a thrown digest']].forEach(function (row) {
+  reset();
   const m = M();
-  CACHE_MODE = 'dead';
+  CORE_MODE = 'down';
+  if (row[0] === 'CACHE_MODE') CACHE_MODE = row[1];
+  if (row[0] === 'LOCK_MODE')  LOCK_MODE  = row[1];
+  if (row[0] === 'DIGEST_MODE') DIGEST_MODE = row[1];
   m.handleBugReport(REPORT);
-  ok(SENT.length === 1, 'a dead cache still sends (fail open)', 'sent ' + SENT.length);
-}
-reset();
-{
-  const m = M();
-  LOCK_MODE = 'busy';
-  m.handleBugReport(REPORT);
-  ok(SENT.length === 1, 'a busy lock still sends (fail open)', 'sent ' + SENT.length);
-}
-reset();
-{
-  const m = M();
-  DIGEST_MODE = 'throw';
-  m.handleBugReport(REPORT);
-  ok(SENT.length === 1, 'a thrown digest still sends (fail open)', 'sent ' + SENT.length);
-}
+  ok(SENT.length === 1, row[2] + ' still sends (fail open)', 'sent ' + SENT.length);
+});
 
 // ── 5. A different report is not a duplicate ──────────────────────────────────
 reset();
 {
   const m = M();
+  CORE_MODE = 'down';                       // the only path that mails now
   m.handleBugReport(REPORT);
   m.handleBugReport(Object.assign({}, REPORT, { reporter: 'tawny' }));
   m.handleBugReport(Object.assign({}, REPORT, { title: 'Velocity is doubled' }));
@@ -211,6 +225,7 @@ reset();
 reset();
 {
   const m = M();
+  CORE_MODE = 'down';
   m.handleBugReport(Object.assign({}, REPORT, { appTab: 'pricetags' }));
   m.handleBugReport(Object.assign({}, REPORT, { appTab: 'inventory' }));
   ok(SENT.length === 2, 'the same words filed from the Price Cards tab and the Inventory tab send twice',
@@ -229,14 +244,17 @@ reset();
   ok(SENT.length === 1, 'a re-executed Price Cards report is still silenced', 'sent ' + SENT.length);
 }
 
-// ── 7. A usable email: the board id is in it ──────────────────────────────────
+// ── 7. The fallback email is usable on its own, because it is the only record ─
 reset();
 {
   const m = M();
+  CORE_MODE = 'down';
   m.handleBugReport(REPORT);
-  ok(/bug_fresh/.test(SENT[0].body), 'the email carries the bug id it was filed under');
   ok(/mike/.test(SENT[0].body) && /Stock on hand is blank/.test(SENT[0].subject),
-     'and still carries reporter and title');
+     'it carries reporter and title');
+  ok(/every row shows 0 at river-rd/.test(SENT[0].body), 'and the full description');
+  ok(SENT[0].body.indexOf('Diagnostics') >= 0,
+     'and the captured diagnostics, which nothing else will hold if the board never got the report');
 }
 
 // ── 8. The house date rule holds on this path too ─────────────────────────────
@@ -267,6 +285,7 @@ function uiReport(tab, store, over) {
 reset();
 {
   const m = M();
+  CORE_MODE = 'down';
   m.handleBugReport(uiReport('pricetags', 'river-rd'));
   ok(INGESTED[0].app === 'pricecards',
      'a report filed from the Price Cards tab routes to the pricecards board',
@@ -310,6 +329,7 @@ reset();
 [undefined, '', 'not json at all', '[1,2,3]', '"a string"', 'null'].forEach(function (ctx) {
   reset();
   const m = M();
+  CORE_MODE = 'down';
   let threw = null;
   try { m.handleBugReport(uiReport(null, null, { context: ctx })); } catch (e) { threw = e; }
   ok(!threw && SENT.length === 1 && INGESTED[0].app === 'inventory',
@@ -320,6 +340,7 @@ reset();
 reset();
 {
   const m = M();
+  CORE_MODE = 'down';
   m.handleBugReport(uiReport(null, null, { context: undefined }));
   ok(/Tab      : \(unknown\)/.test(SENT[0].body),
      'a genuinely unknown tab reads "(unknown)", not "undefined"');
