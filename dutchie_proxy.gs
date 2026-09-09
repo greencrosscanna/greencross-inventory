@@ -427,13 +427,16 @@ function handleBugReport(b) {
   // project key ('pricecards'), so a bug filed from its tab (state.tab === 'pricetags') goes there;
   // everything else is Inventory. Keep this map in sync as more sub-apps get their own project keys.
   var TAB_TO_APP = { pricetags: 'pricecards' };
-  var bugApp = TAB_TO_APP[String(b.appTab || '').toLowerCase()] || 'inventory';
+  var ctx = bugContext_(b);
+  var bugTab   = String(b.appTab   || ctx.tab   || '');
+  var bugStore = String(b.appStore || ctx.store || '');
+  var bugApp = TAB_TO_APP[bugTab.toLowerCase()] || 'inventory';
   var bugId = '';
   var isRepeat = false;
   try {
     const ing = GXCore.gxIngestBug(bugApp, b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
-      store: b.appStore, tab: b.appTab, appVer: b.appVer
+      store: bugStore, tab: bugTab, appVer: b.appVer
     });
     if (ing && ing.id) bugId = String(ing.id);
     if (ing && ing.deduped) isRepeat = true;
@@ -449,8 +452,8 @@ function handleBugReport(b) {
         body: [
           `Reporter : ${b.reporter}`,
           `Priority : ${b.priority}`,
-          `Tab      : ${b.appTab}`,
-          `Store    : ${b.appStore}`,
+          `Tab      : ${bugTab || '(unknown)'}`,
+          `Store    : ${bugStore || '(unknown)'}`,
           `Version  : ${b.appVer}`,
           `Time     : ${Utilities.formatDate(ts, 'America/Los_Angeles', 'M/d/yy h:mm a')}`,
           '',
@@ -465,6 +468,34 @@ function handleBugReport(b) {
   }
 
   return { ok: true };
+}
+
+/* WHERE THE TAB AND STORE ACTUALLY ARRIVE. The shared reporter (gx-bugreport.js in gx-theme) does
+ * NOT send appTab/appStore as their own parameters — it packs everything an app knows about its own
+ * state into one JSON string called `context`, and this file read `b.appTab` and `b.appStore`, which
+ * were therefore undefined on every real report ever filed from the UI.
+ *
+ * Two consequences, both live until 2026-09-09 and neither of them visible from either side:
+ *   - Every bug email said "Tab : undefined / Store : undefined". It read like missing data rather
+ *     than a wiring fault, so it never got questioned.
+ *   - Worse: TAB_TO_APP[undefined] falls through to 'inventory', so a bug filed from the PRICE CARDS
+ *     tab has never once reached the pricecards board. The routing line, its comment, and the
+ *     sub-app arrangement in CLAUDE.md all described something the code could not do.
+ *
+ * Found by reading the payload the reporter actually builds while verifying the mail dedupe. A
+ * hand-built curl with appTab= set passes either version, which is exactly why the live test on its
+ * own would not have caught it.
+ *
+ * An explicit appTab/appStore parameter still wins where one is sent (operator curls, and any app
+ * that grows a direct submit); context is the fallback that covers the real UI. Malformed or absent
+ * JSON yields an empty object, never a throw — a bug report must survive its own metadata. */
+function bugContext_(b) {
+  try {
+    const raw = b && b.context;
+    if (!raw) return {};
+    const o = (typeof raw === 'string') ? JSON.parse(raw) : raw;
+    return (o && typeof o === 'object') ? o : {};
+  } catch (e) { return {}; }
 }
 
 /* True the FIRST time a given report asks to be emailed, false for a repeat inside three minutes.

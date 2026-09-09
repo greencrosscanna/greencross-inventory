@@ -28,7 +28,10 @@
  *      fail in one direction, it fails toward the inbox.
  *   4. A DIFFERENT REPORT IS NOT A DUPLICATE. Two people, or two problems, inside the same three
  *      minutes are two emails.
- *   5. THE TWO BOARDS STAY SEPARATE. This app is the only spoke that files to two app keys
+ *   5. THE TAB AND STORE COME OUT OF `context`. The shared reporter packs them into one JSON
+ *      string; reading b.appTab instead meant every email said "Tab : undefined" and no Price Cards
+ *      bug ever reached the pricecards board. Found while verifying the mail fix, 2026-09-09.
+ *   6. THE TWO BOARDS STAY SEPARATE. This app is the only spoke that files to two app keys
  *      (pricetags → pricecards, everything else → inventory), so the cache key carries the app.
  *      Leaderboard's version of this fix has no such case and no such assertion.
  *
@@ -70,6 +73,9 @@ function reset() {
 function loadBugFns() {
   const start = SRC.indexOf('function handleBugReport(b) {');
   if (start < 0) throw new Error('handleBugReport(b) not found in dutchie_proxy.gs');
+  if (SRC.indexOf('function bugContext_(', start) < 0) {
+    throw new Error('bugContext_ not found in dutchie_proxy.gs — the tab/store unpacking is gone');
+  }
   const bStart = SRC.indexOf('function bugMailOnce_(', start);
   if (bStart < 0) throw new Error('bugMailOnce_ not found in dutchie_proxy.gs — the fallback guard is gone');
   const endMarker = '\n// ─── Store helpers ';
@@ -236,6 +242,89 @@ reset();
 // ── 8. The house date rule holds on this path too ─────────────────────────────
 ok(!/ts\.toLocaleString/.test(SRC.slice(SRC.indexOf('function handleBugReport(b) {'))),
    'the timestamp is not derived from toLocaleString (LA zone comes from Utilities.formatDate)');
+
+/* ── 9. THE TAB AND STORE ARRIVE INSIDE `context`, NOT AS THEIR OWN PARAMETERS ──────────────────
+ *
+ * gx-bugreport.js (gx-theme) sends ONE JSON string called `context` carrying everything the app
+ * knows about its own state. This file read b.appTab/b.appStore, which no real report has ever
+ * carried, so every email said "Tab : undefined" and — the part that actually cost something —
+ * TAB_TO_APP[undefined] fell through to 'inventory', meaning a bug filed from the Price Cards tab
+ * never once reached the pricecards board.
+ *
+ * These assertions are written the way the SHARED REPORTER builds the payload, deliberately not the
+ * way a hand-built curl does. A curl with appTab= set passes both the broken and the fixed version;
+ * that is exactly why filing a test report by hand did not catch this and reading the sender did.
+ */
+function uiReport(tab, store, over) {
+  // Shaped like gx-bugreport.js's payload: no appTab, no appStore, state inside `context`.
+  return Object.assign({
+    title: 'Stock on hand is blank', desc: 'every row shows 0',
+    reporter: 'mike', priority: 'high', appVer: 'v3.039',
+    context: JSON.stringify({ url: 'https://x/y', ua: 'test', tab: tab, store: store }),
+  }, over || {});
+}
+
+reset();
+{
+  const m = M();
+  m.handleBugReport(uiReport('pricetags', 'river-rd'));
+  ok(INGESTED[0].app === 'pricecards',
+     'a report filed from the Price Cards tab routes to the pricecards board',
+     'routed to ' + INGESTED[0].app);
+  ok(INGESTED[0].payload.tab === 'pricetags' && INGESTED[0].payload.store === 'river-rd',
+     'and carries the tab and store up to the board');
+  ok(!/undefined/.test(SENT[0].body), 'the email has no "undefined" field in it', SENT[0].body);
+  ok(/Tab      : pricetags/.test(SENT[0].body) && /Store    : river-rd/.test(SENT[0].body),
+     'the email names the real tab and store');
+}
+
+reset();
+{
+  const m = M();
+  m.handleBugReport(uiReport('inventory', 'hwy-99'));
+  ok(INGESTED[0].app === 'inventory', 'every other tab still routes to the inventory board',
+     'routed to ' + INGESTED[0].app);
+}
+
+// An explicit parameter still wins, so an operator curl and any future direct submit keep working.
+reset();
+{
+  const m = M();
+  m.handleBugReport(uiReport('inventory', 'hwy-99', { appTab: 'pricetags', appStore: 'bend' }));
+  ok(INGESTED[0].app === 'pricecards' && INGESTED[0].payload.store === 'bend',
+     'an explicit appTab/appStore parameter overrides context');
+}
+
+// A report must survive its own metadata: malformed, missing, or non-object context must not throw.
+[undefined, '', 'not json at all', '[1,2,3]', '"a string"', 'null'].forEach(function (ctx) {
+  reset();
+  const m = M();
+  let threw = null;
+  try { m.handleBugReport(uiReport(null, null, { context: ctx })); } catch (e) { threw = e; }
+  ok(!threw && SENT.length === 1 && INGESTED[0].app === 'inventory',
+     'context ' + JSON.stringify(ctx) + ' still files and still mails',
+     threw ? String(threw.message) : 'sent ' + SENT.length);
+});
+
+reset();
+{
+  const m = M();
+  m.handleBugReport(uiReport(null, null, { context: undefined }));
+  ok(/Tab      : \(unknown\)/.test(SENT[0].body),
+     'a genuinely unknown tab reads "(unknown)", not "undefined"');
+}
+
+/* The two boards keep their own three-minute windows even when the tab comes from context —
+   the assertion from section 6, re-run through the real payload shape. */
+reset();
+{
+  const m = M();
+  CORE_MODE = 'down';                       // force the cache path, where the app key lives
+  m.handleBugReport(uiReport('pricetags', 'river-rd'));
+  m.handleBugReport(uiReport('inventory', 'river-rd'));
+  ok(SENT.length === 2, 'the same words from the two tabs still send twice via context',
+     'sent ' + SENT.length);
+}
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
