@@ -2128,6 +2128,7 @@ const LS = {
   SAVED_ORDERS:        'gc_saved_orders',
   SAVED_TRANSFERS:     'gc_saved_transfers',
   FLAGS:               'gc_flags',
+  DQ_OK:               'gc_dq_ok',        // brand flags dismissed as correct (shared)
   RESTOCK_SKIP_PFX:    'gc_restock_skip_',   // prefix — append product key
   KILLED:              'gc_killed',
   RETIRED:             'gc_retired',            // items queued for manual retirement in Dutchie
@@ -2951,11 +2952,102 @@ function renderMargin() {
     </div>`;
 }
 
+
+// Renders the brand data-quality section of the Flags tab. Returns '' when there is nothing to say,
+// so a clean catalog shows no section at all rather than an empty header.
+function renderBrandIssuesHtml() {
+  const iss = computeBrandIssues();
+  if (!iss.total) return '';
+  const esc = escapeHtml;
+
+  // Say how old the data is. Without this the list looks broken to anyone who just fixed something.
+  const genAt = state.inventoryGeneratedAt || '';
+  const ageH  = genAt ? ageHoursFrom(genAt) : null;
+  const stale = ageH !== null && ageH >= 2;
+  const asOf  = !genAt
+    ? '<span style="color:var(--green)">live from Dutchie</span>'
+    : `as of ${esc(fmtDateTimeShort(genAt))}${stale ? ` · <strong>${Math.round(ageH)}h old</strong> — anything fixed in Dutchie since then still shows here until you hit Refresh` : ''}`;
+  const storeBits = arr => [...new Set(arr)].map(st =>
+    `<span style="color:${storeColor(st)};font-size:11px">${esc(storeDisplay(st))}</span>`).join(', ');
+  const sold = n => Number(n) > 0 ? `<span style="color:var(--muted);font-size:11px"> · ${Math.round(n)} sold 28d</span>` : '';
+  let html = '';
+
+  let first = true;
+  const section = (title, note, rows) => {
+    html += `<div class="section-label" style="margin-top:20px">${esc(title)} — ${rows.length}</div>`;
+    if (first) { html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px">Brand data ${asOf}</div>`; first = false; }
+    if (note) html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 8px">${note}</div>`;
+    html += '<div class="card">' + rows.join('') + '</div>';
+  };
+
+  // 1 — the brand field holds a vendor's name. Needs a person: the data cannot tell a distributor
+  // from a vertically integrated farm that is genuinely both.
+  if (iss.vendorish.length) {
+    const rows = iss.vendorish.map(x => {
+      const namesAttr = esc(x.nameKeys.join('~~')).replace(/'/g, '&#39;');
+      const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
+      return `<div class="flag-item" style="align-items:center">
+        <div class="flag-icon" style="color:var(--amber)">◆</div>
+        <div class="flag-text" style="flex:1">
+          <strong>${esc(x.name)}</strong>${sold(x.sold28)}<br>
+          <span style="font-size:11px">brand reads <strong style="color:var(--amber)">${esc(x.current)}</strong>${
+            x.suggested ? ` · other stores say <strong style="color:var(--green)">${esc(x.suggested)}</strong>` : ''
+          }</span><br>${storeBits(x.stores)}
+        </div>
+        <button class="flag-row-btn" onclick="dqDismissNames(event,'${namesAttr}')"
+          title="${esc(x.current)} is a real brand — stop flagging this name anywhere">brand is right</button>
+        <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore just this product">skip</button>
+      </div>`;
+    });
+    section('Brand may be a vendor name', 'The data cannot decide these — a supplier can be both. "brand is right" answers for that name everywhere, for good.', rows);
+  }
+
+  // 2 — some stores blank, exactly one real answer. Say what to type.
+  if (iss.disagree.length) {
+    const rows = iss.disagree.map(x => {
+      const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
+      return `<div class="flag-item" style="align-items:center">
+        <div class="flag-icon" style="color:var(--muted)">○</div>
+        <div class="flag-text" style="flex:1">
+          <strong>${esc(x.name)}</strong>${sold(x.sold28)}<br>
+          <span style="font-size:11px">brand missing — should be <strong style="color:var(--green)">${esc(x.suggested)}</strong></span><br>
+          ${storeBits(x.stores)}
+        </div>
+        <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore this product">skip</button>
+      </div>`;
+    });
+    section('Brand missing at some stores', 'Another store already has the answer — copy it across in Dutchie.', rows);
+  }
+
+  // 3 — two real brands on one SKU. Only a human knows which.
+  if (iss.conflict.length) {
+    const rows = iss.conflict.map(x => {
+      const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
+      const opts = x.options.map(o =>
+        `<div style="font-size:11px;margin-top:2px"><strong>${esc(o.brand)}</strong> — ${storeBits(o.stores)}</div>`).join('');
+      return `<div class="flag-item" style="align-items:center">
+        <div class="flag-icon" style="color:var(--red)">≠</div>
+        <div class="flag-text" style="flex:1">
+          <strong>${esc(x.name)}</strong>${sold(x.sold28)}${opts}
+        </div>
+        <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore this product">skip</button>
+      </div>`;
+    });
+    section('Stores disagree on the brand', 'Two real brands on one SKU — nothing in the data says which is right.', rows);
+  }
+
+  return html;
+}
+
 function renderFlags() {
   const el = document.getElementById('flagsContent');
   if (isUnconfigured()) { el.innerHTML = '<div class="state-msg">Configure PROXY_URL first.</div>'; return; }
 
   let html = '';
+
+  // Brand data quality first: it is the only section that asks the reader to go and CHANGE something
+  // in Dutchie, and it clears itself once they do.
+  const dqHtml = renderBrandIssuesHtml();
 
   // ── Manually flagged items (with when + who) ──
   const flaggedObj = getFlaggedObj();
@@ -3124,6 +3216,11 @@ function renderFlags() {
         </div>`;
     }
   }
+
+  // Brand data quality goes LAST in the markup even though it is computed first: the manual flags and
+  // the hidden list are what Tawny opens this tab for, and a 90-row catalog cleanup above them would
+  // bury the day-to-day work under a chore.
+  html += dqHtml;
 
   if (!html) {
     const loading = !state.cogsData || !state.salesData;
@@ -4759,6 +4856,12 @@ async function loadInventoryData() {
     }
 
     state.inventoryData = allProducts;
+    // When these rows came from the stored snapshot, remember how old it is. The brand flags are a
+    // "go and fix this in Dutchie" list, and a snapshot can be many hours behind — measured at 15h on
+    // 2026-09-08, the morning after Sky corrected 559 FATTY products and 278 Dab Factory rows, all of
+    // which the app was still reporting as broken. Showing a list of already-done work with no hint
+    // why is the fastest way to make someone stop trusting the tab. Empty string = live pull, no lag.
+    state.inventoryGeneratedAt = (bundle && bundle.generatedAt) ? bundle.generatedAt : '';
     const scanBtn = document.getElementById('scannerTabBtn');
     if (scanBtn) scanBtn.style.display = 'inline-flex';
     buildInvFilterOptions(allProducts);
@@ -4933,6 +5036,154 @@ function updateCatToggleBtn() {
   btn.innerHTML = eye + badge;
 }
 
+
+// == Brand data quality ========================================================
+// Finds products whose BRAND is wrong or missing, so it can be corrected in Dutchie.
+//
+// BRAND ONLY, DELIBERATELY. The first cut of this covered vendor too, and vendor turned out to be the
+// wrong field to chase. Measured against live Dutchie data on 2026-09-08: editing a product's brand
+// DOES reach packages already in stock (12 of 128 FATTY rows flipped blank -> "Green Cross" on the
+// next forced pull), while editing its vendor reaches NONE of them (0 of 128 changed, despite the
+// catalog export showing all 559 FATTY products corrected minutes earlier). Vendor on the inventory
+// feed is a property of the PACKAGE -- who that batch was actually bought from -- so a "fix this in
+// Dutchie" list built on it would list rows that can never clear, which is how a review list teaches
+// people to ignore it. Vendor disagreements are sourcing history, not errors.
+//
+// Three checks, ordered by how confidently we can name the right answer:
+//   1. disagree  - the same SKU has different brands at different stores and exactly one is non-blank,
+//                  so the blank stores are simply missing what the others already know.
+//   2. conflict  - same SKU, two or more different real brands. Someone has to decide which is right.
+//   3. vendorish - the brand field holds a name used overwhelmingly as a VENDOR elsewhere. This is what
+//                  caught "Dab Factory" sitting where "Sessions" belonged.
+//
+// Check 3 CANNOT be settled from the data and must not pretend otherwise. Plenty of GX suppliers are
+// legitimately both: Meraki Gardens appears ~670 times in each field, and Sky confirmed on 2026-09-08
+// that Avitas and Otis Gardens are flower brands as well as vendors. Whether a name is a brand here
+// depends on the category and on knowledge the sheet does not hold, so the ratio below is a prompt for
+// a human, never a verdict -- and a dismissal is remembered SHARED (see SHARED_DQOK_KEY in the proxy)
+// so answering it once answers it for everyone, including for products that do not exist yet.
+const DQ_VENDORISH_RATIO = 3;   // used as a vendor >=3x as often as a brand -> worth asking about
+
+function getDqOkObj() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS.DQ_OK) || '{}');
+    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  } catch { return {}; }
+}
+function saveDqOkObj(o) { localStorage.setItem(LS.DQ_OK, JSON.stringify(o)); }
+function dqNameKey(name) { return 'name:' + String(name || '').trim().toLowerCase(); }
+function dqSkuKey(sku)   { return 'sku:'  + String(sku  || '').trim(); }
+
+function computeBrandIssues() {
+  const data = state.inventoryData || [];
+  if (!data.length) return { disagree: [], conflict: [], vendorish: [], total: 0 };
+  const ok = getDqOkObj();
+  const txt = v => String(v || '').trim();
+
+  // Vocabulary: how often does each name appear in each field, across every store?
+  const asVendor = {}, asBrand = {};
+  for (const p of data) {
+    const v = txt(p.vendor), b = txt(p.brand);
+    if (v) asVendor[v] = (asVendor[v] || 0) + 1;
+    if (b) asBrand[b]  = (asBrand[b]  || 0) + 1;
+  }
+  const vendorish = new Set(
+    Object.keys(asVendor).filter(v => asBrand[v] && asVendor[v] >= asBrand[v] * DQ_VENDORISH_RATIO)
+  );
+
+  // Group by SKU. SKUs repeat across stores here (2,213 of 3,179 span more than one), which is what
+  // makes the cross-store comparison possible at all; fall back to name for the ones that do not.
+  const groups = {};
+  for (const p of data) {
+    const k = p.sku || p.name;
+    (groups[k] || (groups[k] = [])).push(p);
+  }
+
+  const out = { disagree: [], conflict: [], vendorish: [] };
+  for (const k of Object.keys(groups)) {
+    const g = groups[k];
+    const sku = g[0].sku || '';
+    if (ok[dqSkuKey(sku)]) continue;
+    const sold28 = g.reduce((s, p) => s + (Number(p.qty28) || 0), 0);
+    const qty    = g.reduce((s, p) => s + (Number(p.qty) || 0), 0);
+    const brands = [...new Set(g.map(p => txt(p.brand)))];
+    const real   = brands.filter(Boolean);
+
+    // 3 - brand field holds a vendor's name. Reported first because it is the one that needs a person,
+    // and it is suppressed BY NAME once someone says that name is a real brand.
+    const bad = g.filter(p => vendorish.has(txt(p.brand)));
+    if (bad.length) {
+      const names = [...new Set(bad.map(p => txt(p.brand)))].filter(nm => !ok[dqNameKey(nm)]);
+      if (names.length) {
+        const better = real.filter(b => !vendorish.has(b));
+        out.vendorish.push({
+          sku, name: g[0].name, sold28, qty,
+          stores: bad.map(p => p.store),
+          current: names.join(' / '),
+          suggested: better.length === 1 ? better[0] : '',
+          nameKeys: names,
+        });
+        continue;   // one product, one row - do not also list it below
+      }
+    }
+
+    if (brands.length < 2) continue;
+    if (real.length === 1) {
+      // 1 - some stores blank, one real answer. The blanks are just missing it.
+      out.disagree.push({
+        sku, name: g[0].name, sold28, qty,
+        stores: g.filter(p => !txt(p.brand)).map(p => p.store),
+        suggested: real[0],
+      });
+    } else if (real.length > 1) {
+      // 2 - two real brands on one SKU. Nothing in the data says which wins.
+      out.conflict.push({
+        sku, name: g[0].name, sold28, qty,
+        options: real.map(b => ({ brand: b, stores: g.filter(p => txt(p.brand) === b).map(p => p.store) })),
+      });
+    }
+  }
+  const bySold = (a, b) => b.sold28 - a.sold28 || String(a.name).localeCompare(String(b.name));
+  out.disagree.sort(bySold); out.conflict.sort(bySold); out.vendorish.sort(bySold);
+  out.total = out.disagree.length + out.conflict.length + out.vendorish.length;
+  return out;
+}
+
+// Dismiss = "this is not a mistake." Shared, because it is a judgement call, and re-asking the next
+// person is exactly the nagging that gets a review list ignored.
+// Push one dismissal to the shared store, best-effort. The try/catch is NOT belt-and-braces: fetch
+// here can throw SYNCHRONOUSLY, so a bare `.catch()` does not contain it — that only catches a
+// rejected promise. gx-dev.js blocks undeclared writes by throwing on the spot, and the first build
+// of this lost the re-render to exactly that: the dismissal saved locally, the row stayed on screen,
+// and the only cure was clicking again on something already done. Anything that patches fetch (an
+// extension, a CSP failure) can do the same in production.
+function dqShare_(key, by) {
+  try { const p = fetch(sharedStateQuery('shareddqok', { key, by })); if (p && p.catch) p.catch(() => {}); }
+  catch (err) { console.warn('[GC] dq dismissal not synced to shared state', err); }
+}
+function dqDismiss(e, key) {
+  if (e) e.stopPropagation();
+  const o = getDqOkObj();
+  const by = _killerName();
+  if (o[key]) delete o[key]; else o[key] = { ts: Date.now(), by };
+  saveDqOkObj(o);
+  dqShare_(key, by);
+  renderFlags();
+}
+function dqDismissNames(e, csv) {
+  if (e) e.stopPropagation();
+  const by = _killerName();
+  String(csv || '').split('~~').filter(Boolean).forEach(nm => {
+    const key = dqNameKey(nm), o = getDqOkObj();
+    if (!o[key]) {
+      o[key] = { ts: Date.now(), by };
+      saveDqOkObj(o);
+      dqShare_(key, by);
+    }
+  });
+  renderFlags();
+}
+
 // ── Renderer ─────────────────────────────────────────────
 // ── Manual flags ─────────────────────────────────────────
 function flagKey(p) { return (p.sku || p.name) + '|' + p.store; }
@@ -5058,6 +5309,11 @@ async function syncSharedState() {
       const prev = localStorage.getItem(LS.RETIRED);
       const next = JSON.stringify(data.retired);
       if (prev !== next) { localStorage.setItem(LS.RETIRED, next); changed = true; }
+    }
+    if (data.dqok) {
+      const prev = localStorage.getItem(LS.DQ_OK);
+      const next = JSON.stringify(data.dqok);
+      if (prev !== next) { localStorage.setItem(LS.DQ_OK, next); changed = true; }
     }
     if (changed && state.inventoryData) {
       renderInventory();
@@ -7981,7 +8237,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.033';
+const APP_VERSION = 'v3.034';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX

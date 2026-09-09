@@ -326,6 +326,7 @@ function doGet(e) {
     if (params.action === 'sharedretire')      return jsonOut(sharedRetire(params));
     if (params.action === 'sharedunretire')    return jsonOut(sharedUnretire(params));
     if (params.action === 'sharedflag')        return jsonOut(sharedFlag(params));
+    if (params.action === 'shareddqok')        return jsonOut(sharedDqOk(params));
     if (params.action === 'salesdiag')      return jsonOut(getSalesHistoryDiagnostics());
     if (params.action === 'apiexplore')     return jsonOut(exploreApi(params));
     if (params.action === 'skuprobe')       return jsonOut(skuRoomProbe(params));
@@ -5184,6 +5185,16 @@ function backfillSkuDict() {
 const SHARED_KILLED_KEY  = 'gc_shared_killed';
 const SHARED_FLAGGED_KEY = 'gc_shared_flagged';
 const SHARED_RETIRED_KEY = 'gc_shared_retired'; // items queued for manual retirement in Dutchie
+// Data-quality dismissals: "this brand flag is not a mistake, stop showing it."
+// Two key shapes, because the two kinds of false positive recur differently:
+//   name:<lowercased name>  — the name is legitimately a brand, even though it is mostly a vendor.
+//                             Suppresses the check for that name everywhere, including products that
+//                             do not exist yet. Sky, 2026-09-08: Avitas and Otis Gardens are flower
+//                             brands AND vendors, so the vendor-name-in-brand-field test cannot be
+//                             decided from the data alone — whether a name is a brand here depends on
+//                             the category, which is knowledge the sheet does not hold.
+//   sku:<sku>               — this one product's cross-store disagreement is fine; others are not.
+const SHARED_DQOK_KEY = 'gc_shared_dq_ok';
 // Custom lead times: per SKU or per style target-coverage (days) overrides for the reorder engine. Shared
 // server-side (all users + the smart-ordering job read the same list). Added via the Settings picker.
 //   • type:'sku'   → key = SKU; matches that one product.
@@ -5212,11 +5223,12 @@ function getOrCreateSharedStateSheet_() {
 
 function readBetaSharedState_() {
   const sheet = getOrCreateSharedStateSheet_();
-  if (sheet.getLastRow() < 2) return { killed: {}, flagged: {}, retired: {} };
+  if (sheet.getLastRow() < 2) return { killed: {}, flagged: {}, retired: {}, dqok: {} };
   const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
   const killed = {};
   const flagged = {};
   const retired = {};
+  const dqok = {};
   for (const row of values) {
     const type = String(row[0] || '').trim();
     const key = String(row[1] || '').trim();
@@ -5227,8 +5239,9 @@ function readBetaSharedState_() {
     if (type === 'killed') killed[key] = rec;          // { ts, by } — was a bare ts number before
     else if (type === 'flagged') flagged[key] = rec;   // { ts, by } — was a keys array before
     else if (type === 'retired') retired[key] = rec;   // { ts, by } — queued for Dutchie retirement
+    else if (type === 'dqok') dqok[key] = rec;         // { ts, by } — brand flag dismissed as correct
   }
-  return { killed, flagged, retired };
+  return { killed, flagged, retired, dqok };
 }
 
 function upsertBetaSharedState_(type, key, valueObj, notes) {
@@ -5269,6 +5282,7 @@ function getSharedState(params) {
     killed:  JSON.parse(props.getProperty(SHARED_KILLED_KEY) || '{}'),
     flagged: flagged,
     retired: JSON.parse(props.getProperty(SHARED_RETIRED_KEY) || '{}'),
+    dqok:    JSON.parse(props.getProperty(SHARED_DQOK_KEY) || '{}'),
   };
 }
 
@@ -5393,6 +5407,26 @@ function sharedFlag(params) {
   if (norm[key]) delete norm[key]; else norm[key] = { ts: Date.now(), by: by };
   props.setProperty(SHARED_FLAGGED_KEY, JSON.stringify(norm));
   return { ok: true, flagged: Object.keys(norm).length };
+}
+
+// Dismiss (or un-dismiss) a brand data-quality flag. Toggle, same shape as sharedFlag.
+// A dismissal is a JUDGEMENT, not a fix, so it is shared rather than per-browser: if Tawny decides
+// Avitas is a real brand, Sky must not be shown the same flag again tomorrow.
+function sharedDqOk(params) {
+  const key = params.key;
+  const by = String(params.by || '');
+  if (!key) return { ok: false, error: 'missing key' };
+  if (isBetaRequest_(params)) {
+    const state = readBetaSharedState_();
+    if (state.dqok[key]) deleteBetaSharedState_('dqok', key);
+    else upsertBetaSharedState_('dqok', key, { ts: Date.now(), by: by }, 'brand flag dismissed as correct' + (by ? ' by ' + by : ''));
+    return { ok: true, mode: 'beta' };
+  }
+  const props = PropertiesService.getScriptProperties();
+  const obj = JSON.parse(props.getProperty(SHARED_DQOK_KEY) || '{}');
+  if (obj[key]) delete obj[key]; else obj[key] = { ts: Date.now(), by: by };
+  props.setProperty(SHARED_DQOK_KEY, JSON.stringify(obj));
+  return { ok: true, dqok: Object.keys(obj).length };
 }
 
 // ── UPC → Product Name map ────────────────────────────────────────────────────
@@ -5534,7 +5568,7 @@ function getLibVersion_() {
 const WRITE_ACTIONS = Object.assign(Object.create(null), {
   // shared state the app itself mutates
   setleadtimes: 1, setupcentry: 1,
-  sharedkill: 1, sharedunkill: 1, sharedretire: 1, sharedunretire: 1, sharedflag: 1,
+  sharedkill: 1, sharedunkill: 1, sharedretire: 1, sharedunretire: 1, sharedflag: 1, shareddqok: 1,
   // operator-only maintenance: no UI calls these, they are reached by URL
   velsync: 1, velreset: 1, velresyncfrom: 1, veldedup: 1, velclearfrom: 1, velclear: 1,
   velbackfill: 1, clearerrors: 1, prodcatclear: 1, roomcacheclear: 1,
