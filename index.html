@@ -2161,6 +2161,7 @@ const LS = {
   BULK_FLOWER_MIN_QTY: 'gc_bulk_flower_min_qty',
   REORDER_BUFFER:      'gc_reorder_buffer',
   REORDER_TARGET:      'gc_reorder_target_v2',
+  ANNOUNCE:            'gc_announce_v1',        // one-off feature announcements: {id: timesShown}
   WN_SEEN:             'gc_wn_seen_inventory',  // what's-new last-seen version — namespaced per-app (bare gc_wn_seen is shared across same-origin GX apps and collided with Leaderboard)
   EXCL_ROWS:           'gc_inv5_excluded',       // excluded-row map (includes cache prefix)
   SCANNER_FIX_V:       'gc_scanner_fix_v',       // one-time self-heal version for stale camera-denied flags
@@ -4368,6 +4369,8 @@ function init() {
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       state.tab = btn.dataset.tab;
+      // Opening the announced tab is the announcement's job done, however she got here.
+      if (state.tab === 'flags') announceRetire('flags-brand-2026-09');
       document.getElementById('panel-' + state.tab).classList.add('active');
       const isInv = state.tab === 'inventory';
       const isBeta = state.tab === 'beta';
@@ -8402,7 +8405,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.036';
+const APP_VERSION = 'v3.037';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8458,6 +8461,7 @@ async function loadChangelog() {
       : [];
     renderVersionHistory();
     checkWhatsNew();
+    checkAnnouncements();
   } catch (e) {
     // Every retry missed → show a clear, actionable state, never a silent blank.
     renderVersionHistoryError('Couldn’t reach the Command Center.');
@@ -8516,6 +8520,100 @@ function compareVersions(a, b) {
     if (diff) return diff;
   }
   return 0;
+}
+
+
+// ── One-off feature announcements ─────────────────────────────────────────────
+// Separate from What's New, which is version-driven and shows ONCE. Some changes need a nudge that
+// repeats: the brand data-quality sections shipped on 2026-09-08 are four new sections in a tab
+// Tawny already uses daily, and a single notice she happens to dismiss while thinking about
+// something else is a feature nobody ever finds. Sky asked for five showings.
+//
+// IT ALSO STOPS EARLY. Repeating a notice at someone who has already acted on it is how an app
+// teaches people to click past its notices, so opening the Flags tab retires it whether that took
+// one showing or five. The count is the ceiling, not the plan.
+const ANNOUNCEMENTS = [{
+  id:       'flags-brand-2026-09',
+  maxShows: 5,
+  title:    'Brand problems now show up in Flags',
+  subtitle: 'Four new sections',
+  tab:      'flags',
+  cta:      'Show me',
+  items: [
+    'On the shelf — in stock right now with no brand on it at all.',
+    'Brand may be a vendor name — the brand box has a supplier in it. This is what caught 278 products reading "Dab Factory" when the brand was "Sessions".',
+    'Brand missing at some stores — another store already has the answer, so it tells you what to type.',
+    'Stores disagree — two stores, two different brands, one product.',
+  ],
+  footnote: 'Fix it in Dutchie and it drops off the list on its own. "Brand is right" means a name is genuinely a brand and stops it being flagged anywhere, for good — your call sticks for everyone. "Skip" ignores one product.',
+}];
+
+function announceState_() {
+  try { const o = JSON.parse(localStorage.getItem(LS.ANNOUNCE) || '{}'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
+  catch { return {}; }
+}
+function announceSave_(o) { try { localStorage.setItem(LS.ANNOUNCE, JSON.stringify(o)); } catch {} }
+
+// Called when the thing being announced has actually been used. Silences it for good.
+function announceRetire(id) {
+  const st = announceState_();
+  const a = ANNOUNCEMENTS.find(x => x.id === id);
+  if (!a || st[id] === 'done') return;
+  st[id] = 'done';
+  announceSave_(st);
+}
+
+function checkAnnouncements() {
+  // Never stack two modals. What's New is version news and wins the load it appears on; this comes
+  // back tomorrow, which is the whole point of it repeating.
+  const ov = document.getElementById('wnOverlay');
+  if (ov && ov.classList.contains('open')) return;
+
+  const st = announceState_();
+  const a = ANNOUNCEMENTS.find(x => st[x.id] !== 'done' && (Number(st[x.id]) || 0) < x.maxShows);
+  if (!a) return;
+
+  const shown = (Number(st[a.id]) || 0) + 1;
+  st[a.id] = shown;
+  announceSave_(st);
+  showAnnouncement(a, shown);
+}
+
+function showAnnouncement(a, shown) {
+  const left = a.maxShows - shown;
+  document.getElementById('wnModal').innerHTML = `
+    <div class="wn-header">
+      <div class="wn-icon"><img src="https://greencrosscanna.github.io/greencross-gx-theme/gc-icon.png" alt="GC" style="width:28px;height:28px;object-fit:contain;display:block;" onerror="this.replaceWith(this.ownerDocument.createTextNode(String.fromCodePoint(127807)))"></div>
+      <div>
+        <div class="wn-title">${escapeHtml(a.title)}</div>
+        <div class="wn-subtitle">${escapeHtml(a.subtitle)}</div>
+      </div>
+    </div>
+    <div class="wn-body">
+      <ul class="wn-items">${a.items.map(i => `<li>${escapeHtml(i)}</li>`).join('')}</ul>
+      <div style="font-size:12px;color:var(--muted);line-height:1.55;margin:10px 0 14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)">
+        ${escapeHtml(a.footnote)}
+      </div>
+    </div>
+    <div class="wn-footer" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+      <span style="font-size:11px;color:var(--muted)">${left > 0 ? 'This reminder will show ' + left + ' more time' + (left === 1 ? '' : 's') : 'Last reminder'}</span>
+      <span style="display:flex;gap:8px">
+        <button class="wn-ok-btn" style="background:transparent;color:var(--muted);border:1px solid rgba(255,255,255,.15)" onclick="closeAnnouncement('${a.id}',false)">Later</button>
+        <button class="wn-ok-btn" onclick="closeAnnouncement('${a.id}',true)">${escapeHtml(a.cta)}</button>
+      </span>
+    </div>`;
+  document.getElementById('wnOverlay').classList.add('open');
+}
+
+function closeAnnouncement(id, go) {
+  document.getElementById('wnOverlay').classList.remove('open');
+  if (!go) return;
+  announceRetire(id);                      // she went and looked — stop asking
+  const a = ANNOUNCEMENTS.find(x => x.id === id);
+  // Click the real tab button rather than reimplementing what its handler does — that handler also
+  // toggles the filter bars, the summary row and the category pills, and a copy of it would drift.
+  const btn = a && a.tab && document.querySelector('.tab[data-tab="' + a.tab + '"]');
+  if (btn) btn.click();
 }
 
 function checkWhatsNew() {
