@@ -281,6 +281,17 @@ reset();
 reset();
 {
   const m = M();
+  const raw = JSON.stringify({ url: 'https://x/y', ua: 'test', tab: 'inventory', store: 'bend',
+                               errors: ['TypeError: x is not a function'] });
+  m.handleBugReport(uiReport('inventory', 'bend', { context: raw }));
+  ok(INGESTED[0].payload.context === raw,
+     'the diagnostic snapshot is forwarded to the board verbatim, errors and all',
+     'got ' + JSON.stringify(INGESTED[0].payload.context));
+}
+
+reset();
+{
+  const m = M();
   m.handleBugReport(uiReport('inventory', 'hwy-99'));
   ok(INGESTED[0].app === 'inventory', 'every other tab still routes to the inventory board',
      'routed to ' + INGESTED[0].app);

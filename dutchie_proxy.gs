@@ -436,7 +436,16 @@ function handleBugReport(b) {
   try {
     const ing = GXCore.gxIngestBug(bugApp, b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
-      store: bugStore, tab: bugTab, appVer: b.appVer
+      store: bugStore, tab: bugTab, appVer: b.appVer,
+      /* FORWARD THE SNAPSHOT, don't just mine it for the tab. gx-bugreport captures the url, the
+         viewport, the user agent, the online flag and — the part that matters — `recentErrors`, the
+         JS errors the page threw BEFORE the user hit submit. GX Core stores all of it
+         (gxIngestBug: `context: gxBugContext_(payload.context || payload.ctx)`), so it was being
+         collected in the browser, sent to this proxy, and dropped one line short of the board.
+         On the class of report that says "it didn't go through", those captured errors are the most
+         useful field there is. Passed through verbatim rather than re-serialized from bugContext_'s
+         parse, so nothing is lost if the snapshot grows a field this file has never heard of. */
+      context: b.context || ''
     });
     if (ing && ing.id) bugId = String(ing.id);
     if (ing && ing.deduped) isRepeat = true;
