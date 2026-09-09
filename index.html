@@ -8405,7 +8405,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.037';
+const APP_VERSION = 'v3.038';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -8564,8 +8564,8 @@ function announceRetire(id) {
 }
 
 function checkAnnouncements() {
-  // Never stack two modals. What's New is version news and wins the load it appears on; this comes
-  // back tomorrow, which is the whole point of it repeating.
+  // One modal at a time -- both live in #wnModal. What's New goes first when both are pending, and
+  // hands over here from closeWhatsNew, so the announcement is QUEUED rather than skipped.
   const ov = document.getElementById('wnOverlay');
   if (ov && ov.classList.contains('open')) return;
 
@@ -8672,6 +8672,13 @@ function showWhatsNew(entries) {
 function closeWhatsNew() {
   document.getElementById('wnOverlay').classList.remove('open');
   if (CHANGELOG_DATA.length) localStorage.setItem(LS.WN_SEEN, CHANGELOG_DATA[0].v);
+  // Hand the load over to any pending announcement rather than dropping it. Both modals share one
+  // container, so they cannot co-exist -- but SKIPPING was the wrong resolution: a release note fires
+  // on every deploy, and this app shipped four times on 2026-09-08 alone, so an announcement that
+  // yields to What's New yields on precisely the loads a busy period produces. Sky spotted it the
+  // same day: "I should see the warning when I log in too" -- and he would not have, for days.
+  // Deferred a tick so the class removal above has landed before checkAnnouncements reads it.
+  setTimeout(checkAnnouncements, 0);
 }
 
 // ── LL Order Sheet modal ──────────────────────────────────────────────────────
