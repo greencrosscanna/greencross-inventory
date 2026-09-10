@@ -56,7 +56,7 @@ function ok(cond, label, detail) {
 }
 
 // ── Fakes we can inspect ──────────────────────────────────────────────────────
-let SENT, INGESTED, CACHE, CACHE_MODE, LOCK_MODE, CORE_MODE, DIGEST_MODE;
+let SENT, INGESTED, CACHE, CACHE_MODE, LOCK_MODE, CORE_MODE, DIGEST_MODE, CORE_LITERAL;
 
 /* Read a sent email defensively. When a regression stops a send happening at all, the count
  * assertion above already FAILS — and every assertion after it would then crash on SENT[0].body,
@@ -68,7 +68,8 @@ function reset() {
   SENT = []; INGESTED = []; CACHE = {};
   CACHE_MODE = 'ok';    // 'ok' | 'dead'
   LOCK_MODE  = 'ok';    // 'ok' | 'busy'
-  CORE_MODE  = 'new';   // 'new' | 'dup' | 'down'
+  CORE_MODE  = 'new';   // 'new' | 'dup' | 'down' | 'refuse' | 'noid' | 'mailerr' | 'mailskip' | 'literal'
+  CORE_LITERAL = undefined;   // used only by CORE_MODE 'literal'
   DIGEST_MODE = 'ok';   // 'ok' | 'throw'
 }
 
@@ -98,6 +99,9 @@ function loadBugFns() {
       gxIngestBug: function (app, reporter, payload) {
         INGESTED.push({ app: app, reporter: reporter, payload: payload });
         if (CORE_MODE === 'down') throw new Error('central unavailable');
+        /* Hand back EXACTLY what the table specifies, including null/undefined — the point of that
+           block is the shapes Core's contract does not describe. */
+        if (CORE_MODE === 'literal') return CORE_LITERAL;
         /* THE FOUR SHAPES gxIngestBug ACTUALLY RETURNS, from GX Core v312 on. Three of them mean
            something has to happen here, and only one of the three arrives as an exception — which
            is the entire reason these modes exist rather than a boolean "core up/down". */
@@ -334,6 +338,42 @@ reset();
   ok(SENT.length === 2, 'an unannounced Price Cards bug does not silence an Inventory one',
      'sent ' + SENT.length);
 }
+
+/* ── 3f. EVERY SHAPE gxIngestBug CAN HAND BACK, INCLUDING THE ONES IT SHOULDN'T ────────────────
+ *
+ * Leaderboard named the failure shape that produced three separate bugs across the suite tonight:
+ * A VALUE WHOSE ABSENCE IS INDISTINGUISHABLE FROM A VALUE. A de-duped repeat carries no mail field
+ * and "no mailed" gets read as "mail failed"; an unreadable config key gets read as "key unset"; a
+ * quota read that threw gets read as "cannot send". Each has an obvious one-liner that is wrong and
+ * looks right.
+ *
+ * This table is that test applied to every return this app can receive — including three that are
+ * not in Core's contract at all (a bare {}, null, undefined). Those matter because the honest answer
+ * to "what does Core return if something goes wrong upstream of its own error handling" is that we
+ * do not know, and the safe behavior for an unrecognized shape is to MAIL: the cost of a spurious
+ * notice is a duplicate email, and the cost of guessing "filed" is a report nobody ever reads.
+ *
+ * Reading down the `want` column is the whole contract: silence on the four shapes that mean the
+ * board has it and someone was told, an email on everything else. */
+[['{ok:true,id,mailed}       normal filing',         { ok: true, id: 'b1', mailed: 'sky@' },          0],
+ ['{ok:true,id,deduped}      redirect re-execution', { ok: true, id: 'b1', deduped: true },           0],
+ ['{ok:true,id}              ok, NO mail field',     { ok: true, id: 'b1' },                          0],
+ ['{ok:true,id,mail_error}   filed, mail died',      { ok: true, id: 'b1', mail_error: 'quota' },     1],
+ ['{ok:true,id,mail_skipped} filed, nobody to mail', { ok: true, id: 'b1', mail_skipped: 'none' },    1],
+ ['{ok:false,error}          refused, no throw',     { ok: false, error: 'title required' },          1],
+ ['{}                        bare empty object',     {},                                              1],
+ ['{ok:true}                 ok with no id',         { ok: true },                                    1],
+ ['null                      null return',           null,                                            1],
+ ['undefined                 undefined return',      undefined,                                       1],
+].forEach(function (row) {
+  reset();
+  const m = M();
+  CORE_MODE = 'literal';
+  CORE_LITERAL = row[1];
+  m.handleBugReport(REPORT);
+  ok(SENT.length === row[2], 'shape ' + row[0] + ' -> ' + (row[2] ? 'emails' : 'silent'),
+     'sent ' + SENT.length + ', wanted ' + row[2]);
+});
 
 // ── 4. Fail open — every guard failure falls through to SENDING ───────────────
 /* All three run with Core DOWN, because that is now the only path that reaches the mail at all —
