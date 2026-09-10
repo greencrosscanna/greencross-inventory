@@ -440,8 +440,17 @@ function jsonOut(obj, callback) {
  *
  * WHETHER THIS EMAIL CAN SUCCEED WHERE CORE'S FAILED is not guaranteed, and saying so honestly is
  * what stops it being trusted for more than it does. A library call runs in the CALLING project, so
- * gxIngestBug's MailApp.sendEmail already spent THIS app's quota — an exhausted quota refuses this
- * send too. What it does cover: a bad or missing recipient (all of `mail_skipped`), a transient
+ * gxIngestBug's MailApp.sendEmail was charged here — and the allowance it drew on is NOT this app's.
+ * Apps Script meters MailApp per USER ACCOUNT per day, and all seven GX engines deploy as the same
+ * owner, so there is ONE allowance for the whole suite. If Core's send failed on quota, this one
+ * fails too, and no amount of "Inventory barely mails" reasoning changes that — the number was
+ * spent by whichever app was busy today. (Corrected 2026-09-09; the original said "THIS app's
+ * quota", which invites exactly that false comfort. SPIFF measured the account-wide behavior
+ * directly — 1447 to 1417 having sent nothing — and Leaderboard reproduced it, 1388 to 1313 with
+ * zero sends of its own. The corollary bites in the other direction too: a FALLING quota number is
+ * not evidence this app sent anything.)
+ *
+ * What this notice does cover: a bad or missing recipient (all of `mail_skipped`), a transient
  * failure, a Core-side config problem.
  *
  * THE TWO NOTICES MARK SEPARATE CACHE KEYS. They carry contradictory instructions, and one report
