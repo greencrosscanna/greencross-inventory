@@ -228,6 +228,28 @@ exit 0
 HOOK_EOF
 
     for h in pre-push pre-commit reference-transaction; do chmod 755 "$HOOKS/$h" 2>/dev/null || true; done
+
+    # ── RESTORE THE EXECUTABLE BIT ON THE SHARED SCRIPTS, TOO ───────────────────────────────────
+    # The hooks above are chmod'd here because this filesystem drops executable bits and a disarmed
+    # hook is silent. The same thing happens to the shared scripts beside them, and it is NOT fully
+    # explained: one cause was found and fixed (gx-sync.sh used to chmod in a sweep at the end, so an
+    # interrupted run froze mktemp's 0600 — gx-theme 647fc45), but files have been observed 755 right
+    # after a COMPLETED sync and 0600 minutes later with nothing run in between, twice, in different
+    # repos. A controlled A/B would not reproduce it in either arm. That remains open; see gx-sync.sh.
+    #
+    # This does not explain it. It makes it stop mattering, which is the half worth having: every
+    # guard in the suite already invokes these through `sh` (which reads the file and ignores the
+    # mode), so the ONLY path that needs the bit is a human typing `./deploy.sh`. Repairing it
+    # wherever we happen to be running is cheaper than the alternative — rewriting 153 occurrences of
+    # `./deploy.sh` across eight repos' docs, most of them in per-repo CLAUDE.md files that are
+    # deliberately not synced and would drift straight back.
+    #
+    # The list matches gx-sync.sh's. Keep them together: a script that syncs 755 and a script that
+    # repairs 755 disagreeing about WHICH files is how one of them silently stops covering something.
+    for _f in .claude/gx-brain-notes.sh .claude/gx-posttool-tests.sh deploy.sh serve.py serve.js \
+              gx-preflight.sh gxengine.sh gx-usenglish.sh gxclaim.sh gxdevlogin.sh; do
+      [ -f "$_f" ] && [ ! -x "$_f" ] && chmod 755 "$_f" 2>/dev/null || true
+    done
     echo "✓ gxclaim gates installed in $REPO (pre-commit, pre-push, reference-transaction)"
     exit 0
     ;;
@@ -260,8 +282,61 @@ HOOK_EOF
     exit 0
     ;;
 
+  expect)
+    # ── REFUSE A COMMIT ONTO A BRANCH THE CALLER NEVER LOOKED AT ────────────────────────────────
+    # `check` answers "does someone ELSE hold this checkout". It says nothing about what is checked
+    # out RIGHT NOW, and that is the other half of the same hazard: on 2026-09-09 a gxdevlogin.sh
+    # rollout ran `git add && git commit && git push` across six spokes and committed into
+    # greencross-leaderboard while that repo had a feature branch out. Nothing was lost — the content
+    # shipped inside leaderboard's squash-merge, under its title — but the authorship is buried and
+    # the originating session never knew. Leaderboard found it, not us. Half an hour later the same
+    # rollout WAS refused on leaderboard and spiff, but only because those sessions happened to hold
+    # their claims; in an unclaimed repo it would have gone through again.
+    #
+    # So this is deliberately EXPLICIT rather than a hook. A hook cannot know which branch you meant
+    # to be on — only the caller does. A rollout loop states its expectation once per repo and gets a
+    # refusal instead of a surprise:
+    #
+    #     for r in ../greencross-*/; do (cd "$r" && sh ./gxclaim.sh expect main "the gxdevlogin rollout" \
+    #                                     && git add … && git commit … ) || echo "skipped $r"; done
+    #
+    # Detached HEAD refuses too: it is never what a rollout means, and it is what a preflight
+    # worktree leaves behind.
+    _want="${1:-}"
+    [ -n "$_want" ] || { echo "gxclaim expect: name the branch you expect, e.g. 'expect main'" >&2; exit 2; }
+    [ $# -gt 0 ] && shift
+    _ctx="${1:-this command}"
+    _on="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    [ "$_on" = "$_want" ] && exit 0
+    if [ "${GX_EXPECT_OK:-0}" = "1" ]; then
+      echo "⚠️  GX_EXPECT_OK=1 — $_ctx allowed on '${_on:-detached HEAD}' though it expected '$_want'." >&2
+      exit 0
+    fi
+    {
+      echo
+      echo "⛔ REFUSING $_ctx — $REPO is not on the branch you expected."
+      echo
+      echo "   expected: $_want"
+      echo "   actually: ${_on:-detached HEAD}"
+      echo
+      if [ -z "$_on" ]; then
+        echo "   A detached HEAD is never what a rollout means. If this is a leftover preflight"
+        echo "   worktree, you are in the wrong directory."
+      else
+        echo "   Committing here would bury your change inside '$_on' — it ships under that"
+        echo "   branch's title when it merges, and the session that made it never finds out."
+        echo "   That happened to greencross-leaderboard on 2026-09-09."
+      fi
+      echo
+      echo "   What to do: skip this repo, or check out $_want first."
+      echo "   To override this one command:   GX_EXPECT_OK=1 <your command>"
+      echo
+    } >&2
+    exit 1
+    ;;
+
   *)
-    echo "gxclaim: unknown command '$CMD' — use claim | check | release | who | status | install" >&2
+    echo "gxclaim: unknown command '$CMD' — use claim | check | expect | release | who | status | install" >&2
     exit 2
     ;;
 esac
