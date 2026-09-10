@@ -58,6 +58,12 @@ function ok(cond, label, detail) {
 // ── Fakes we can inspect ──────────────────────────────────────────────────────
 let SENT, INGESTED, CACHE, CACHE_MODE, LOCK_MODE, CORE_MODE, DIGEST_MODE;
 
+/* Read a sent email defensively. When a regression stops a send happening at all, the count
+ * assertion above already FAILS — and every assertion after it would then crash on SENT[0].body,
+ * ending the run and hiding the rest of the damage. A test suite's job on a bad day is to say how
+ * much is broken, not to stop at the first thing it trips over. */
+function sent(i) { return SENT[i] || { subject: '(no email sent)', body: '(no email sent)' }; }
+
 function reset() {
   SENT = []; INGESTED = []; CACHE = {};
   CACHE_MODE = 'ok';    // 'ok' | 'dead'
@@ -76,6 +82,9 @@ function loadBugFns() {
   if (SRC.indexOf('function bugContext_(', start) < 0) {
     throw new Error('bugContext_ not found in dutchie_proxy.gs — the tab/store unpacking is gone');
   }
+  if (SRC.indexOf('function bugNotify_(', start) < 0) {
+    throw new Error('bugNotify_ not found in dutchie_proxy.gs — the shared notice body is gone');
+  }
   const bStart = SRC.indexOf('function bugMailOnce_(', start);
   if (bStart < 0) throw new Error('bugMailOnce_ not found in dutchie_proxy.gs — the fallback guard is gone');
   const endMarker = '\n// ─── Store helpers ';
@@ -89,8 +98,18 @@ function loadBugFns() {
       gxIngestBug: function (app, reporter, payload) {
         INGESTED.push({ app: app, reporter: reporter, payload: payload });
         if (CORE_MODE === 'down') throw new Error('central unavailable');
-        if (CORE_MODE === 'dup')  return { ok: true, id: 'bug_existing', deduped: true };
-        return { ok: true, id: 'bug_fresh' };
+        /* THE FOUR SHAPES gxIngestBug ACTUALLY RETURNS, from GX Core v312 on. Three of them mean
+           something has to happen here, and only one of the three arrives as an exception — which
+           is the entire reason these modes exist rather than a boolean "core up/down". */
+        if (CORE_MODE === 'refuse')  return { ok: false, error: 'title or detail required' };
+        if (CORE_MODE === 'noid')    return { ok: true };
+        /* A DE-DUPED ANSWER CARRIES NO MAIL FIELD AT ALL — gxIngestBug returns at `priorBug` above
+           its own send. Mirrored exactly, because the unannounced notice must not read that absence
+           as a failure; doing so would fire three false alarms per redirect chain. */
+        if (CORE_MODE === 'dup')     return { ok: true, id: 'bug_existing', deduped: true };
+        if (CORE_MODE === 'mailerr') return { ok: true, id: 'bug_fresh', mail_error: 'MailApp quota exceeded' };
+        if (CORE_MODE === 'mailskip')return { ok: true, id: 'bug_fresh', mail_skipped: 'no recipient on file' };
+        return { ok: true, id: 'bug_fresh', mailed: 'sky@greencrosscanna.com' };
       },
     },
     CacheService: {
@@ -184,12 +203,136 @@ reset();
   m.handleBugReport(REPORT);
   ok(SENT.length === 1, 'with GX Core down, three executions still send ONE email',
      'sent ' + SENT.length);
-  ok(/COULD NOT BE REACHED/.test(SENT[0].body),
-     'that email says plainly the report never reached the board');
-  ok(/NOT FILED/.test(SENT[0].subject),
-     'and the subject says so too, before Sky opens it', SENT[0].subject);
-  ok(/no receipt/.test(SENT[0].body),
+  ok(/NOT ON THE BUG BOARD/.test(sent(0).body),
+     'that email says plainly the report never reached the board', sent(0).body);
+  ok(/could not be reached/.test(sent(0).body),
+     'and names WHICH failure put it there — unreachable, not refused', sent(0).body);
+  ok(/^⚠️ UNFILED/.test(sent(0).subject),
+     'and the subject says so before Sky opens it', sent(0).subject);
+  ok(/re-file/i.test(sent(0).body),
+     'and tells him the one thing to do about it');
+  ok(/no receipt/.test(sent(0).body),
      'and warns that the reporter was not acknowledged either');
+}
+
+/* ── 3b. A REFUSAL IS NOT AN EXCEPTION, and this is the case the old contract missed ───────────
+ *
+ * gxIngestBug returns {ok:false, error} without throwing when it will not take a report — an empty
+ * one, a missing app key (gx_core.gs:5375: "It does not throw here, by design"). core-admin's v310
+ * and v312 re-pin notes nonetheless told every spoke to mail "only when gxIngestBug THROWS", and a
+ * spoke that believed them would go silent on exactly the report that reached no board: no row, no
+ * Core email, no local email, and nothing anywhere recording that a person had reported something.
+ *
+ * THIS APP WAS NEVER WRITTEN THAT WAY — the gate has always been "did an id come back" — so these
+ * assertions are pinning behavior that already worked, not fixing a live bug. They are here because
+ * the wrong instruction is written down in two shipped release notes that cannot now be edited, and
+ * the obvious "simplification" of this function is to collapse it into the catch.
+ */
+reset();
+{
+  const m = M();
+  CORE_MODE = 'refuse';
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 1, 'a report GX Core REFUSES (ok:false, no throw) still emails', 'sent ' + SENT.length);
+  ok(/NOT ON THE BUG BOARD/.test(sent(0).body),
+     'and is described as unfiled, because it is');
+  ok(/refused the report/.test(sent(0).body) && /title or detail required/.test(sent(0).body),
+     'and carries the reason Core gave, so it can be re-filed correctly', sent(0).body);
+}
+
+// A well-formed ok with no id is not in Core's contract; it mails anyway rather than assume.
+reset();
+{
+  const m = M();
+  CORE_MODE = 'noid';
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 1, 'an ok answer carrying no bug id is treated as unfiled', 'sent ' + SENT.length);
+}
+
+/* ── 3c. FILED, BUT NOBODY WAS TOLD ────────────────────────────────────────────────────────────
+ *
+ * The row is down and Core's own send died. Core swallows that on purpose — a report that reached
+ * the sheet has succeeded, and mail must never be what stops it — so before v312 this was a bug
+ * filed, nobody notified, and NOTHING recording the fact. The absence of an email is not an event
+ * anyone observes; it is only visible by opening the board and finding a row you never heard about.
+ *
+ * The instruction here is the OPPOSITE of the unfiled one, which is why they cannot share a body,
+ * a subject, or a cache key: the report is safe and re-filing it would duplicate it.
+ */
+[['mailerr', 'MailApp quota exceeded', 'failed'],
+ ['mailskip', 'no recipient on file', 'skipped']].forEach(function (row) {
+  reset();
+  const m = M();
+  CORE_MODE = row[0];
+  m.handleBugReport(REPORT);
+  m.handleBugReport(REPORT);
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 1, 'a bug whose Core email ' + row[2] + ' notifies ONCE across three executions',
+     'sent ' + SENT.length);
+  ok(/do NOT re-file/.test(sent(0).body),
+     'and says do not re-file — unlike the unfiled notice, the report is safe', sent(0).body);
+  ok(/bug_fresh/.test(sent(0).body),
+     'and hands over the id, because the useful action is to go and look at it');
+  ok(/UNANNOUNCED/.test(sent(0).subject), 'the subject distinguishes it at a glance', sent(0).subject);
+  ok(sent(0).body.indexOf(row[1]) >= 0, 'and it names why nobody was mailed', sent(0).body);
+});
+
+/* mail_skipped is the one that reads as fine and is not: nothing failed, and nobody was told. */
+reset();
+{
+  const m = M();
+  CORE_MODE = 'mailskip';
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 1, 'a SKIPPED send is a silent report too, not a non-event', 'sent ' + SENT.length);
+}
+
+/* ── 3d. THE REDIRECT CHAIN MUST NOT TRIP THE NEW NOTICE ───────────────────────────────────────
+ *
+ * This is the assertion that stops the fix re-creating the bug it was built on top of. A de-duped
+ * answer carries NO mail field at all, because gxIngestBug returns at `priorBug` ABOVE its send. So
+ * the gate has to be the PRESENCE of mail_error/mail_skipped, never the ABSENCE of `mailed` —
+ * reading absence as failure would fire one false alarm per re-execution, which is three emails per
+ * click, which is precisely the original symptom wearing the fix as a disguise.
+ */
+reset();
+{
+  const m = M();
+  m.handleBugReport(REPORT);        // fresh: Core mails, we stay quiet
+  CORE_MODE = 'dup';                // the /exec chain re-executes; Core merges and returns early
+  m.handleBugReport(REPORT);
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 0, 'a de-duped answer with NO mail field is silence, not a mail failure',
+     'sent ' + SENT.length + ' — the absence of `mailed` was read as a failure');
+}
+
+/* ── 3e. THE TWO NOTICES DO NOT SILENCE EACH OTHER ─────────────────────────────────────────────
+ *
+ * One report can raise both, in this order: a submit that never reaches Core, then the person's
+ * retry, which files and cannot mail. They carry contradictory instructions, so a shared cache mark
+ * would drop the second and leave "please re-file this" standing as the only word on a report that
+ * is now ON the board — sending Sky to file a duplicate of something he was told was lost.
+ */
+reset();
+{
+  const m = M();
+  CORE_MODE = 'down';
+  m.handleBugReport(REPORT);
+  CORE_MODE = 'mailerr';
+  m.handleBugReport(REPORT);
+  ok(SENT.length === 2, 'the same report can raise UNFILED and then UNANNOUNCED', 'sent ' + SENT.length);
+  ok(/NOT ON THE BUG BOARD/.test(sent(0).body) && /do NOT re-file/.test(sent(1).body),
+     'and they say opposite things, in the right order');
+}
+
+// ...and the unannounced mark is per-board too, like the unfiled one.
+reset();
+{
+  const m = M();
+  CORE_MODE = 'mailerr';
+  m.handleBugReport(Object.assign({}, REPORT, { appTab: 'pricetags' }));
+  m.handleBugReport(Object.assign({}, REPORT, { appTab: 'inventory' }));
+  ok(SENT.length === 2, 'an unannounced Price Cards bug does not silence an Inventory one',
+     'sent ' + SENT.length);
 }
 
 // ── 4. Fail open — every guard failure falls through to SENDING ───────────────

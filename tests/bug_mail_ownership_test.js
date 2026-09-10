@@ -84,10 +84,10 @@ if (pinned >= CONSOLIDATED_FROM) {
      'pinned at ' + pinned + ' — a local send still exists for the case GX Core never got the report',
      'no MailApp.sendEmail in handleBugReport: a bug filed during a GX Core outage reaches NOBODY. '
      + 'Narrow the send to the failure path, do not delete it.');
-  ok(/if \(!bugId && bugMailOnce_\(/.test(block),
-     'and it is gated on the row NOT landing, so it is never a second copy of Core\'s email',
-     'the send is not gated on !bugId — if it fires when the row landed, Sky gets TWO emails.');
-  ok(/NOT FILED|COULD NOT BE REACHED/.test(block),
+  ok(/if \(why && bugMailOnce_\(/.test(block),
+     'and it is gated on the report NOT landing, so it is never a second copy of Core\'s email',
+     'the UNFILED send is not gated on `why` — if it fires when the row landed, Sky gets TWO emails.');
+  ok(/NOT ON THE BUG BOARD/.test(block),
      'and it says plainly that the report never reached the board');
   ok(/function\s+bugMailOnce_\s*\(/.test(SRC),
      'bugMailOnce_ survives — an /exec re-execution during an outage would otherwise send three copies');
@@ -96,9 +96,9 @@ if (pinned >= CONSOLIDATED_FROM) {
      'pinned at ' + pinned + ' (below the consolidation) — this app is still the ONLY sender',
      'handleBugReport has no MailApp.sendEmail: a filed bug would reach NOBODY by email. If you '
      + 'meant to hand the email to GX Core, bump the pin to ' + CONSOLIDATED_FROM + '+ in the same commit.');
-  ok(!/if \(!bugId && bugMailOnce_\(/.test(block),
+  ok(!/if \(why && bugMailOnce_\(/.test(block),
      'and it is NOT narrowed to the failure path, which on this pin would silence the app entirely',
-     'the send is gated on !bugId, but GX Core does not mail below v' + CONSOLIDATED_FROM
+     'the send is gated on `why`, but GX Core does not mail below v' + CONSOLIDATED_FROM
      + ' — every successfully filed bug would be silent. Bump the pin in the same commit.');
   ok(/function\s+bugMailOnce_\s*\(/.test(SRC),
      'and the local de-dupe that keeps it to one email is still in place',
@@ -109,10 +109,38 @@ if (pinned >= CONSOLIDATED_FROM) {
 /* Independent of who mails: the ROW must always be filed, and its result read. This is the part that
    survives either arrangement, and the part a "simplification" during the transition would drop. */
 ok(/GXCore\.gxIngestBug\(/.test(block), 'the report is filed to the central board either way');
-ok(/ing\s*&&\s*ing\.id/.test(block),
+ok(/res\.ok === false/.test(block) && /res\.id/.test(block),
    'and gxIngestBug\'s answer is still read, not discarded',
-   'the returned id is what tells this app whether the report landed — discarding it is the '
+   'the return value is what tells this app whether the report landed — discarding it is the '
    + 'original 2026-09-09 bug in a new shape');
+
+/* ── THE SECOND PAIRING: reading the mail fields requires a pin that HAS them ──────────────────
+ *
+ * `mail_error` / `mail_skipped` arrived in GX Core v312. Below that pin they are never present, so
+ * the UNANNOUNCED branch cannot fire — it is not broken, it is DEAD, and dead code that looks like
+ * coverage is worse than no coverage: it reads as "we handle the silent-report case" while the case
+ * goes on being silent. Same failure the pairing above exists for, one version later.
+ *
+ * The asymmetry is deliberate. Reading the fields on too low a pin is a real defect; pinning high
+ * without reading them is just an app that has not adopted the notice yet, which is every other
+ * spoke as of 2026-09-09 and not this test's business. */
+const ANNOUNCE_FROM = 312;   // first library version that reports whether Core's own email got out
+const readsMailState = /res\.mail_error/.test(block) || /res\.mail_skipped/.test(block);
+if (readsMailState) {
+  ok(pinned >= ANNOUNCE_FROM,
+     'the UNANNOUNCED notice is backed by a pin that actually reports mail state (v'
+       + ANNOUNCE_FROM + '+)',
+     'this app reads mail_error/mail_skipped but is pinned to v' + pinned + ', where GX Core never '
+     + 'sends them — the branch can never fire and a bug filed with a dead email stays silent. '
+     + 'Bump the pin or drop the branch; do not leave it looking handled.');
+  ok(/do NOT re-file/.test(block),
+     'and it tells Sky NOT to re-file, the opposite of the unfiled notice',
+     'the two notices carry contradictory instructions; if this one reads like the other, he will '
+     + 'file a duplicate of a report that is already on the board');
+  ok(/bugMailOnce_\(b, bugApp, 'unannounced'\)/.test(block),
+     'and it marks its own cache key, so it cannot be silenced by the unfiled notice',
+     'a shared mark lets whichever notice fires first suppress the other');
+}
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

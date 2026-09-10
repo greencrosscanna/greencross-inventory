@@ -391,7 +391,7 @@ function jsonOut(obj, callback) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/* WHO SENDS THE BUG EMAIL: GX CORE DOES. THIS APP ONLY SPEAKS WHEN CORE COULD NOT.
+/* WHO SENDS THE BUG EMAIL: GX CORE DOES. THIS APP ONLY SPEAKS WHEN NOBODY ELSE WILL.
  *
  * Until 2026-09-09 this function mailed unconditionally, and one click of Submit could run it three
  * times: Apps Script's /exec second hop sometimes refuses the content key it just issued and 302s the
@@ -404,20 +404,54 @@ function jsonOut(obj, callback) {
  * once per newly created row, below its own de-dupe, and cc's the reporter a receipt.
  *
  * SO THE LOCAL SEND IS NOT DELETED, IT IS NARROWED — and the distinction is the whole point.
- * Core mails only when it successfully writes a row. If Core is unreachable the call throws, no row
- * exists, and Core sends nothing. Deleting this send outright would mean a bug filed during a Core
- * outage reaches NOBODY, which is the one failure this pipeline must never have. So:
+ * Core mails only when it successfully writes a row AND its own send gets through. There are TWO
+ * ways that fails, they need OPPOSITE instructions, and each is invisible from the other side:
  *
- *   the row landed (bugId set)  ->  GX Core mailed. Stay silent. No second copy.
- *   the row did NOT land        ->  nobody has been told. Mail, and say so plainly.
+ *   NOT FILED — nothing reached the board. This email is the only evidence anyone reported
+ *   anything, so it says re-file. Three doors lead here, not one:
+ *     · the call THREW (Core unreachable);
+ *     · Core REFUSED it — `{ok:false, error}`, e.g. an empty report or a missing app key. It does
+ *       NOT throw to refuse (gx_core.gs:5375 says so in as many words), so a gate keyed on the
+ *       exception misses exactly the case the fallback exists for. This app was never written that
+ *       way — the gate has always been "did an id come back" — but core-admin's v310/v312 re-pin
+ *       notes told every spoke to key on the throw, and that wording was wrong. Corrected into
+ *       gx-conventions.md (c2a1b38) on 2026-09-09. Do not "simplify" this back to a bare catch.
+ *     · ok with no id at all. Nothing in the contract produces this; it mails anyway, because the
+ *       cost of being wrong is a bug report nobody ever reads.
  *
- * A de-duped re-execution returns the EXISTING id, so bugId is set and this stays quiet — the /exec
- * re-execution case is handled by the same test, without needing the deduped flag to drive anything.
- * bugMailOnce_ still guards this path, because a Core outage is exactly when a re-executed request
- * would otherwise send three copies of the very email that exists because the board did not get it.
+ *   FILED BUT UNANNOUNCED — the row is down and Core's send died anyway. gxIngestBug swallows a
+ *   mail failure on purpose (a report that reached the sheet has SUCCEEDED, and mail must never be
+ *   what stops it), so it returns ok and, before v312, said nothing further. The live failure mode
+ *   was a bug filed, nobody told, and nothing anywhere recording that fact — the absence of an
+ *   email is not an event anyone observes. v312 added `mailed` / `mail_error` / `mail_skipped`, and
+ *   reading them is the whole reason this app is pinned to v315. This notice must say DO NOT
+ *   RE-FILE and hand over the id: the report is safe, only the announcement was lost.
  *
- * THE PIN AND THIS BRANCH ARE ONE DECISION. On a library version below 310 Core does not mail, so
- * narrowing this to failures-only would silence the app completely. tests/bug_mail_ownership_test.js
+ *   `mail_skipped` is the one that reads as fine and is not: bug watch email off, plus a reporter
+ *   with no address on file, means nothing failed and nobody was mailed. Still a silent report.
+ *
+ * FIELDS ARE ABSENT, NOT EMPTY, when they do not apply — read with truthiness, like `deduped`.
+ *
+ * A DEDUPED REPEAT CARRIES NO MAIL FIELDS AT ALL, because gxIngestBug returns at `priorBug` above
+ * its own send. That is what keeps the redirect chain above from tripping the unannounced notice
+ * three times — the very bug this pipeline was rebuilt to stop. It is a property of Core's early
+ * return, not of anything here, so the test pins it. Note the gate is the PRESENCE of mail_error /
+ * mail_skipped, never the absence of `mailed`: absence is the normal shape of a de-duped answer.
+ *
+ * WHETHER THIS EMAIL CAN SUCCEED WHERE CORE'S FAILED is not guaranteed, and saying so honestly is
+ * what stops it being trusted for more than it does. A library call runs in the CALLING project, so
+ * gxIngestBug's MailApp.sendEmail already spent THIS app's quota — an exhausted quota refuses this
+ * send too. What it does cover: a bad or missing recipient (all of `mail_skipped`), a transient
+ * failure, a Core-side config problem.
+ *
+ * THE TWO NOTICES MARK SEPARATE CACHE KEYS. They carry contradictory instructions, and one report
+ * can legitimately raise both — a submit that never reaches Core, then a retry that files and
+ * cannot mail. A shared mark would drop whichever came second and leave the wrong instruction
+ * standing as the only word on it. The mark is namespaced by APP as well, because this is the only
+ * spoke that files to two boards.
+ *
+ * THE PIN AND THESE BRANCHES ARE ONE DECISION. On a library version below 310 Core does not mail,
+ * so narrowing to failures-only would silence the app completely. tests/bug_mail_ownership_test.js
  * reads appsscript.json next to this source and fails unless the two agree, in both directions.
  */
 function handleBugReport(b) {
@@ -435,9 +469,10 @@ function handleBugReport(b) {
   var bugTab   = String(b.appTab   || ctx.tab   || '');
   var bugStore = String(b.appStore || ctx.store || '');
   var bugApp = TAB_TO_APP[bugTab.toLowerCase()] || 'inventory';
-  var bugId = '';
+
+  var res = null, why = '';
   try {
-    const ing = GXCore.gxIngestBug(bugApp, b.reporter, {
+    res = GXCore.gxIngestBug(bugApp, b.reporter, {
       title: b.title, desc: b.desc, priority: b.priority,
       store: bugStore, tab: bugTab, appVer: b.appVer,
       /* FORWARD THE SNAPSHOT, don't just mine it for the tab. gx-bugreport captures the url, the
@@ -449,39 +484,76 @@ function handleBugReport(b) {
          useful field there is. Passed through verbatim rather than re-serialized from bugContext_'s
          parse, so nothing is lost if the snapshot grows a field this file has never heard of. */
       context: b.context || ''
-    });
-    if (ing && ing.id) bugId = String(ing.id);
-  } catch (e) { /* central unavailable — the email below is the no-lost-report fallback */ }
+    }) || {};
+    /* A REFUSAL IS NOT A FILING, and it does not arrive as an exception — see the block above. */
+    if (res.ok === false) why = 'GX Core refused the report (' + (res.error || 'no reason given') + ')';
+    else if (!res.id)     why = 'GX Core returned no bug id';
+  } catch (e) {
+    why = 'GX Core could not be reached (' + String((e && e.message) || e) + ')';
+  }
 
-  /* THE FALLBACK, and only the fallback. See the block comment above: if bugId is set the report is
-     on the board and GX Core has already mailed about it, so a send here would be the second copy. */
-  if (!bugId && bugMailOnce_(b, bugApp)) {
-    try {
-      const priorityEmoji = { low: '🟢', medium: '🟡', high: '🔴' }[b.priority] || '🟡';
-      MailApp.sendEmail({
-        to:      'sky@greencrosscanna.com',
-        subject: `${priorityEmoji} Bug NOT FILED [${b.priority || 'medium'}]: ${b.title}`,
-        body: [
-          'THE CENTRAL BUG BOARD COULD NOT BE REACHED, so this email is the only record of this',
-          'report. Nothing was written to the board and the reporter got no receipt.',
-          'Please re-file it from the Command Center cockpit.',
-          '',
-          `Reporter : ${b.reporter}`,
-          `Priority : ${b.priority}`,
-          `Tab      : ${bugTab || '(unknown)'}`,
-          `Store    : ${bugStore || '(unknown)'}`,
-          `Version  : ${b.appVer}`,
-          `Time     : ${Utilities.formatDate(ts, 'America/Los_Angeles', 'M/d/yy h:mm a')}`,
-          '',
-          b.desc || '(no details provided)',
-          '',
-          `Diagnostics: ${b.context || '(none captured)'}`,
-        ].join('\n'),
-      });
-    } catch(mailErr) { /* non-fatal */ }
+  /* NOTHING ON THE BOARD. This email is the only record that someone reported a problem, so it says
+     so in as many words: a fallback that reads like an ordinary notification is a report quietly
+     lost. bugMailOnce_ guards it because on this path there is no `deduped` answer to read. */
+  if (why && bugMailOnce_(b, bugApp, 'unfiled')) {
+    bugNotify_({
+      subject: '⚠️ UNFILED ' + bugApp + ' bug [' + (b.priority || 'medium') + ']: ' + b.title,
+      lead: [
+        'THIS REPORT IS NOT ON THE BUG BOARD. ' + why + ', so nothing was',
+        'recorded and this email is the only copy. Please re-file it from the Command Center',
+        'cockpit — the reporter believes it went through and got no receipt.',
+      ],
+      b: b, ts: ts, tab: bugTab, store: bugStore,
+    });
+    return { ok: true };
+  }
+
+  /* THE ROW IS DOWN AND NOBODY WAS TOLD. Core swallows its own mail failure on purpose, so nothing
+     else anywhere will mention this. Unlike the case above the report is SAFE — what was lost is the
+     notification, including the reporter's receipt — so this notice has to correct the opposite
+     instinct: do not re-file it, go and look at it. */
+  var mailWhy = res && (res.mail_error || res.mail_skipped);
+  if (mailWhy && bugMailOnce_(b, bugApp, 'unannounced')) {
+    bugNotify_({
+      subject: '🔕 UNANNOUNCED ' + bugApp + ' bug [' + (b.priority || 'medium') + ']: ' + b.title,
+      lead: [
+        'THIS REPORT IS ON THE BUG BOARD — do NOT re-file it — but GX Core could not email anyone',
+        'about it, so this notice is standing in. The reporter got no receipt either.',
+        '',
+        'Bug id   : ' + String(res.id || '(none returned)'),
+        'Mail    ' + (res.mail_error ? ' failed  : ' : ' skipped : ') + mailWhy,
+      ],
+      b: b, ts: ts, tab: bugTab, store: bugStore,
+    });
   }
 
   return { ok: true };
+}
+
+/* The body both notices share. Same fields, same order, in one place — the two differ only in the
+   paragraph at the top saying which failure this was and what to do about it. Wrapped and non-fatal
+   for the reason every send in this file is: mail is the enhancement, the report is the thing.
+   Diagnostics go last and raw: on the UNFILED path nothing else holds them. */
+function bugNotify_(o) {
+  try {
+    MailApp.sendEmail({
+      to:      'sky@greencrosscanna.com',
+      subject: o.subject,
+      body: o.lead.concat([
+        '',
+        'Reporter : ' + (o.b.reporter || ''),
+        'Priority : ' + (o.b.priority || 'medium'),
+        'Tab      : ' + (o.tab || '(unknown)'),
+        'Store    : ' + (o.store || '(unknown)'),
+        'Version  : ' + (o.b.appVer || ''),
+        'Time     : ' + Utilities.formatDate(o.ts, 'America/Los_Angeles', 'M/d/yy h:mm a'),
+        '',
+        o.b.desc || '(no details provided)',
+        '',
+        'Diagnostics: ' + (o.b.context || '(none captured)'),
+      ]).join('\n'),
+    });
+  } catch (mailErr) { /* non-fatal */ }
 }
 
 /* WHERE THE TAB AND STORE ACTUALLY ARRIVE. The shared reporter (gx-bugreport.js in gx-theme) does
@@ -512,25 +584,30 @@ function bugContext_(b) {
   } catch (e) { return {}; }
 }
 
-/* True the FIRST time a given report asks to be emailed, false for a repeat inside three minutes.
- * The window matches GX Core's own bug dedupe so the email and the board agree on what "the same
- * report" means; a fourth minute is a person filing again because nothing happened, which should mail.
- * The lock makes check-and-set atomic — a redirect chain can re-enter fast enough for three
+/* True the FIRST time a given report asks to be emailed AS `kind`, false for a repeat inside three
+ * minutes. The window matches GX Core's own bug dedupe so the email and the board agree on what "the
+ * same report" means; a fourth minute is a person filing again because nothing happened, which should
+ * mail. The lock makes check-and-set atomic — a redirect chain can re-enter fast enough for three
  * executions to read an empty cache at once, and three simultaneous misses is exactly the bug being
  * fixed.
  * THE APP KEY IS IN THE DIGEST because this app files to TWO boards (pricecards and inventory). A
  * re-execution of one request always carries the same key, so including it never weakens the guard;
  * leaving it out would let a Price Cards report silence an Inventory one.
+ * `kind` NAMESPACES THE MARK ON TOP OF THAT, because the two notices carry contradictory instructions
+ * ("re-file this" vs "do NOT re-file this, here is its id"). One report can legitimately raise both —
+ * a submit that never reaches Core, then a retry that files and cannot mail — and collapsing them
+ * onto one key would silently drop whichever came second, leaving the earlier, now-wrong instruction
+ * standing as the only word on it.
  * FAILS OPEN on purpose: a cache or lock that is unavailable must never be the reason a bug report
  * goes unread. Better a duplicate email than a silent one. */
-function bugMailOnce_(b, bugApp) {
+function bugMailOnce_(b, bugApp, kind) {
   var lock = null;
   try {
     const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5,
       String(bugApp || '') + '\u0000' + String(b.reporter || '') + '\u0000'
         + String(b.title || '') + '\u0000' + String(b.desc || ''),
       Utilities.Charset.UTF_8);
-    const key = 'bugmail:' + Utilities.base64EncodeWebSafe(digest);
+    const key = 'bugmail:' + (kind || 'unfiled') + ':' + Utilities.base64EncodeWebSafe(digest);
     lock = LockService.getScriptLock();
     try { lock.waitLock(5000); } catch (e) { lock = null; }   // busy → fall through and send
     const cache = CacheService.getScriptCache();
