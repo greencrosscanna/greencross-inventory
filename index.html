@@ -3063,8 +3063,8 @@ function renderBrandIssuesHtml() {
   // 1 — the brand field holds a vendor's name. Needs a person: the data cannot tell a distributor
   // from a vertically integrated farm that is genuinely both.
   if (iss.vendorish.length) {
-    const rows = iss.vendorish.map(x => {
-      const namesAttr = esc(x.nameKeys.join('~~')).replace(/'/g, '&#39;');
+    _dqNameDismiss = iss.vendorish.map(x => x.nameKeys.join('~~'));
+    const rows = iss.vendorish.map((x, vi) => {
       const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
       return `<div class="flag-item" style="align-items:center">
         <div class="flag-icon" style="color:var(--amber)">◆</div>
@@ -3074,7 +3074,7 @@ function renderBrandIssuesHtml() {
             x.suggested ? ` · other stores say <strong style="color:var(--green)">${esc(x.suggested)}</strong>` : ''
           }</span><br>${storeBits(x.stores)}
         </div>
-        <button class="flag-row-btn" onclick="dqDismissNames(event,'${namesAttr}')"
+        <button class="flag-row-btn" onclick="dqDismissNamesAt(event,${vi})"
           title="${esc(x.current)} is a real brand — stop flagging this name anywhere">brand is right</button>
         <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore just this product">skip</button>
       </div>`;
@@ -5554,6 +5554,13 @@ let _typoDismissKeys = [];
 function dqDismissTypo(e, i) {
   const key = _typoDismissKeys[i];
   if (key) dqDismiss(e, key);
+}
+// Same fix for "brand is right", which passed the brand name through the onclick and so did nothing
+// for any brand with an apostrophe in it. None was on the list when this was found (2026-09-09).
+let _dqNameDismiss = [];
+function dqDismissNamesAt(e, i) {
+  const csv = _dqNameDismiss[i];
+  if (csv) dqDismissNames(e, csv);
 }
 function dqDismissNames(e, csv) {
   if (e) e.stopPropagation();
