@@ -2981,7 +2981,8 @@ function renderMargin() {
 // so a clean catalog shows no section at all rather than an empty header.
 function renderBrandIssuesHtml() {
   const iss = computeBrandIssues();
-  if (!iss.total) return '';
+  const typos = computeNameTypos();
+  if (!iss.total && !typos.length) return '';
   const esc = escapeHtml;
 
   // Say how old the data is. Without this the list looks broken to anyone who just fixed something.
@@ -2999,10 +3000,41 @@ function renderBrandIssuesHtml() {
   let first = true;
   const section = (title, note, rows, nav) => {
     html += `<div class="section-label" data-nav="${esc(nav)}" data-nav-count="${rows.length}" style="margin-top:20px">${esc(title)} — ${rows.length}</div>`;
-    if (first) { html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px">Brand data ${asOf}</div>`; first = false; }
+    if (first) { html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px">Product data ${asOf}</div>`; first = false; }
     if (note) html += `<div style="color:var(--muted);font-size:11px;margin:-4px 0 8px">${note}</div>`;
     html += '<div class="card">' + rows.join('') + '</div>';
   };
+
+  // Name typos go first of all: they are the only problem on this tab a CUSTOMER can see.
+  if (typos.length) {
+    _typoDismissKeys = typos.map(x => x.key);
+    const rows = typos.map((x, i) => {
+      // Underline the offending word in place, so the reader sees WHERE, not just that.
+      const at = x.bad ? x.name.indexOf(x.bad) : -1;
+      const shown = at < 0 ? esc(x.name)
+        : esc(x.name.slice(0, at)) +
+          `<span style="color:var(--red);text-decoration:underline wavy">${esc(x.bad)}</span>` +
+          esc(x.name.slice(at + x.bad.length));
+      const why = x.kind === 'word'
+        ? `"${esc(x.good)}" is spelled that way in ${x.uses} other products`
+        : x.kind === 'sibling'
+          ? `another product spells it "${esc(x.good)}"`
+          : 'same name, spelled differently elsewhere';
+      const btn = x.kind === 'word'
+        ? `<button class="flag-row-btn" onclick="dqDismissTypo(event,${i})" title="${esc(x.bad)} is spelled right — stop flagging this word anywhere">spelled right</button>`
+        : `<button class="flag-row-btn" onclick="dqDismissTypo(event,${i})" title="Not a typo — stop flagging this product">not a typo</button>`;
+      return `<div class="flag-item" style="align-items:center">
+        <div class="flag-icon" style="color:var(--red)">✎</div>
+        <div class="flag-text" style="flex:1">
+          <strong>${shown}</strong>${sold(x.sold28)}<br>
+          <span style="font-size:11px">probably <strong style="color:var(--green)">${esc(x.suggested)}</strong> · ${why}</span><br>
+          ${storeBits(x.stores)}
+        </div>
+        ${btn}
+      </div>`;
+    });
+    section('Product name typos', 'Names are on the customer menu. Fix the name in Dutchie — it clears here on the next refresh.', rows, 'Name typos');
+  }
 
   // 0 — on a shelf now, with nothing to attribute it to. Listed first: it is the only section about
   // stock a customer can pick up today, and the only one with no cross-store answer to fall back on.
@@ -3031,8 +3063,8 @@ function renderBrandIssuesHtml() {
   // 1 — the brand field holds a vendor's name. Needs a person: the data cannot tell a distributor
   // from a vertically integrated farm that is genuinely both.
   if (iss.vendorish.length) {
-    const rows = iss.vendorish.map(x => {
-      const namesAttr = esc(x.nameKeys.join('~~')).replace(/'/g, '&#39;');
+    _dqNameDismiss = iss.vendorish.map(x => x.nameKeys.join('~~'));
+    const rows = iss.vendorish.map((x, vi) => {
       const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
       return `<div class="flag-item" style="align-items:center">
         <div class="flag-icon" style="color:var(--amber)">◆</div>
@@ -3042,7 +3074,7 @@ function renderBrandIssuesHtml() {
             x.suggested ? ` · other stores say <strong style="color:var(--green)">${esc(x.suggested)}</strong>` : ''
           }</span><br>${storeBits(x.stores)}
         </div>
-        <button class="flag-row-btn" onclick="dqDismissNames(event,'${namesAttr}')"
+        <button class="flag-row-btn" onclick="dqDismissNamesAt(event,${vi})"
           title="${esc(x.current)} is a real brand — stop flagging this name anywhere">brand is right</button>
         <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore just this product">skip</button>
       </div>`;
@@ -5317,6 +5349,183 @@ function computeBrandIssues() {
   return out;
 }
 
+// == Product-name typos ========================================================
+// Brands and vendors are internal. Product NAMES are on the customer menu, so a typo there is the only
+// data-quality problem a customer can see ("Anmal Cookies FATTY | 1g" sat on the menu on 2026-09-08).
+//
+// WHY NOT PLAIN "ONE OR TWO LETTERS FROM A COMMON WORD". That was the first thing tried, against every
+// live name on 2026-09-09, and it flagged 191 words -- nearly all of them strain names doing exactly what
+// strain names do: Zour, Gruntz, Kandy, Batty, Glue, Patty, Lantana, Blockberry. A list where nine rows
+// in ten are wrong teaches people to stop reading it. So a word is only flagged when the mistake has
+// the SHAPE of a slip of the finger, and the right spelling is common enough to be sure of:
+//
+//   word     - a rare word (in 1-2 product names) that is a common word (in >= DQ_TYPO_COMMON names, and
+//              >= 5x as many) with one letter dropped, one extra, or two neighbors swapped. Never at the
+//              end of the word: that is a plural or a stylization (Screens, Kushy, Applez), not a typo.
+//              Caught "Disposabale" and "Disosable" on 2026-09-09.
+//   sibling  - two products whose names differ in exactly ONE word, by the same kind of slip. The more
+//              common spelling wins. Caught "Mega Rntz #1" next to "Mega Runtz". This is the check that
+//              catches a misspelled STRAIN, which the word check deliberately cannot.
+//   spelling - two names identical but for case, spacing or punctuation ("Smash Burger" / "Smashburger",
+//              "$3.00 |" / "3.00 |"). The spelling on more store rows wins.
+//
+// Only IN-STOCK products are flagged -- the menu shows what is on the shelf, so a typo on something
+// sold out is invisible until it is restocked (and then it shows up here). The vocabulary is built from
+// every tracked row, in stock or not, so a sold-out product still vouches for its spelling.
+//
+// A trailing item code ("| 4PSILLWAF", "| SSAJARSILCASTM") is stripped first. Those are internal codes
+// that happen to sit in the name, and they differ by one letter between sizes on purpose.
+const DQ_TYPO_COMMON = 10;
+
+function dqTypoWordKey(w)    { return 'typo:' + String(w || '').toLowerCase(); }
+function dqTypoNameKey(name) { return 'typoname:' + String(name || '').trim().toLowerCase(); }
+
+function dqTypoStrip_(name) { return String(name || '').replace(/\|\s*[A-Z0-9][A-Z0-9-]{3,}\s*$/, '').trim(); }
+function dqTypoWords_(name) {
+  // Original-case words, so a suggestion can keep the name's own capitalization (FATTY stays shouty).
+  return dqTypoStrip_(name).match(/[A-Za-z][A-Za-z']*/g) || [];
+}
+function dqTypoNorm_(w) { return String(w || '').toLowerCase().replace(/'/g, ''); }
+
+// Is `w` a slip-of-the-finger misspelling of `v`? Returns 'drop' | 'extra' | 'swap' | ''.
+function dqTypoSlip_(w, v) {
+  if (w === v) return '';
+  if (w.length === v.length) {
+    const d = [];
+    for (let i = 0; i < w.length; i++) if (w[i] !== v[i]) d.push(i);
+    return (d.length === 2 && d[1] === d[0] + 1 && w[d[0]] === v[d[1]] && w[d[1]] === v[d[0]]) ? 'swap' : '';
+  }
+  // One letter more or less -- but never the first or last letter. A changed ending is a plural or a
+  // stylization (Screen/Screens, Kush/Kushy); a changed start is usually a different word (raw/draw).
+  const inner = (shortW, longW) => {
+    if (longW.length !== shortW.length + 1) return false;
+    for (let i = 1; i < longW.length - 1; i++) {
+      if (longW.slice(0, i) + longW.slice(i + 1) === shortW) return true;
+    }
+    return false;
+  };
+  if (inner(w, v)) return 'drop';
+  if (inner(v, w)) return 'extra';
+  return '';
+}
+
+function dqTypoMatchCase_(src, word) {
+  if (src === src.toUpperCase()) return word.toUpperCase();
+  if (src[0] === src[0].toUpperCase()) return word[0].toUpperCase() + word.slice(1);
+  return word;
+}
+
+function computeNameTypos() {
+  const data = (state.inventoryData || []).filter(dqIsTracked_);
+  if (!data.length) return [];
+  const ok = getDqOkObj();
+
+  const byName = {};
+  for (const p of data) (byName[p.name] || (byName[p.name] = [])).push(p);
+  const names = Object.keys(byName);
+
+  // How many distinct product names use each word.
+  const vocab = {};
+  const wordsOf = {};
+  for (const n of names) {
+    const ws = dqTypoWords_(n);
+    wordsOf[n] = ws;
+    for (const w of new Set(ws.map(dqTypoNorm_))) vocab[w] = (vocab[w] || 0) + 1;
+  }
+  const common = Object.keys(vocab).filter(w => vocab[w] >= DQ_TYPO_COMMON);
+
+  const out = [];
+  const seen = new Set();
+  const push = (name, x) => {
+    if (seen.has(name) || ok[x.key]) return;
+    const g = byName[name];
+    const live = g.filter(p => Number(p.qty) > 0);
+    if (!live.length) return;
+    seen.add(name);
+    out.push(Object.assign({
+      name,
+      stores: live.map(p => p.store),
+      qty:    live.reduce((s, p) => s + (Number(p.qty) || 0), 0),
+      sold28: g.reduce((s, p) => s + (Number(p.qty28) || 0), 0),
+    }, x));
+  };
+  const fixName = (name, bad, good) => {
+    const i = name.indexOf(bad);
+    return i < 0 ? name : name.slice(0, i) + dqTypoMatchCase_(bad, good) + name.slice(i + bad.length);
+  };
+
+  // word
+  for (const n of names) {
+    for (const raw of wordsOf[n]) {
+      const w = dqTypoNorm_(raw);
+      if (w.length < 5 || vocab[w] > 2 || ok[dqTypoWordKey(w)]) continue;
+      let best = '';
+      for (const v of common) {
+        if (vocab[v] < vocab[w] * 5 || !dqTypoSlip_(w, v)) continue;
+        if (!best || vocab[v] > vocab[best]) best = v;
+      }
+      if (!best) continue;
+      push(n, { kind: 'word', bad: raw, good: dqTypoMatchCase_(raw, best), suggested: fixName(n, raw, best),
+                uses: vocab[best], key: dqTypoWordKey(w) });
+      break;
+    }
+  }
+
+  // sibling -- bucket every name by "all its words but one", so two names that differ in exactly one
+  // word land in the same bucket without comparing every pair.
+  const buckets = {};
+  for (const n of names) {
+    const ws = wordsOf[n].map(dqTypoNorm_);
+    ws.forEach((w, i) => {
+      const k = ws.length + '|' + i + '|' + ws.slice(0, i).concat(ws.slice(i + 1)).join(' ');
+      (buckets[k] || (buckets[k] = [])).push({ n, i });
+    });
+  }
+  for (const k of Object.keys(buckets)) {
+    const b = buckets[k];
+    if (b.length < 2) continue;
+    for (let a = 0; a < b.length; a++) for (let c = a + 1; c < b.length; c++) {
+      const A = b[a], C = b[c];
+      const ra = wordsOf[A.n][A.i], rc = wordsOf[C.n][C.i];
+      const wa = dqTypoNorm_(ra), wc = dqTypoNorm_(rc);
+      if (Math.min(wa.length, wc.length) < 4 || !dqTypoSlip_(wa, wc)) continue;
+      if (vocab[wa] === vocab[wc]) continue;            // no way to say which is the typo
+      const [badN, badW, goodW] = vocab[wa] < vocab[wc] ? [A.n, ra, rc] : [C.n, rc, ra];
+      push(badN, { kind: 'sibling', bad: badW, good: goodW, suggested: fixName(badN, badW, goodW),
+                   key: dqTypoNameKey(badN) });
+    }
+  }
+
+  // spelling -- same name once case and spacing are squashed out. Punctuation is NOT squashed: that
+  // paired "$3.00 | Pulsar Chillum" with "3.00 | Pulsar Chillum" on the live screen and told the reader
+  // to delete the dollar sign, because the wrong one happened to be on more stores. Squashed from the
+  // FULL name, code included -- squashing the stripped name paired "Cones | 1 1/4"" with "Cones 1 1/4" |
+  // ZZUN114CONE" and suggested adding an item code to the menu.
+  const squash = {};
+  for (const n of names) {
+    const s = String(n).toLowerCase().replace(/\s+/g, '');
+    if (s) (squash[s] || (squash[s] = [])).push(n);
+  }
+  for (const s of Object.keys(squash)) {
+    const vs = squash[s];
+    if (vs.length < 2) continue;
+    // Differing only in the stripped item code is two SKUs, not two spellings.
+    if (new Set(vs.map(dqTypoStrip_)).size < 2) continue;
+    // A doubled space renders as one on a menu, so a pair differing only in that is invisible.
+    if (new Set(vs.map(n => n.replace(/\s+/g, ' ').trim())).size < 2) continue;
+    const ranked = vs.slice().sort((x, y) => byName[y].length - byName[x].length || x.localeCompare(y));
+    const top = ranked[0];
+    if (byName[ranked[1]].length === byName[top].length) continue;   // a tie names no winner
+    for (const n of ranked.slice(1)) {
+      push(n, { kind: 'spelling', bad: '', good: '', suggested: top, key: dqTypoNameKey(n) });
+    }
+  }
+
+  out.sort((a, b) => b.sold28 - a.sold28 || String(a.name).localeCompare(String(b.name)));
+  return out;
+}
+// == end product-name typos ====================================================
+
 // Dismiss = "this is not a mistake." Shared, because it is a judgement call, and re-asking the next
 // person is exactly the nagging that gets a review list ignored.
 // Push one dismissal to the shared store, best-effort. The try/catch is NOT belt-and-braces: fetch
@@ -5337,6 +5546,21 @@ function dqDismiss(e, key) {
   saveDqOkObj(o);
   dqShare_(key, by);
   renderFlags();
+}
+// Typo rows dismiss by INDEX into the list the renderer just built, not by a key written into the
+// onclick. Product names carry apostrophes ("Randy's", "Dragon's Milk"), and an escaped &#39; inside an
+// onclick attribute is decoded back to a bare quote before the JS is parsed -- which ends the string.
+let _typoDismissKeys = [];
+function dqDismissTypo(e, i) {
+  const key = _typoDismissKeys[i];
+  if (key) dqDismiss(e, key);
+}
+// Same fix for "brand is right", which passed the brand name through the onclick and so did nothing
+// for any brand with an apostrophe in it. None was on the list when this was found (2026-09-09).
+let _dqNameDismiss = [];
+function dqDismissNamesAt(e, i) {
+  const csv = _dqNameDismiss[i];
+  if (csv) dqDismissNames(e, csv);
 }
 function dqDismissNames(e, csv) {
   if (e) e.stopPropagation();
@@ -8405,7 +8629,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.043';
+const APP_VERSION = 'v3.044';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
