@@ -2359,11 +2359,17 @@ async function engineGet(params = {}, ceilingMs = ENGINE_CEILING_MS) {
   const p      = addAuthParams(params);
   const action = p.action || '';
   delete p.action;                       // getJSON takes the action separately
-  if (_ENGINE) return withTimeout(_ENGINE.getJSON(action, p), ceilingMs, 'Engine request');
+  /* NAME THE ACTION IN THE ERROR. A bug report reading only "Engine request timed out" says
+     nothing about WHICH call died, and the report filed on 2026-09-11 was exactly that — it cost a
+     session of measuring every route to work out which one it could plausibly have been, and the
+     answer stayed a guess. The action is in hand right here; putting it in the message costs
+     nothing and makes the next report self-diagnosing. */
+  const label = 'Engine request' + (action ? ' (' + action + ')' : '');
+  if (_ENGINE) return withTimeout(_ENGINE.getJSON(action, p), ceilingMs, label);
 
   /* gx-client.js is a remote <script>. If it failed to load, one plain attempt still beats
      nothing — this path is the OLD behavior, so it is a degradation, never an upgrade. */
-  const res = await withTimeout(fetch(proxyUrl(params)), ceilingMs, 'Engine request');
+  const res = await withTimeout(fetch(proxyUrl(params)), ceilingMs, label);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
@@ -8641,7 +8647,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.047';
+const APP_VERSION = 'v3.048';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
