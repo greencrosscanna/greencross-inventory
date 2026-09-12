@@ -4325,9 +4325,17 @@ function scheduleBetaDecisionsForInventory(delayMs = 900) {
    be reached, the tab stays hidden and a SPIFF user still has the standalone app. */
 function revealSpiffTab() {
   var btn = document.getElementById('tabSpiff');
-  if (!btn || !_GX) return;
+  /* SAY SO WHEN THE CHECK CANNOT RUN. There are three ways out of this function without ever asking
+     Core -- no client, no token, and the two failure paths below -- and every one of them used to be
+     silent. The visible result is identical to a legitimate "you do not have SPIFF": no tab, no
+     error, nothing in the console. On 2026-09-11 that cost a round trip to work out whether the tab
+     was missing because of the account or because the check never happened. Fail-closed stays
+     (Sky's rule: showing it wrongly is worse than hiding it wrongly) -- but it should be possible to
+     tell the two apart from the console. */
+  if (!btn) return;
+  if (!_GX) { console.warn('[spiff-tab] hidden: GX Core client did not load — this is NOT an access decision'); return; }
   var tok = getAuthToken();
-  if (!tok) return;
+  if (!tok) { console.warn('[spiff-tab] hidden: no auth token yet — this is NOT an access decision'); return; }
   /* Remember the last answer and act on it immediately. GX Core's /exec is a two-hop and this call
      measured ~7s, so gating purely on the response means the tab pops in long after the app looks
      ready -- which reads as a glitch, and is how you get a bug report about a tab that "appears late".
@@ -4340,6 +4348,10 @@ function revealSpiffTab() {
      one cold read in every browser, so a revoke lands immediately instead of one boot late. Bump the
      suffix whenever a revoke needs to take effect the very next time someone opens the app.
      (Not covered by CACHE_VERSION -- that only evicts the gc_inv5_-prefixed caches.) */
+  /* ONLY A YES IS EVER STORED. The read below acts on '1' and nothing else, so writing '0' bought
+     exactly nothing on the next boot while leaving a dead key that reads like a remembered refusal
+     -- and it survives until a boot where the client loads AND Core answers, which during an engine
+     outage can be a long time. Remove on 'no' instead of storing one. */
   var CACHE = 'gcInvSpiffTab2';
   try { if (localStorage.getItem(CACHE) === '1') btn.style.display = ''; } catch (e) {}
   try { localStorage.removeItem('gcInvSpiffTab'); } catch (e) {}   // retire the unversioned key
@@ -4352,13 +4364,20 @@ function revealSpiffTab() {
   try {
   _GX.jsonp('grants', { token: tok })
     .then(function (r) {
-      if (!r || !r.ok) return;
+      if (!r || !r.ok) {
+        console.warn('[spiff-tab] hidden: Core answered but not ok — this is NOT an access decision', r);
+        return;                                        // leave the cached yes alone; this is not a 'no'
+      }
       var has = r.isSuperadmin === true
         || (Array.isArray(r.grants) && r.grants.some(function (g) { return g && g.app === 'spiff'; }));
       btn.style.display = has ? '' : 'none';           // also HIDES it again if access was revoked
-      try { localStorage.setItem(CACHE, has ? '1' : '0'); } catch (e) {}
+      try { has ? localStorage.setItem(CACHE, '1') : localStorage.removeItem(CACHE); } catch (e) {}
     })
-    .catch(function () { /* stays hidden — see FAILS CLOSED above */ });
+    .catch(function (e) {
+      /* stays hidden — see FAILS CLOSED above. Named, because an engine timeout here is
+         indistinguishable from "no access" on screen, and that is what made it hard to diagnose. */
+      console.warn('[spiff-tab] hidden: grants call failed — this is NOT an access decision', e);
+    });
   } catch (e) { /* same: hidden is the safe outcome, and boot must continue */ }
 }
 
@@ -8647,7 +8666,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.048';
+const APP_VERSION = 'v3.049';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
