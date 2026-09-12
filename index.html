@@ -67,10 +67,22 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 14px;
     min-height: 100vh;
+    /* Bottom breathing room lives here, not on .app — see below. */
+    padding-bottom: 48px;
   }
 
   /* ── Layout ── */
-  .app { max-width: 1400px; margin: 0 auto; padding: 0 0 48px; }
+  /* .app no longer wraps the page. A stray </div> left behind when the bug-report markup moved to
+     gx-theme (c2ee9db) closes it immediately after the two overlays, so the summary bar, controls
+     and panels are all direct children of <body>. Its padding-bottom therefore rendered as an empty
+     64px band UNDER THE NAV and above the first row of content — the gap reported on v3.046 — while
+     the page lost the bottom spacing that padding was for. Both are fixed by moving the spacing to
+     body and leaving .app as the zero-height overlay holder it has actually been since that commit.
+     Its children are position:fixed, so it needs no box of its own.
+     NOT fixed here, because it is a much bigger visual change and a separate decision: the
+     max-width:1400px below now applies to an empty div, so page content is full-bleed on wide
+     screens instead of capped and centred. Re-wrapping the content restores that — ask first. */
+  .app { max-width: 1400px; margin: 0 auto; padding: 0; }
 
   /* ── Header ── */
   header {
@@ -1295,7 +1307,7 @@
   }
 
   @media (min-width: 1200px) {
-    .app { padding: 0 0 64px; }
+    body { padding-bottom: 64px; }
     .panel { padding: 24px 28px 0; }
     .controls-bar { padding: 10px 28px; }
     .inv-filters { padding: 8px 28px; }
@@ -8629,7 +8641,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.046';
+const APP_VERSION = 'v3.047';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
