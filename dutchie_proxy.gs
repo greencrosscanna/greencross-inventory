@@ -863,8 +863,14 @@ function _processRoomData_(responses) {
   // 18 Transfer). A Transfer is stock going OUT to another store — the opposite of floor
   // evidence — so only Retail counts. Voids and returned line items are excluded too: a voided
   // sale never happened, and a returned unit is headed for quarantine, not the shelf.
+  // Two join keys, because they reach different packages. The register line's inventoryId often
+  // does NOT match the inventory record's — the returns code above this has always joined on
+  // packageId for exactly that reason. inventoryId is the precise key when it does match (it lets
+  // a sale be compared against that package's last Move); packageId is the one that reaches the
+  // rest. River's 645 lighters sold 23 times in 14 days and the inventoryId join missed every one.
   const returnedPackageIds = new Set();
-  const latestSale = {};  // inventoryId → most recent retail sale date
+  const latestSale    = {};  // inventoryId → most recent retail sale date
+  const soldPackageIds = new Set();  // packageId of anything sold retail, any date
   if (regResp.getResponseCode() === 200) {
     let regTxs; try { regTxs = JSON.parse(regResp.getContentText()); } catch (e) { regTxs = []; }
     for (const tx of (Array.isArray(regTxs) ? regTxs : [])) {
@@ -874,10 +880,14 @@ function _processRoomData_(responses) {
         if (item.isReturned && item.packageId) {
           returnedPackageIds.add(String(item.packageId));
         }
-        if (isRetail && !item.isReturned && item.inventoryId) {
-          const id = String(item.inventoryId);
-          const d  = tx.transactionDate || '';
-          if (d && (!latestSale[id] || d > latestSale[id])) latestSale[id] = d;
+        if (isRetail && !item.isReturned) {
+          if (item.inventoryId) {
+            const id = String(item.inventoryId);
+            const d  = tx.transactionDate || '';
+            if (d && (!latestSale[id] || d > latestSale[id])) latestSale[id] = d;
+          }
+          if (item.packageId)       soldPackageIds.add(String(item.packageId));
+          if (item.sourcePackageId) soldPackageIds.add(String(item.sourcePackageId));
         }
       }
     }
@@ -894,7 +904,12 @@ function _processRoomData_(responses) {
     if (!mv || saleDate > mv.date) floorEvidenceIds.push(id);
   }
 
-  return { roomNameType, roomIdType, invRoomMap, floorEvidenceIds, returnedPackageIds: [...returnedPackageIds] };
+  // The packageId set carries no date we can line up against a Move, so it is NOT allowed to
+  // overrule one — getInventory consults it only in the default slot, where the alternative is a
+  // guess with no evidence behind it at all. A sale is strictly better than that.
+  return { roomNameType, roomIdType, invRoomMap, floorEvidenceIds,
+           floorEvidencePkgIds: [...soldPackageIds],
+           returnedPackageIds: [...returnedPackageIds] };
 }
 
 // Single-store room data with 1h-ish cache. Unchanged contract for existing callers
@@ -902,6 +917,51 @@ function _processRoomData_(responses) {
 // Delegates to the batch path so cache get/put + parse-resilience live in one place.
 function buildRoomData(store, force) {
   return buildRoomDataBatch_([store], force)[store];
+}
+
+// ── Cache codec ──────────────────────────────────────────────────────────────────────────────
+// CacheService caps a value at 100KB and fails SILENTLY past it (the put is in a try/catch, so
+// the only symptom is every request refetching eight Dutchie endpoints — slow, not broken, and
+// therefore easy to never notice). River Rd's entry measured 99,152 bytes on 2026-09-11: one
+// good sales day from falling out of cache, before the packageId evidence below was added.
+//
+// The bulk is invRoomMap, stored as {"1947227":"floor", ...} — 20 bytes to say what "1947227,"
+// says in 8, with the room name repeated a thousand times over. Compacting to one comma-joined
+// id list per room type cuts it by about 60%. Only the CACHED form is compact; callers still get
+// the same object they always got, so nothing downstream changes.
+const _ROOM_CODE_ = { f: 'floor', b: 'back', d: 'distro', q: 'quarantine', s: 'sample' };
+
+function _compactRoomData_(d) {
+  const byType = {};
+  for (const k in _ROOM_CODE_) byType[k] = [];
+  const rev = {}; for (const k in _ROOM_CODE_) rev[_ROOM_CODE_[k]] = k;
+  for (const id in (d.invRoomMap || {})) {
+    const k = rev[d.invRoomMap[id]];
+    if (k) byType[k].push(id);
+  }
+  const m = {};
+  for (const k in byType) if (byType[k].length) m[k] = byType[k].join(',');
+  return {
+    v: 1, n: d.roomNameType || {}, i: d.roomIdType || {}, m: m,
+    e: (d.floorEvidenceIds    || []).join(','),
+    p: (d.floorEvidencePkgIds || []).join(','),
+    r: (d.returnedPackageIds  || []).join(','),
+  };
+}
+
+function _expandRoomData_(c) {
+  if (!c || c.v !== 1) return c;  // not the compact shape — hand it back untouched
+  const invRoomMap = {};
+  for (const k in (c.m || {})) {
+    const type = _ROOM_CODE_[k];
+    if (!type) continue;
+    for (const id of String(c.m[k]).split(',')) if (id) invRoomMap[id] = type;
+  }
+  const split = (str) => String(str || '').split(',').filter(Boolean);
+  return {
+    roomNameType: c.n || {}, roomIdType: c.i || {}, invRoomMap: invRoomMap,
+    floorEvidenceIds: split(c.e), floorEvidencePkgIds: split(c.p), returnedPackageIds: split(c.r),
+  };
 }
 
 // Batch room data for many stores in ONE fetchAll round. Cache-hit stores are served
@@ -925,7 +985,7 @@ function buildRoomDataBatch_(stores, force) {
     // (the DC), where stock is constantly moved between rooms and staged for distribution.
     const cached = force ? null : cache.get(ROOM_DATA_CACHE_PREFIX + store);
     if (cached) {
-      try { result[store] = JSON.parse(cached); continue; } catch(e) { /* corrupt entry → refetch */ }
+      try { result[store] = _expandRoomData_(JSON.parse(cached)); continue; } catch(e) { /* corrupt entry → refetch */ }
     }
     const reqs = _roomDataRequests_(store);
     cold.push({ store, start: requests.length, count: reqs.length });
@@ -937,7 +997,7 @@ function buildRoomDataBatch_(stores, force) {
     for (const { store, start, count } of cold) {
       const data = _processRoomData_(responses.slice(start, start + count));
       result[store] = data;
-      try { cache.put(ROOM_DATA_CACHE_PREFIX + store, JSON.stringify(data), INV_CACHE_TTL); } catch(e) {}
+      try { cache.put(ROOM_DATA_CACHE_PREFIX + store, JSON.stringify(_compactRoomData_(data)), INV_CACHE_TTL); } catch(e) {}
     }
   }
   return result;
@@ -986,9 +1046,11 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
 
   const raw      = JSON.parse(invResp.getContentText());
   const items    = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
-  const { roomNameType, roomIdType, invRoomMap, floorEvidenceIds: floorEvArr, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store, params.force === '1');
+  const { roomNameType, roomIdType, invRoomMap, floorEvidenceIds: floorEvArr,
+          floorEvidencePkgIds: floorEvPkgArr, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store, params.force === '1');
   const returnedPackageIds = new Set(returnedPkgArr || []);
   const floorEvidence      = new Set(floorEvArr || []);
+  const floorEvidencePkg   = new Set(floorEvPkgArr || []);
 
   // ── What room is a package in when Dutchie will not say? ──────────────────────────────────
   // Dutchie gives this app NO room data on the inventory payload: /reporting/inventory returns
@@ -1109,6 +1171,9 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
       // was, and the whole point is to stop a stale or absent Move from parking sellable stock in
       // Distro. It sits BELOW roomName/roomId because those are Dutchie stating the room outright.
       const soldFromFloor = floorEvidence.has(String(item.inventoryId));
+      // packageId evidence sits BELOW the Move on purpose (see _processRoomData_): it has no date
+      // to compare, so it only replaces the evidence-free default, never an actual Move.
+      const soldPkg = !safeTxRoom && item.packageId && floorEvidencePkg.has(String(item.packageId));
       let roomType = (itemRoom && roomNameType[itemRoom])
         ? roomNameType[itemRoom]
         : (item.roomId && roomIdType[item.roomId])
@@ -1117,6 +1182,8 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
         ? 'floor'
         : safeTxRoom
         ? safeTxRoom
+        : soldPkg
+        ? 'floor'
         : unknownRoomType; // no room signal at all → see the gate above (distro at a DC, else back)
 
       const itemCost = Number(item.unitCost || 0);
@@ -3405,8 +3472,9 @@ function skuDebug(params) {
   const items = (Array.isArray(raw) ? raw : (raw.data || raw.items || [])).filter(i => String(i.sku) === sku);
 
   const rd = buildRoomData(store); // uses the live (fixed) room-data path
-  const { roomNameType, roomIdType, invRoomMap, floorEvidenceIds } = rd;
-  const floorEvidence = new Set(floorEvidenceIds || []);
+  const { roomNameType, roomIdType, invRoomMap, floorEvidenceIds, floorEvidencePkgIds } = rd;
+  const floorEvidence    = new Set(floorEvidenceIds || []);
+  const floorEvidencePkg = new Set(floorEvidencePkgIds || []);
 
   // This tool MUST resolve rooms the way getInventory does, or it sends you the wrong way on the
   // exact bug you opened it for. It used to hardcode 'back' for the unknown case while production
@@ -3438,10 +3506,12 @@ function skuDebug(params) {
     const txRoom = invRoomMap[item.inventoryId];
     const safeTxRoom = (txRoom === 'floor' || txRoom === 'back' || txRoom === 'distro') ? txRoom : null;
     const soldFromFloor = floorEvidence.has(String(item.inventoryId));
+    const soldPkg = !safeTxRoom && item.packageId && floorEvidencePkg.has(String(item.packageId));
     const resolved = (item.roomName && roomNameType[item.roomName]) ? roomNameType[item.roomName]
       : (item.roomId && roomIdType[item.roomId]) ? roomIdType[item.roomId]
       : soldFromFloor ? 'floor'
-      : safeTxRoom ? safeTxRoom : unknownRoomType;
+      : safeTxRoom ? safeTxRoom
+      : soldPkg ? 'floor' : unknownRoomType;
     return {
       inventoryId: item.inventoryId,
       packageId: item.packageId,
@@ -3456,8 +3526,9 @@ function skuDebug(params) {
       soldFromFloor: soldFromFloor,
       resolvedVia: (item.roomName && roomNameType[item.roomName]) ? 'roomName'
         : (item.roomId && roomIdType[item.roomId]) ? 'roomId'
-        : soldFromFloor ? 'retail sale'
+        : soldFromFloor ? 'retail sale (inventoryId)'
         : safeTxRoom ? 'Move tx'
+        : soldPkg ? 'retail sale (packageId)'
         : 'default (' + unknownRoomType + ')',
       resolvedRoomType: resolved,
       moveTxHistory: (txBySku[item.inventoryId] || []).sort((a,b)=> (a.date<b.date?1:-1)),
