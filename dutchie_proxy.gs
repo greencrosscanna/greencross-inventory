@@ -736,15 +736,20 @@ function getStoreRooms(store) {
 }
 
 // ─── ROOM CLASSIFIER ─────────────────────────────────────────────────────────
-// Returns { roomNameType, invRoomMap }.
-// roomNameType: room name → 'floor'|'quarantine'|'sample'|'distro'|'back'
-// invRoomMap:   inventoryId → type (transaction-based fallback)
+// Returns { roomNameType, invRoomMap, floorEvidenceIds, returnedPackageIds }.
+// roomNameType:     room name → 'floor'|'quarantine'|'sample'|'distro'|'back'
+// invRoomMap:       inventoryId → type (transaction-based fallback)
+// floorEvidenceIds: inventoryIds sold at the register more recently than their last Move —
+//                   proof the package was on the sales floor (you cannot sell out of Distro)
 // Primary classification order in getInventory:
 //   1. item.roomQuantities array (most accurate — per-package split)
 //   2. item.roomName / item.roomId field
-//   3. invRoomMap (latest Move transaction, last resort)
-//   4. default 'back'
-const ROOM_DATA_CACHE_PREFIX = 'roomdata4_';
+//   3. floorEvidenceIds (a retail sale newer than the last Move)
+//   4. invRoomMap (latest Move transaction)
+//   5. default — 'distro' at a DC that can see its floor, else 'back'
+// Prefix bumped 4→5 on 2026-09-11: cached entries predating floorEvidenceIds would serve a
+// room map with no sale evidence for the cache's lifetime, which is the bug this fixes.
+const ROOM_DATA_CACHE_PREFIX = 'roomdata5_';
 
 // Dutchie's /inventory/inventorytransaction now REQUIRES both startDate and endDate and
 // caps the range at 31 days (previously it accepted an unbounded startDate, or none). The
@@ -843,23 +848,53 @@ function _processRoomData_(responses) {
     if (type) invRoomMap[id] = type;
   }
 
-  // Customer returns → quarantine. Returns don't appear in inventory transactions.
-  // They're in register transactions with item.isReturned=true. The inventoryId in the
-  // register transaction differs from the current inventory record, so we match by packageId.
+  // One pass over the register feed produces two different signals:
+  //   returnedPackageIds — customer returns → quarantine. Returns don't appear in inventory
+  //     transactions. They're in register transactions with item.isReturned=true. The inventoryId
+  //     in the register transaction differs from the current inventory record, so we match by
+  //     packageId.
+  //   latestSale        — A RETAIL SALE IS ROOM EVIDENCE. You cannot sell a package out of the
+  //     distro room: if it rang up at the register, it was on the sales floor at that moment.
+  //     This is the only positive floor signal for a package Dutchie never reports a room for and
+  //     that has never been moved — which at River Rd is most of the building. See the
+  //     floorEvidenceIds gate below and the classification chain in getInventory.
+  //
+  // 'Retail' vs 'Transfer' matters. Both types appear in this feed (River Rd, 14d: 1918 Retail,
+  // 18 Transfer). A Transfer is stock going OUT to another store — the opposite of floor
+  // evidence — so only Retail counts. Voids and returned line items are excluded too: a voided
+  // sale never happened, and a returned unit is headed for quarantine, not the shelf.
   const returnedPackageIds = new Set();
+  const latestSale = {};  // inventoryId → most recent retail sale date
   if (regResp.getResponseCode() === 200) {
-    const regTxs = JSON.parse(regResp.getContentText());
+    let regTxs; try { regTxs = JSON.parse(regResp.getContentText()); } catch (e) { regTxs = []; }
     for (const tx of (Array.isArray(regTxs) ? regTxs : [])) {
       if (!Array.isArray(tx.items)) continue;
+      const isRetail = String(tx.transactionType || '') === 'Retail' && !tx.isVoid;
       for (const item of tx.items) {
         if (item.isReturned && item.packageId) {
           returnedPackageIds.add(String(item.packageId));
+        }
+        if (isRetail && !item.isReturned && item.inventoryId) {
+          const id = String(item.inventoryId);
+          const d  = tx.transactionDate || '';
+          if (d && (!latestSale[id] || d > latestSale[id])) latestSale[id] = d;
         }
       }
     }
   }
 
-  return { roomNameType, roomIdType, invRoomMap, returnedPackageIds: [...returnedPackageIds] };
+  // A sale only outranks a Move when it happened AFTER it. Order matters in both directions:
+  // sold yesterday then moved to Distro today is genuinely distro stock, while moved to Distro
+  // last month and sold yesterday means it came back to the floor and the move is stale. Packages
+  // with no move at all are the main population here — they have nothing to be newer than, so any
+  // sale counts. Same lexical ISO date comparison the Move merge above uses.
+  const floorEvidenceIds = [];
+  for (const [id, saleDate] of Object.entries(latestSale)) {
+    const mv = latestMove[id];
+    if (!mv || saleDate > mv.date) floorEvidenceIds.push(id);
+  }
+
+  return { roomNameType, roomIdType, invRoomMap, floorEvidenceIds, returnedPackageIds: [...returnedPackageIds] };
 }
 
 // Single-store room data with 1h-ish cache. Unchanged contract for existing callers
@@ -951,8 +986,9 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
 
   const raw      = JSON.parse(invResp.getContentText());
   const items    = Array.isArray(raw) ? raw : (raw.data || raw.items || []);
-  const { roomNameType, roomIdType, invRoomMap, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store, params.force === '1');
+  const { roomNameType, roomIdType, invRoomMap, floorEvidenceIds: floorEvArr, returnedPackageIds: returnedPkgArr } = preloadedRoomData || buildRoomData(store, params.force === '1');
   const returnedPackageIds = new Set(returnedPkgArr || []);
+  const floorEvidence      = new Set(floorEvArr || []);
 
   // ── What room is a package in when Dutchie will not say? ──────────────────────────────────
   // Dutchie gives this app NO room data on the inventory payload: /reporting/inventory returns
@@ -966,6 +1002,18 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
   //          400ing at the time so NOTHING had a room signal (Tawny's bug).
   //   after  default 'back' merged River's DC stock into on-hand — 40 units of a cartridge showing
   //          as 48 in stock instead of 8 floor | 40 distro (Sky's bug, 2026-08-24).
+  //
+  //   2026-09-11  default 'distro' at River again, this time with moves visible: 36,118 of River's
+  //          54,871 units sat in Distro and 332 products read as zero-available, including 645
+  //          lighters and 696 cart batteries — floor accessories received straight to the shelf
+  //          that never generate a Move, so they had no signal and the default swallowed them
+  //          (Tawny's bug, second time). Fixed by ASKING THE REGISTER instead of guessing harder:
+  //          a retail sale proves the package was on the floor. See floorEvidenceIds.
+  //
+  // The lesson those three share: every time this was wrong, it was wrong because a DEFAULT was
+  // carrying packages it had no evidence about. Widening the Move window (4→6) treated the
+  // symptom. Sale evidence removes packages from the default's reach entirely, which is why the
+  // gate below still matters but now governs a much smaller population.
   //
   // River is the DC: stock LANDS in Distro and is moved out to the floor (confirmed by Sky), so
   // "never moved" means "still in Distro" — but only if we can actually SEE moves. Hence the gate:
@@ -1042,7 +1090,7 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
       }
     } else {
       // Fallback: single room classification for the whole package.
-      // Priority: roomName → roomId → Move tx → returned package → back.
+      // Priority: roomName → roomId → retail sale → Move tx → default.
       // returnedPackageIds is last-resort only: it marks an ENTIRE package as quarantine
       // based on any return event, but Dutchie handles partial returns correctly at the
       // room level. Letting roomName/roomId/invRoomMap take precedence avoids
@@ -1056,10 +1104,17 @@ function getInventory(params, preloadedInvResp, preloadedRoomData) {
       // are staged for inter-store distribution and should be classified as qtyDistro.
       const txRoom = invRoomMap[item.inventoryId];
       const safeTxRoom = (txRoom === 'floor' || txRoom === 'back' || txRoom === 'distro') ? txRoom : null;
+      // A retail sale newer than the last Move outranks that Move (see floorEvidenceIds). It sits
+      // ABOVE invRoomMap deliberately: the sale is the more recent fact about where the package
+      // was, and the whole point is to stop a stale or absent Move from parking sellable stock in
+      // Distro. It sits BELOW roomName/roomId because those are Dutchie stating the room outright.
+      const soldFromFloor = floorEvidence.has(String(item.inventoryId));
       let roomType = (itemRoom && roomNameType[itemRoom])
         ? roomNameType[itemRoom]
         : (item.roomId && roomIdType[item.roomId])
         ? roomIdType[item.roomId]
+        : soldFromFloor
+        ? 'floor'
         : safeTxRoom
         ? safeTxRoom
         : unknownRoomType; // no room signal at all → see the gate above (distro at a DC, else back)
@@ -3350,7 +3405,17 @@ function skuDebug(params) {
   const items = (Array.isArray(raw) ? raw : (raw.data || raw.items || [])).filter(i => String(i.sku) === sku);
 
   const rd = buildRoomData(store); // uses the live (fixed) room-data path
-  const { roomNameType, roomIdType, invRoomMap } = rd;
+  const { roomNameType, roomIdType, invRoomMap, floorEvidenceIds } = rd;
+  const floorEvidence = new Set(floorEvidenceIds || []);
+
+  // This tool MUST resolve rooms the way getInventory does, or it sends you the wrong way on the
+  // exact bug you opened it for. It used to hardcode 'back' for the unknown case while production
+  // defaulted to 'distro' at a DC — so asked about River's 645 lighters it answered "645 in Back
+  // Stock" while the app showed "645 in Distro". Both the gate and the chain below are copied
+  // from getInventory deliberately; tests/room_default_parity_test.js fails if they drift apart.
+  const hasDistroRoom   = Object.keys(roomNameType).some(function(n) { return roomNameType[n] === 'distro'; });
+  const floorSignalSeen = Object.keys(invRoomMap).some(function(id) { return invRoomMap[id] === 'floor'; });
+  const unknownRoomType = (hasDistroRoom && floorSignalSeen) ? 'distro' : 'back';
 
   // Latest Move-tx toRoom per inventoryId for THIS sku (last 30 days, one window)
   const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10); // @utc-ok 31-day-capped window, as in _roomDataRequests_
@@ -3372,9 +3437,11 @@ function skuDebug(params) {
     const rqs = Array.isArray(item.roomQuantities) ? item.roomQuantities : null;
     const txRoom = invRoomMap[item.inventoryId];
     const safeTxRoom = (txRoom === 'floor' || txRoom === 'back' || txRoom === 'distro') ? txRoom : null;
+    const soldFromFloor = floorEvidence.has(String(item.inventoryId));
     const resolved = (item.roomName && roomNameType[item.roomName]) ? roomNameType[item.roomName]
       : (item.roomId && roomIdType[item.roomId]) ? roomIdType[item.roomId]
-      : safeTxRoom ? safeTxRoom : 'back';
+      : soldFromFloor ? 'floor'
+      : safeTxRoom ? safeTxRoom : unknownRoomType;
     return {
       inventoryId: item.inventoryId,
       packageId: item.packageId,
@@ -3386,6 +3453,12 @@ function skuDebug(params) {
       itemRoomName: item.roomName || null,
       itemRoomId: item.roomId || null,
       invRoomMapType: txRoom || null,
+      soldFromFloor: soldFromFloor,
+      resolvedVia: (item.roomName && roomNameType[item.roomName]) ? 'roomName'
+        : (item.roomId && roomIdType[item.roomId]) ? 'roomId'
+        : soldFromFloor ? 'retail sale'
+        : safeTxRoom ? 'Move tx'
+        : 'default (' + unknownRoomType + ')',
       resolvedRoomType: resolved,
       moveTxHistory: (txBySku[item.inventoryId] || []).sort((a,b)=> (a.date<b.date?1:-1)),
     };
