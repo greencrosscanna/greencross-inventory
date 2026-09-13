@@ -265,12 +265,77 @@ function testEmail() {
   MailApp.sendEmail('sky@greencrosscanna.com', '🐞 Bug Reporter Test', 'Mail scope is working — bug reports will now send emails.');
 }
 
-// Run once from the editor to store the LeafLink API key securely.
-// Do not expose this as an HTTP route.
-function setLeafLinkKeyFromValue_(apiKey) {
-  if (!apiKey) throw new Error('Pass the LeafLink API key as the apiKey argument.');
-  PropertiesService.getScriptProperties().setProperty('LL_API_KEY', String(apiKey).trim());
-  Logger.log('LeafLink API key saved.');
+/* Set or rotate the LeafLink API key. Select setLeafLinkKey in the editor and press Run.
+ *
+ * HOW: paste the key between the quotes on the API_KEY line below, Run, then empty the quotes
+ * again. Running it with the quotes empty CHANGES NOTHING and just reports whether a key is
+ * stored, so it doubles as the "is LeafLink configured?" check and cannot wipe a good key by
+ * accident.
+ *
+ * FORGETTING TO EMPTY THE QUOTES CANNOT SHIP IT. gx-preflight is installed as a pre-push hook and
+ * refuses any tracked file where something named api_key is assigned a literal — which is exactly
+ * what the line below becomes once you paste. That is why the constant is named API_KEY and not
+ * something tidier: the name is what arms the gate.
+ *
+ * WHY IT IS NOT AN ARGUMENT, which is how this was written and why it never worked. The previous
+ * version took the key as a parameter AND ended in an underscore. A trailing underscore hides a
+ * function from the editor Run menu, and the Run button passes no arguments — so it could not be
+ * selected, and would have received undefined if it had been. Meanwhile getLeafLinkOrders told
+ * anyone who hit the failure to "run setLeafLinkKey()", a name that did not exist. LeafLink open
+ * orders is a live route, so that was the only key-rotation path there was, broken three ways.
+ * Fixed 2026-09-13.
+ *
+ * WHY IT PROBES INSTEAD OF JUST SAVING. The Script Properties panel has been observed silently
+ * dropping saves, so "I set it" is not evidence. This reads the value back, then calls LeafLink
+ * with it and reports what LeafLink said. A key that saves but is rejected is the failure you
+ * actually care about, and it is invisible to a setter that only writes.
+ *
+ * Deliberately not an HTTP route: nothing here should be able to set a credential over the wire.
+ */
+function setLeafLinkKey() {
+  const API_KEY = '';   // ← paste between the quotes, Run, then empty it again
+
+  const props  = PropertiesService.getScriptProperties();
+  const pasted = String(API_KEY || '').trim();
+  const stored = props.getProperty('LL_API_KEY');
+
+  if (!pasted) {
+    const msg = stored
+      ? 'LL_API_KEY is set (' + maskSecret_(stored) + '). Nothing changed — paste a key above to rotate it.'
+      : 'LL_API_KEY is NOT set, and nothing was pasted. LeafLink open orders will keep failing until it is.';
+    Logger.log(msg);
+    return msg;
+  }
+
+  props.setProperty('LL_API_KEY', pasted);
+
+  // Read back rather than trust the write — see the note above about dropped saves.
+  const after = props.getProperty('LL_API_KEY');
+  if (after !== pasted) {
+    const msg = 'FAILED — the key did not stick. Stored value is ' +
+                (after ? maskSecret_(after) : '(empty)') + '. Try Run again.';
+    Logger.log(msg);
+    return msg;
+  }
+
+  // A cached page of orders was fetched with the OLD key; drop it so the probe below, and the
+  // next real request, both exercise the key that was just saved.
+  try { CacheService.getScriptCache().remove('ll_orders_v1'); } catch (e) {}
+
+  const probe = getLeafLinkOrders();
+  const ok    = !(probe && probe.error);
+  const msg   = ok
+    ? 'LL_API_KEY saved (' + maskSecret_(after) + ') and LeafLink accepted it.'
+    : 'LL_API_KEY saved (' + maskSecret_(after) + ') but LeafLink REFUSED it: ' + probe.error;
+  Logger.log(msg);
+  return msg;
+}
+
+/* Enough of a secret to recognize which one it is, never enough to use. */
+function maskSecret_(v) {
+  const s = String(v || '');
+  if (s.length <= 8) return '•'.repeat(s.length);
+  return s.slice(0, 4) + '…' + s.slice(-4) + ' (' + s.length + ' chars)';
 }
 
 function doGet(e) {
@@ -4789,7 +4854,7 @@ function getLeafLinkOrders() {
   if (hit) { try { return JSON.parse(hit); } catch(e) {} }
 
   const apiKey = PropertiesService.getScriptProperties().getProperty('LL_API_KEY');
-  if (!apiKey) return { error: 'LL_API_KEY not configured — run setLeafLinkKey() in the script editor' };
+  if (!apiKey) return { error: 'LL_API_KEY not configured — select setLeafLinkKey in the Apps Script editor and press Run' };
 
   // Fetch 200 most recent orders and filter open ones client-side.
   // LL's status filter is lowercase and single-value only, so it's simpler
