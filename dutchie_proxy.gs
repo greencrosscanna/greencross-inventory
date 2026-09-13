@@ -70,9 +70,13 @@ const DOH_CRITICAL_DAYS = gxCfgNum_('invDohCriticalDays', 3);
 const DOH_LOW_DAYS      = gxCfgNum_('invDohLowDays', 7);
 const DOH_WATCH_DAYS    = gxCfgNum_('invDohWatchDays', 14);
 const BULK_FLOWER_MOQ_G = gxCfgNum_('invBulkFlowerMoqG', 227);
-const GC_USERS_KEY      = 'gc_users';
 const GC_SESSION_SECRET_KEY = 'GC_SESSION_SECRET';
-const GC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/* GC_USERS_KEY ('gc_users') and GC_SESSION_TTL_MS went with the local-user code on 2026-09-13.
+   Nothing read either one: the gc_users property stopped being touched when GX Core became the
+   sole sign-on authority, and the TTL only ever mattered to the token MINTER. This app verifies
+   tokens but does not mint them, and validateSessionToken_ reads the expiry out of the token
+   itself rather than off a constant — so a TTL here could only ever disagree with the one GX Core
+   actually applied. See the note above validateSessionToken_. */
 const OPERATIONAL_WARM_STATUS_KEY = 'gc_operational_warm_status';
 const GAS_ERROR_LOG_KEY            = 'gc_error_log';          // PropertiesService ring buffer
 const GAS_ERROR_LOG_MAX            = 20;                       // keep last N entries
@@ -5832,11 +5836,6 @@ function setUpcEntry(params) {
 }
 
 // ── User Authentication ────────────────────────────────────────────────────────
-function hashPass(pass) {
-  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(pass));
-  return bytes.map(function(b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
-}
-
 function sessionSecret_() {
   const props = PropertiesService.getScriptProperties();
   let secret = props.getProperty(GC_SESSION_SECRET_KEY);
@@ -5850,12 +5849,6 @@ function sessionSecret_() {
 function signSession_(payload) {
   const sig = Utilities.computeHmacSha256Signature(payload, sessionSecret_());
   return Utilities.base64EncodeWebSafe(sig);
-}
-
-function issueSessionToken_(user) {
-  const exp = Date.now() + GC_SESSION_TTL_MS;
-  const payload = [String(user).toLowerCase().trim(), exp].join(':');
-  return payload + ':' + signSession_(payload);
 }
 
 function validateSessionToken_(token) {
@@ -6087,5 +6080,11 @@ function getStoreTxHistory(params) {
 }
 
 // (Legacy local-user seeders setupUsers_/setUserPassword_ removed 2026-08-10 — GX Core is the
-// sole sign-on authority; the gc_users Script Property is no longer read or written. The orphaned
-// helpers hashPass/issueSessionToken_ remain defined but unused and can be cleaned up later.)
+// sole sign-on authority; the gc_users Script Property is no longer read or written. Their two
+// orphaned helpers, hashPass and issueSessionToken_, were finally removed 2026-09-13.
+//
+// WHAT STAYS, and why it is not the same thing: signSession_, sessionSecret_ and
+// validateSessionToken_ are live. This app does not MINT sessions any more — GX Core does — but it
+// still VERIFIES them, and it verifies by re-signing with the same shared GC_SESSION_SECRET, so a
+// token issued by GX Core validates here identically. Minting is what left; checking is the whole
+// point of the remaining three.)
