@@ -30,7 +30,35 @@ const SHARED_STATE_SHEET_NAME      = 'Shared State';
 const LOADING_QUOTES_SHEET_NAME    = 'Loading Quotes';
 const DUTCHIE_BASE                 = 'https://api.pos.dutchie.com';
 
-const STORES = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
+/* THE STORE LIST COMES FROM GX CORE, not from this line.
+ *
+ * Until v3.053 this was a hardcoded array, and about twenty loops below walk it: the nightly snapshot,
+ * all-stores live inventory and quarantine, the catalog build, cache warming, the assortment summary.
+ * A store added in the Command Center got none of them; a closed one kept being snapshotted.
+ *
+ * It is read from a Script Property that getDutchieStoreKeys_() rewrites whenever it resolves keys —
+ * the active GX Core stores that have BOTH a Dutchie name and a Dutchie key, in sort_order. Both
+ * conditions matter: a store with no key would make dutchieAuth() throw inside a fetchAll batch and
+ * take every other store's request down with it.
+ *
+ * Why a property and not a live call here: this line runs at the top of EVERY execution, including
+ * routes that never touch Dutchie. A property read is cheap and durable; a GX Core fetch here would put
+ * a network hop in front of every request, and an outage would break routes that do not need stores.
+ * The list refreshes on the next key resolution (at most every 10 minutes while anything calls
+ * Dutchie), so a Command Center change lands within one warming cycle.
+ *
+ * STORES_FALLBACK_ is used only until the property has been written once. */
+const STORES_FALLBACK_ = ['Bend', 'Center', 'Commercial', 'Hillsboro', 'Portland Rd', 'River Rd'];
+const GX_STORE_NAMES_PROP_ = 'GX_STORE_NAMES_JSON';
+const STORES = loadStoreNames_();
+function loadStoreNames_() {
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty('GX_STORE_NAMES_JSON');   // literal: runs before later consts exist
+    const list = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(list) && list.length && list.every(n => typeof n === 'string' && n.trim())) return list;
+  } catch (e) { /* unreadable → fallback below */ }
+  return STORES_FALLBACK_.slice();
+}
 const DUTCHIE_STORE_KEYS_PROP = 'DUTCHIE_STORE_KEYS_JSON';
 
 // ── GX Core business config (Phase C) — constants live in GX Core (?action=config); these hardcodes
@@ -756,19 +784,36 @@ function getDutchieStoreKeys_() {
      door, rather than renaming a vocabulary that appears everywhere. GXCore.getStores() is a library
      call reading a spreadsheet by id, so unlike ScriptProperties it works fine from a spoke. */
   const out = {};
+  const ordered = [];
   try {
     (GXCore.getStores() || []).forEach(function (s) {
       const dn = String(s.dutchie_name || '').trim();
       const id = String(s.store_id || '').trim().toLowerCase();
-      if (dn && byStoreId[id]) out[dn] = byStoreId[id];
+      if (dn && byStoreId[id]) { out[dn] = byStoreId[id]; ordered.push({ dn: dn, order: Number(s.sort_order) || 999 }); }
     });
   } catch (e) {
     throw new Error('GX Core store registry unreachable, cannot map keys to Dutchie names: ' + ((e && e.message) || e));
   }
   if (!Object.keys(out).length) throw new Error('No Dutchie key resolved for any store after mapping store_id to name');
+  syncStoreNames_(ordered);
 
   cache.put(GX_KEYS_CACHE_KEY_, JSON.stringify(out), GX_KEYS_CACHE_S_);
   return (_gxKeyMemo_ = out);
+}
+
+// Records the stores this app can actually query, for the NEXT execution's STORES (see the top of
+// the file). Written only when it changes, so a normal key refresh costs one property read. Never
+// throws: failing to record the list must not fail the key lookup that the caller is waiting on.
+function syncStoreNames_(ordered) {
+  try {
+    const names = ordered.slice()
+      .sort(function (a, b) { return a.order - b.order || a.dn.localeCompare(b.dn); })
+      .map(function (r) { return r.dn; });
+    if (!names.length) return;
+    const json = JSON.stringify(names);
+    const props = PropertiesService.getScriptProperties();
+    if (props.getProperty(GX_STORE_NAMES_PROP_) !== json) props.setProperty(GX_STORE_NAMES_PROP_, json);
+  } catch (e) { _logGasError('syncStoreNames_', (e && e.message) || String(e)); }
 }
 
 function isKnownStore(store) {
@@ -1355,6 +1400,7 @@ function loadStoreConfig_(spreadsheetId) {
           displayName: String(s.display_name || '').trim(), // internal name shown in the apps
           sortOrder: Number(s.sort_order) || 999,
           color: String(s.color || '').trim(),
+          region: String(s.region || '').trim(),            // drives transfer-time estimates in the page
           dutchieLocationKeyProperty: String(s.dutchie_key_prop || '').trim(),
         }))
         .filter(r => r.storeKey)

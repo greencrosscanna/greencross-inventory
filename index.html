@@ -4386,6 +4386,48 @@ function revealSpiffTab() {
   } catch (e) { /* same: hidden is the safe outcome, and boot must continue */ }
 }
 
+function selectStore(store) {
+  state.store = store;
+  state.invPage = 0;
+  state.restockShowAll = false;
+  document.querySelectorAll('#storePills .pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.store === store && store === 'All');
+    p.classList.toggle('store-active', p.dataset.store === store && store !== 'All');
+  });
+  if (state.tab === 'inventory') {
+    if (state.inventoryData) {
+      // All stores are already loaded — switching store is just a re-filter, no re-pull/spinner.
+      renderInventory();
+      loadBetaDecisionsForInventory(); // per-store decision feed (no-op unless beta); updates async
+    } else {
+      document.getElementById('inventoryContent').innerHTML =
+        '<div class="load-progress"><div class="spinner"></div><br>Loading…</div>';
+      loadInventoryData();
+    }
+  } else if (state.tab === 'beta') {
+    loadBetaFeed();
+  } else {
+    renderAll();
+  }
+}
+
+/* The buttons are REBUILT from STORES, not relabeled. The markup in #storePills is only first paint
+ * and the offline fallback: relabeling it meant a store added in the Command Center never got a
+ * button and a closed one kept its button forever. Ordered by display name, which is the order the
+ * hand-written markup always used. If the selected store has closed, fall back to All Stores. */
+function renderStorePills() {
+  const host = document.getElementById('storePills');
+  if (!host || !STORES.length) return;
+  const sorted = STORES.slice().sort((a, b) => a.display.localeCompare(b.display));
+  host.innerHTML = '<button class="pill" data-store="All">All Stores</button>' + sorted.map(s =>
+    `<button class="pill" data-store="${escapeHtml(s.name)}" style="--store-color:${escapeHtml(s.color)}">${escapeHtml(s.display)}</button>`).join('');
+  if (state.store !== 'All' && !STORE_BY_NAME[state.store]) { selectStore('All'); return; }
+  host.querySelectorAll('.pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.store === state.store && state.store === 'All');
+    p.classList.toggle('store-active', p.dataset.store === state.store && state.store !== 'All');
+  });
+}
+
 function init() {
   // Restore density preference
   const savedDensity = localStorage.getItem(LS.DENSITY);
@@ -4404,15 +4446,12 @@ function init() {
     .then(d => {
       if (!d || !d.ok || !Array.isArray(d.stores) || !d.stores.length) return;
       const next = d.stores
-        .map(s => ({ name: String(s.storeKey || '').trim(), display: String(s.displayName || s.storeKey || '').trim(), color: String(s.color || '').trim() || 'var(--muted)' }))
+        .map(s => ({ name: String(s.storeKey || '').trim(), display: String(s.displayName || s.storeKey || '').trim(), color: String(s.color || '').trim() || 'var(--muted)', region: String(s.region || '').trim() }))
         .filter(s => s.name);
       if (!next.length) return;
       STORES = next;
       STORE_BY_NAME = Object.fromEntries(STORES.map(s => [s.name, s]));
-      document.querySelectorAll('.pill[data-store]').forEach(pill => {
-        const s = STORE_BY_NAME[pill.dataset.store];
-        if (s) { pill.textContent = s.display; pill.style.setProperty('--store-color', s.color); }
-      });
+      renderStorePills();
     })
     .catch(() => {});
 
@@ -4485,30 +4524,11 @@ function init() {
   updatePriceTagsBadge();
   setInterval(updatePriceTagsBadge, 30000);
 
-  // Store filter pills
-  document.querySelectorAll('.pill').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.pill').forEach(p => { p.classList.remove('active'); p.classList.remove('store-active'); });
-      btn.classList.add(btn.dataset.store === 'All' ? 'active' : 'store-active');
-      state.store = btn.dataset.store;
-      state.invPage = 0;
-      state.restockShowAll = false;
-      if (state.tab === 'inventory') {
-        if (state.inventoryData) {
-          // All stores are already loaded — switching store is just a re-filter, no re-pull/spinner.
-          renderInventory();
-          loadBetaDecisionsForInventory(); // per-store decision feed (no-op unless beta); updates async
-        } else {
-          document.getElementById('inventoryContent').innerHTML =
-            '<div class="load-progress"><div class="spinner"></div><br>Loading…</div>';
-          loadInventoryData();
-        }
-      } else if (state.tab === 'beta') {
-        loadBetaFeed();
-      } else {
-        renderAll();
-      }
-    });
+  // Store filter pills — delegated, because renderStorePills() replaces the buttons once the live
+  // GX Core list arrives and a per-button listener would be lost with them.
+  document.getElementById('storePills').addEventListener('click', e => {
+    const btn = e.target.closest('.pill[data-store]');
+    if (btn) selectStore(btn.dataset.store);
   });
 
   // Date apply
@@ -5852,11 +5872,16 @@ function toggleFlag(e, key) {
   if (state.tab === 'flags') renderFlags();
 }
 
-const SALEM_STORES = new Set(['Center', 'Commercial', 'Portland Rd', 'River Rd']);
+// Transfer time: 3 days between two stores in the same region, 7 otherwise. The region comes from the
+// GX Core store registry (STORES, loaded in init); this table is only the answer before that arrives
+// or when Core is unreachable. It used to be the only answer — a hardcoded Salem list — so a new or
+// re-regioned store got the wrong estimate. Kept apart from the STORES fallback on purpose: the
+// hub's palette-drift gate parses that table and expects exactly name/display/color.
+const STORE_REGION_FALLBACK = { 'Bend': 'Bend', 'Center': 'Salem', 'Commercial': 'Salem', 'Hillsboro': 'Hillsboro', 'Portland Rd': 'Salem', 'River Rd': 'Salem' };
+function storeRegion(name) { return STORE_BY_NAME[name]?.region || STORE_REGION_FALLBACK[name] || ''; }
 function transferDays(a, b) {
-  const aS = SALEM_STORES.has(a), bS = SALEM_STORES.has(b);
-  if (aS && bS) return 3;
-  return 7;
+  const ra = storeRegion(a), rb = storeRegion(b);
+  return (ra && ra === rb) ? 3 : 7;
 }
 function computeTransferSuggestions(items) {
   const BUFFER = 7;
@@ -8671,7 +8696,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.052';
+const APP_VERSION = 'v3.053';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
