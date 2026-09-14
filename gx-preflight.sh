@@ -340,7 +340,34 @@ if [ -d tests ]; then
       _tfail=""
       for t in $_tests; do
         if _out="$(cd "$_rundir" && node "$t" 2>&1)"; then
-          echo "  ✓ $t — $(printf '%s' "$_out" | tail -1)"
+          # ── A SUITE THAT SAID NOTHING DID NOT PASS ──────────────────────────────────────────────
+          # Exit 0 was the only thing checked here, and a suite can reach it having run nothing at
+          # all. Measured in greencross-sales on 2026-09-11: background_refresh_test.js is an async
+          # IIFE whose fake timer only fired delays >= 1000ms, while the code under test backs off
+          # 700 + random*500. Under 1000 the promise never resolved, the suite hung on its own await,
+          # Node exited clean with EMPTY stdout — and this line printed "✓ ... —" with nothing after
+          # the dash. Six silent runs in twelve. So roughly half of that repo's pushes were gated on
+          # 43 assertions that never ran, and the gate said they had.
+          #
+          # Deliberately the narrowest rule that closes it: EMPTY output is a failure. Every suite in
+          # this suite-of-suites prints something, so this cannot fire on a healthy one — and a
+          # stricter rule (demand a recognizable summary line) would block pushes across seven repos
+          # over a wording difference, which is how a gate gets --no-verify'd into uselessness.
+          if [ -z "$(printf '%s' "$_out" | tr -d '[:space:]')" ]; then
+            _tfail="$_tfail $t"
+            echo "  ✗ $t PRODUCED NO OUTPUT — exit 0 but nothing ran."
+            echo "      A suite that prints nothing has not passed. The usual cause is an async"
+            echo "      IIFE that never resolves: node then exits clean and this gate sees success."
+          else
+            echo "  ✓ $t — $(printf '%s' "$_out" | tail -1)"
+            # NO SECOND, SOFTER CHECK HERE. The first cut also warned when the output mentioned no
+            # pass/ok — and on its very first run across the suite it fired on
+            # greencross-spiff/tests/undefined_calls_test.js, which is entirely healthy and reports
+            # "213 call sites checked against 657 bindings — all resolve". A warning that cries on a
+            # good suite every push is one people learn to scroll past, and it sat directly above the
+            # hard rule that matters. Whether a suite asserts anything is not a question its wording
+            # can answer.
+          fi
         else
           _tfail="$_tfail $t"
           echo "  ✗ $t FAILED:"
