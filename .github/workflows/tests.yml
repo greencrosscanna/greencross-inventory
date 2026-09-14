@@ -25,45 +25,41 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # `secrets` is NOT available in an `if:` condition — a step guarded by `if: secrets.X != ''`
-    # never runs, silently. Map it to env at job level and test that.
-    env:
-      GX_SIBLING_TOKEN: ${{ secrets.GX_SIBLING_TOKEN }}
     steps:
+      # `path:` is required, not cosmetic. The cross-repo suites reach `../greencross-<name>`, so the
+      # main checkout has to sit in a directory NAMED greencross-inventory with its siblings beside it.
+      # A bare checkout lands in the workspace root and every sibling path resolves to nothing.
       - name: Check out greencross-inventory
         uses: actions/checkout@v7
         with:
           path: greencross-inventory
 
-      # Cross-repo checkout needs a PAT — the default GITHUB_TOKEN is scoped to THIS repo.
-      # Without GX_SIBLING_TOKEN the job still passes; store_palette_drift_test.js
-      # simply skip, and the summary below says so rather than letting the tick imply coverage.
-      - name: Check out greencross-command-center
-        if: env.GX_SIBLING_TOKEN != ''
-        continue-on-error: true
+      # NO TOKEN. greencross-gx-theme is PUBLIC, so actions/checkout reaches it with the default
+      # GITHUB_TOKEN. This is the checkout store_normalizer_test.js needs: without it the suite still
+      # exits 0, having skipped the half that reads the real gx-stores.js normalizer — i.e. the half
+      # that can actually catch drift between this app's copy and the shared one.
+      #
+      # These steps used to be gated on a `GX_SIBLING_TOKEN` secret that was never created, so every
+      # sibling checkout was a silent no-op on every run since CI was added here. The secret was also
+      # unnecessary: cross-repo checkout only needs a PAT for a PRIVATE repo.
+      - name: Check out greencross-gx-theme
         uses: actions/checkout@v7
         with:
-          repository: greencrosscanna/greencross-command-center
-          path: greencross-command-center
-          token: ${{ secrets.GX_SIBLING_TOKEN }}
+          repository: greencrosscanna/greencross-gx-theme
+          path: greencross-gx-theme
 
-      - name: Check out greencross-sales
-        if: env.GX_SIBLING_TOKEN != ''
-        continue-on-error: true
-        uses: actions/checkout@v7
-        with:
-          repository: greencrosscanna/greencross-sales
-          path: greencross-sales
-          token: ${{ secrets.GX_SIBLING_TOKEN }}
-
-      - name: Check out greencross-leaderboard
-        if: env.GX_SIBLING_TOKEN != ''
-        continue-on-error: true
-        uses: actions/checkout@v7
-        with:
-          repository: greencrosscanna/greencross-leaderboard
-          path: greencross-leaderboard
-          token: ${{ secrets.GX_SIBLING_TOKEN }}
+      # ── store_palette_drift_test.js SKIPS HERE ON PURPOSE. DO NOT "FIX" IT WITH A PAT. ────────────
+      # It runs greencross-command-center/tools/store-fallback-drift.js, and that repo is PRIVATE —
+      # a spoke's default GITHUB_TOKEN cannot reach it, so the only way to check it out here would be
+      # a personal access token stored as a secret in a PUBLIC repo. That is a real credential with a
+      # real blast radius, bought for coverage this suite ALREADY HAS: the hub's own CI checks out all
+      # seven spokes and runs the same drift tool across them, so the contract is gated either way.
+      # It is also still gated locally, where the hub IS a sibling and the suite runs for real.
+      # So: no greencross-command-center step, a visible ⚠️ in the summary below, and no secret.
+      #
+      # greencross-sales and greencross-leaderboard are not checked out either — no suite in this repo
+      # reads them. gx2_severance_test.js names greencross-sales only in a comment (it is modeled on
+      # that repo's severance suite); every file it actually opens is this repo's own.
 
       - uses: actions/setup-node@v7
         with:
@@ -106,12 +102,17 @@ jobs:
               fi
             done
             echo ""
-            if [ -d ../greencross-command-center ]; then
-              echo "Sibling repos present — cross-repo suites ran."
+            if [ -d ../greencross-gx-theme ]; then
+              echo "\`greencross-gx-theme\` present — store_normalizer_test.js exercised the shared"
+              echo "registry path, not just this repo's copy."
             else
-              echo "> **Siblings absent.** store_palette_drift_test.js did not run here."
-              echo "> They are still gated by this repo's local pre-push hook, so this is reduced CI"
-              echo "> coverage, not an unguarded contract. Add a repo-scoped PAT as \`GX_SIBLING_TOKEN\`"
-              echo "> to close the gap."
+              echo "> **\`greencross-gx-theme\` is absent and should not be.** It is public and needs no"
+              echo "> token, so this means the checkout step failed — not that the coverage is optional."
+              echo "> store_normalizer_test.js skipped its registry half."
             fi
+            echo ""
+            echo "> **\`store_palette_drift_test.js\` skipped, by design.** It needs"
+            echo "> \`greencross-command-center\`, which is PRIVATE — unreachable from a public spoke's"
+            echo "> default token. The same drift check runs in the hub's own CI against all seven"
+            echo "> spokes, and locally here where the hub is a sibling. **Do not add a PAT for it.**"
           } >> "$GITHUB_STEP_SUMMARY"
