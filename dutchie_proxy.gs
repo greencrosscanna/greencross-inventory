@@ -4792,7 +4792,11 @@ function getReceivedRecent(params) {
       const when = rc.deliveredOn || rc.addedOn || '';
       const whenMs = Date.parse(when);
       if (!whenMs || whenMs < cutoffMs) continue;
-      for (const it of (rc.items || [])) rows.push({ store, receivedOn: when, receiptVendor: rc.vendor || '', item: it });
+      // Compact on purpose: a week is ~1,200 lines across the stores, and the page only needs these.
+      for (const it of (rc.items || [])) {
+        rows.push({ store, receivedOn: String(when).slice(0, 10), vendor: rc.vendor || '',
+                    sku: String(it.sku || ''), product: it.product || '', packageId: it.packageId || '' });
+      }
     }
   });
   const out = { ok: true, days, rows, errors };

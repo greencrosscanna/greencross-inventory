@@ -1488,7 +1488,7 @@
     'decisionqueue', 'fattytracker', 'gaserrors', 'getqueue', 'getstate', 'getupcmap',
     'grants',
     'inventory', 'leadtimes', 'llorders', 'loadingquotes', 'login', 'lostsales', 'oosmap',
-    'operationalbundle', 'operationalstatus', 'quarantine', 'queuecount', 'sales_dutchie',
+    'operationalbundle', 'operationalstatus', 'quarantine', 'queuecount', 'receivedrecent', 'sales_dutchie',
     'skuprobe', 'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
   ];
 </script>
@@ -3005,7 +3005,8 @@ function renderMargin() {
 function renderBrandIssuesHtml() {
   const iss = computeBrandIssues();
   const typos = computeNameTypos();
-  if (!iss.total && !typos.length && !typos.fixedPending) return '';
+  const recv  = computeReceivedNoBrand();
+  if (!iss.total && !typos.length && !typos.fixedPending && !recv.rows.length) return '';
   const esc = escapeHtml;
 
   // Say how old the data is. Without this the list looks broken to anyone who just fixed something.
@@ -3065,6 +3066,29 @@ function renderBrandIssuesHtml() {
   } else if (fixedNote) {
     html += `<div class="section-label" style="margin-top:20px">Product name typos — 0</div>
       <div style="color:var(--muted);font-size:11px;margin:-4px 0 8px">${fixedNote.trim()}</div>`;
+  }
+
+  // This week's deliveries with no brand: the short list that can actually get done, ahead of the backlog.
+  if (recv.rows.length) {
+    const rows = recv.rows.map(x => {
+      const skuKey = esc(dqSkuKey(x.sku)).replace(/'/g, '&#39;');
+      return `<div class="flag-item" style="align-items:center">
+        <div class="flag-icon" style="color:var(--amber)">▼</div>
+        <div class="flag-text" style="flex:1">
+          <strong>${esc(x.name)}</strong>${sold(x.sold28)}<br>
+          <span style="font-size:11px"><strong style="color:var(--amber)">no brand</strong> · received ${esc(fmtDate(x.receivedOn))}${
+            x.vendors.length ? ` from ${esc(x.vendors.join(', '))}` : ''
+          } · ${Math.round(x.qty)} on hand</span><br>${storeBits(x.stores)}
+        </div>
+        <button class="flag-row-btn" onclick="dqDismiss(event,'${skuKey}')" title="Ignore this product">skip</button>
+      </div>`;
+    });
+    const unseen = recv.notYetInData
+      ? ` ${recv.notYetInData} more product${recv.notYetInData === 1 ? '' : 's'} arrived after the product data above was built and ${recv.notYetInData === 1 ? 'is' : 'are'} not checked yet.`
+      : '';
+    section('Received this week without a brand',
+      `Came in during the last ${DQ_RECEIVED_DAYS} days. Set the brand in Dutchie while the delivery is fresh; the older backlog is in the sections below.` + unseen,
+      rows, 'This week');
   }
 
   // 0 — on a shelf now, with nothing to attribute it to. Listed first: it is the only section about
@@ -3233,6 +3257,7 @@ function renderFlags() {
 
   // Brand data quality first: it is the only section that asks the reader to go and CHANGE something
   // in Dutchie, and it clears itself once they do.
+  if (state.tab === 'flags' && !state.receivedRecent) loadReceivedRecent();
   const dqHtml = renderBrandIssuesHtml();
 
   // ── Manually flagged items (with when + who) ──
@@ -5631,6 +5656,65 @@ function computeNameTypos() {
   return out;
 }
 // == end product-name typos ====================================================
+
+// == Received this week without a brand ========================================
+// The flow version of the brand list. A 65-row backlog is a chore nobody does; "three products came
+// in this week without a brand" is a two-minute job done while the delivery is still fresh, and it is
+// what keeps the catalog clean after the one-off cleanup instead of needing another one in March.
+// Deliveries come from Dutchie's receiving history (engine route receivedrecent), because the inventory
+// feed has no receive date. Brand comes from the inventory rows, joined on SKU: a receipt line carries
+// sku, product and package but no brand. Blank means blank at EVERY store -- a SKU branded somewhere
+// already has an answer, and "Brand missing at some stores" covers it.
+const DQ_RECEIVED_DAYS = 7;
+function computeReceivedNoBrand() {
+  const rec = state.receivedRecent;
+  if (!rec || !Array.isArray(rec.rows) || !rec.rows.length) return { rows: [], notYetInData: 0 };
+  const ok = getDqOkObj();
+  const bySku = {};
+  for (const p of (state.inventoryData || [])) {
+    if (!p.sku) continue;
+    (bySku[p.sku] || (bySku[p.sku] = [])).push(p);
+  }
+  const out = {}, unseen = new Set();
+  for (const r of rec.rows) {
+    const sku = String(r.sku || '').trim();
+    if (!sku || /\bsample\b/i.test(r.product || '')) continue;
+    const inv = bySku[sku];
+    if (!inv) { unseen.add(sku); continue; }            // received after the product data was built
+    if (!inv.every(dqIsTracked_)) continue;              // samples and shake, as everywhere else
+    if (inv.some(p => String(p.brand || '').trim())) continue;
+    if (ok[dqSkuKey(sku)]) continue;                     // "skip" on any brand section skips it here too
+    const x = out[sku] || (out[sku] = { sku, name: inv[0].name, receivedOn: '', vendors: new Set(),
+      stores: new Set(), qty: inv.reduce((t, p) => t + (Number(p.qty) || 0), 0),
+      sold28: inv.reduce((t, p) => t + (Number(p.qty28) || 0), 0) });
+    if (String(r.receivedOn) > x.receivedOn) x.receivedOn = String(r.receivedOn);
+    if (r.vendor) x.vendors.add(r.vendor);
+    x.stores.add(r.store);
+  }
+  const rows = Object.values(out)
+    .map(x => Object.assign(x, { vendors: [...x.vendors], stores: [...x.stores] }))
+    .sort((a, b) => b.receivedOn.localeCompare(a.receivedOn) || String(a.name).localeCompare(String(b.name)));
+  return { rows, notYetInData: unseen.size };
+}
+// == end received without a brand ==============================================
+
+// Fetched once per page load, the first time Flags renders. ~11s cold across six stores, so it is
+// cached for an hour and never blocks the tab: the section appears when it lands.
+let _receivedLoading = false;
+async function loadReceivedRecent() {
+  if (_receivedLoading || state.receivedRecent) return;
+  _receivedLoading = true;
+  try {
+    state.receivedRecent = await proxyFetch({ action: 'receivedrecent', days: DQ_RECEIVED_DAYS },
+      'received_recent_' + DQ_RECEIVED_DAYS, 60 * 60 * 1000);
+  } catch (err) {
+    console.warn('[GC] receiving history unavailable', err);
+    state.receivedRecent = { rows: [], error: String(err && err.message || err) };
+  } finally {
+    _receivedLoading = false;
+  }
+  if (state.tab === 'flags') renderFlags();
+}
 
 // Dismiss = "this is not a mistake." Shared, because it is a judgement call, and re-asking the next
 // person is exactly the nagging that gets a review list ignored.
@@ -8760,7 +8844,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.054';
+const APP_VERSION = 'v3.055';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
