@@ -590,7 +590,17 @@ function handleBugReport(b) {
          On the class of report that says "it didn't go through", those captured errors are the most
          useful field there is. Passed through verbatim rather than re-serialized from bugContext_'s
          parse, so nothing is lost if the snapshot grows a field this file has never heard of. */
-      context: b.context || ''
+      context: b.context || '',
+      /* AND THE PICTURE. The comment above describes the `context` gap — collected in the browser,
+         sent to this proxy, and dropped one line short of the board. The screenshot was the same
+         gap and it was still open: gx-bugreport uploads the image to GX Core's bug_shot sink and
+         sets payload.screenshot_url, index.html forwards the whole payload here, and this literal
+         named every field but that one. Measured 2026-09-15 by core-admin from live data: 140
+         reports across all seven apps and not one with an image; 21 of Inventory's 61 were filed
+         after the feature shipped 2026-08-26. Core's sink was probed live the same night and
+         works, so nothing above or below this line was broken. Gated now by the hub's
+         tests/bug_screenshot_forwarding_test.js. */
+      screenshot_url: b.screenshot_url || ''
     }) || {};
     /* A REFUSAL IS NOT A FILING, and it does not arrive as an exception — see the block above. */
     if (res.ok === false) why = 'GX Core refused the report (' + (res.error || 'no reason given') + ')';
