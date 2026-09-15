@@ -426,6 +426,7 @@ function doGet(e) {
     if (params.action === 'shareddqok')        return jsonOut(sharedDqOk(params));
     if (params.action === 'salesdiag')      return jsonOut(getSalesHistoryDiagnostics());
     if (params.action === 'apiexplore')     return jsonOut(exploreApi(params));
+    if (params.action === 'receivedrecent') return jsonOut(getReceivedRecent(params));
     if (params.action === 'skuprobe')       return jsonOut(skuRoomProbe(params));
     if (params.action === 'txprobe')        return jsonOut(txProbe(params));
     if (params.action === 'salestxprobe')   return jsonOut(salesTxProbe(params));
@@ -4761,6 +4762,46 @@ function exploreApi(params) {
   }
 
   return results;
+}
+
+// ─── RECEIVED RECENTLY (Dutchie receiving history) ─────────────────────────────
+// What came in the door in the last N days, one row per line item. This is the only place Dutchie says
+// WHEN a product arrived: the inventory feed carries no receive date, and lastModifiedDateUtc moves on
+// every count, price change and room move. It is what lets the Flags tab say "three products came in
+// this week without a brand" instead of handing over the whole catalog backlog.
+// Read-only. sample=1 also returns one raw receipt, because Dutchie documents this shape loosely.
+function getReceivedRecent(params) {
+  const days = Math.min(Math.max(Number(params.days) || 7, 1), 31);
+  const cutoffMs = Date.now() - days * 86400000;
+  const stores = STORES.filter(isKnownStore);
+  const responses = UrlFetchApp.fetchAll(stores.map(store => ({
+    url: DUTCHIE_BASE + '/inventory/receivedinventory',
+    headers: { Authorization: dutchieAuth(store), Accept: 'application/json' },
+    muteHttpExceptions: true,
+  })));
+  const rows = [], errors = [];
+  let sample = null;
+  stores.forEach((store, i) => {
+    const r = responses[i];
+    if (r.getResponseCode() !== 200) { errors.push(store + ': HTTP ' + r.getResponseCode()); return; }
+    let body;
+    try { body = JSON.parse(r.getContentText()); } catch (e) { errors.push(store + ': bad JSON'); return; }
+    const receipts = Array.isArray(body) ? body : (body.data || body.items || []);
+    for (const rc of receipts) {
+      if (!sample && params.sample === '1') sample = Object.assign({}, rc, { items: (rc.items || []).slice(0, 2) });
+      const when = rc.deliveredOn || rc.addedOn || '';
+      const whenMs = Date.parse(when);
+      if (!whenMs || whenMs < cutoffMs) continue;
+      // Compact on purpose: a week is ~1,200 lines across the stores, and the page only needs these.
+      for (const it of (rc.items || [])) {
+        rows.push({ store, receivedOn: String(when).slice(0, 10), vendor: rc.vendor || '',
+                    sku: String(it.sku || ''), product: it.product || '', packageId: it.packageId || '' });
+      }
+    }
+  });
+  const out = { ok: true, days, rows, errors };
+  if (sample) out.sample = sample;
+  return out;
 }
 
 // ─── LIVE INVENTORY + VELOCITY → DOH + REORDER ────────────────────────────────
