@@ -29,8 +29,8 @@ function lift(pattern, what) {
 const TRACKED_SRC = lift(/function dqIsTracked_\(p\) \{[\s\S]*?\n\}/, 'function dqIsTracked_');
 const TYPO_SRC    = lift(/\/\/ == Product-name typos =+[\s\S]*?\/\/ == end product-name typos =+/, 'the product-name typo block');
 
-function run(rows, ok = {}) {
-  const state = { inventoryData: rows };
+function run(rows, ok = {}, asOfMs = Date.now()) {
+  const state = { inventoryData: rows, inventoryAsOfMs: asOfMs };
   return new Function('state', 'getDqOkObj',
     TRACKED_SRC + '\n' + TYPO_SRC + '\nreturn computeNameTypos();')(state, () => ok);
 }
@@ -140,6 +140,30 @@ console.log('computeNameTypos');
 {
   const out = run(filler.concat(rowsFor('Anmal Cookies FATTY | 1g', { stores: STORES })));
   check('one row per product, listing every store it is on', out.length === 1 && out[0].stores.length === 6);
+}
+
+// ── "fixed ✓" ────────────────────────────────────────────────────────────────
+// Hides a row only until data newer than the fix arrives. The failure it must never have is the quiet
+// one: a typo still on the menu staying hidden forever because someone pressed a button once.
+{
+  const FIX = Date.parse('2026-09-15T14:00:00Z'), H = 3600 * 1000;
+  const anmal = filler.concat(rowsFor('Anmal Cookies FATTY | 1g'));
+  const mark = { ['typofixed:anmal cookies fatty | 1g@' + FIX]: { ts: FIX, by: 'x' } };
+  const older = run(anmal, mark, FIX - 10 * H);        // this morning's snapshot, fixed this afternoon
+  check('"fixed" hides the row while the data predates the fix', older.length === 0, names(older).join(' / '));
+  check('...and counts it, so the screen can say so', older.fixedPending === 1, String(older.fixedPending));
+  const soon = run(anmal, mark, FIX + 5 * 60 * 1000);   // live Refresh 5 minutes later: Dutchie may lag
+  check('"fixed" still hides it inside the grace period', soon.length === 0);
+  const later = run(anmal, mark, FIX + 12 * H);         // next snapshot, name still wrong
+  check('a "fixed" typo still misspelled in newer data comes back', later.length === 1 && later.fixedPending === 0,
+        names(later).join(' / '));
+  const other = run(filler.concat(rowsFor('Anmal Cookies FATTY | 1g'), rowsFor('Blue Dream Live Resin Dipsosable AIO | 1g')),
+                    mark, FIX - H);
+  check('"fixed" hides only that product', other.length === 1 && other[0].name.indexOf('Dipsosable') >= 0,
+        names(other).join(' / '));
+  const two = run(anmal, Object.assign({ ['typofixed:anmal cookies fatty | 1g@' + (FIX - 48 * H)]: { ts: 1, by: 'x' } }, mark),
+                  FIX - H);
+  check('a spent older mark does not stop a newer one hiding it', two.length === 0);
 }
 
 if (fails) { console.log(`\n${fails} FAILED`); process.exit(1); }

@@ -3005,7 +3005,7 @@ function renderMargin() {
 function renderBrandIssuesHtml() {
   const iss = computeBrandIssues();
   const typos = computeNameTypos();
-  if (!iss.total && !typos.length) return '';
+  if (!iss.total && !typos.length && !typos.fixedPending) return '';
   const esc = escapeHtml;
 
   // Say how old the data is. Without this the list looks broken to anyone who just fixed something.
@@ -3029,8 +3029,12 @@ function renderBrandIssuesHtml() {
   };
 
   // Name typos go first of all: they are the only problem on this tab a CUSTOMER can see.
+  const fixedNote = typos.fixedPending
+    ? ` ${typos.fixedPending} marked fixed ${typos.fixedPending === 1 ? 'is' : 'are'} hidden until Dutchie's data catches up; any still misspelled then will come back.`
+    : '';
   if (typos.length) {
     _typoDismissKeys = typos.map(x => x.key);
+    _typoFixedNames  = typos.map(x => x.name);
     const rows = typos.map((x, i) => {
       // Underline the offending word in place, so the reader sees WHERE, not just that.
       const at = x.bad ? x.name.indexOf(x.bad) : -1;
@@ -3046,6 +3050,7 @@ function renderBrandIssuesHtml() {
       const btn = x.kind === 'word'
         ? `<button class="flag-row-btn" onclick="dqDismissTypo(event,${i})" title="${esc(x.bad)} is spelled right — stop flagging this word anywhere">spelled right</button>`
         : `<button class="flag-row-btn" onclick="dqDismissTypo(event,${i})" title="Not a typo — stop flagging this product">not a typo</button>`;
+      const fixedBtn = `<button class="flag-row-btn" onclick="dqMarkTypoFixed(event,${i})" title="I fixed this name in Dutchie. Hide it until the data refreshes; it comes back if it is still wrong then" style="color:var(--green);opacity:1">fixed ✓</button>`;
       return `<div class="flag-item" style="align-items:center">
         <div class="flag-icon" style="color:var(--red)">✎</div>
         <div class="flag-text" style="flex:1">
@@ -3053,10 +3058,13 @@ function renderBrandIssuesHtml() {
           <span style="font-size:11px">probably <strong style="color:var(--green)">${esc(x.suggested)}</strong> · ${why}</span><br>
           ${storeBits(x.stores)}
         </div>
-        ${btn}
+        ${fixedBtn}${btn}
       </div>`;
     });
-    section('Product name typos', 'Names are on the customer menu. Fix the name in Dutchie — it clears here on the next refresh.', rows, 'Name typos');
+    section('Product name typos', 'Names are on the customer menu. Fix the name in Dutchie, then press fixed ✓ to put the row away.' + fixedNote, rows, 'Name typos');
+  } else if (fixedNote) {
+    html += `<div class="section-label" style="margin-top:20px">Product name typos — 0</div>
+      <div style="color:var(--muted);font-size:11px;margin:-4px 0 8px">${fixedNote.trim()}</div>`;
   }
 
   // 0 — on a shelf now, with nothing to attribute it to. Listed first: it is the only section about
@@ -3384,7 +3392,8 @@ function renderFlags() {
   if (state.cogsData && state.salesData) {
     const flags = detectFlags(state.cogsData, state.salesData);
     if (flags.length > 0) {
-      html += `<div class="section-label" data-nav="Financial" data-nav-count="${flags.length}" style="margin-top:${html ? '20px' : '0'}">${flags.length} Financial Issue${flags.length > 1 ? 's' : ''}</div>
+      // The date range lives on the Performance tab now (Flags has no picker), so say which one this is.
+      html += `<div class="section-label" data-nav="Financial" data-nav-count="${flags.length}" style="margin-top:${html ? '20px' : '0'}">${flags.length} Financial Issue${flags.length > 1 ? 's' : ''} · ${fmtDate(state.from)} – ${fmtDate(state.to)}</div>
         <div class="card">
           ${flags.map(f => `
             <div class="flag-item">
@@ -4494,7 +4503,9 @@ function init() {
       row.classList.toggle('visible', isInv);
       row.classList.toggle('expanded', isInv && state.catRowExpanded);
       if (isInv) updateCatToggleBtn();
-      document.querySelector('.date-controls').style.display = (isInv || isBeta || state.tab === 'fatty' || state.tab === 'spiff') ? 'none' : '';
+      // Flags has no date picker: everything on it except the Financial section is about stock on the
+      // shelf NOW, so a From/To there read as filtering the whole tab when it filtered one section.
+      document.querySelector('.date-controls').style.display = (isInv || isBeta || state.tab === 'fatty' || state.tab === 'spiff' || state.tab === 'flags') ? 'none' : '';
       if (isInv && !state.inventoryData) loadInventoryData();
       if (isInv && state.inventoryData) {
         renderInventory();
@@ -5082,6 +5093,9 @@ async function loadInventoryData() {
     // which the app was still reporting as broken. Showing a list of already-done work with no hint
     // why is the fastest way to make someone stop trusting the tab. Empty string = live pull, no lag.
     state.inventoryGeneratedAt = (bundle && bundle.generatedAt) ? bundle.generatedAt : '';
+    // The same fact as a number, for the typo "fixed" button: a row marked fixed stays hidden until the
+    // data on screen is newer than the fix. A live pull is as of now.
+    state.inventoryAsOfMs = Date.parse(state.inventoryGeneratedAt) || Date.now();
     const scanBtn = document.getElementById('scannerTabBtn');
     if (scanBtn) scanBtn.style.display = 'inline-flex';
     buildInvFilterOptions(allProducts);
@@ -5442,6 +5456,31 @@ const DQ_TYPO_COMMON = 10;
 function dqTypoWordKey(w)    { return 'typo:' + String(w || '').toLowerCase(); }
 function dqTypoNameKey(name) { return 'typoname:' + String(name || '').trim().toLowerCase(); }
 
+// "Fixed" — the name has been corrected in Dutchie and Tawny wants the row out of her way now, not at
+// the next refresh (the snapshot can be ~17h behind). Unlike "not a typo" this is NOT a verdict on the
+// name: the row is hidden only while the data on screen predates the fix, plus a grace period for
+// Dutchie's own reporting lag. Once newer data arrives, a name that really was fixed is no longer
+// flagged anyway, and one that is still misspelled comes back. So the list can never quietly forget a
+// typo that is still on the customer menu.
+// The key carries the click time. The shared store TOGGLES, so re-marking a name that came back must be
+// a new key; reusing the old one would switch the old mark off instead.
+const DQ_TYPO_FIXED_GRACE_MS = 30 * 60 * 1000;
+function dqTypoFixedKey(name, ts) { return 'typofixed:' + String(name || '').trim().toLowerCase() + '@' + ts; }
+// { lowercased name: [{ key, ts }] } from the dismissal store.
+function dqTypoFixedMarks_(ok) {
+  const out = {};
+  for (const k of Object.keys(ok || {})) {
+    if (k.indexOf('typofixed:') !== 0) continue;
+    const at = k.lastIndexOf('@');
+    const ts = Number(k.slice(at + 1));
+    if (at < 0 || !ts) continue;
+    (out[k.slice(10, at)] || (out[k.slice(10, at)] = [])).push({ key: k, ts });
+  }
+  return out;
+}
+// A mark still hides its row while the data is older than the fix plus the grace period.
+function dqTypoFixedHides_(mark, asOfMs) { return !asOfMs || asOfMs < mark.ts + DQ_TYPO_FIXED_GRACE_MS; }
+
 function dqTypoStrip_(name) { return String(name || '').replace(/\|\s*[A-Z0-9][A-Z0-9-]{3,}\s*$/, '').trim(); }
 function dqTypoWords_(name) {
   // Original-case words, so a suggestion can keep the name's own capitalization (FATTY stays shouty).
@@ -5498,12 +5537,16 @@ function computeNameTypos() {
 
   const out = [];
   const seen = new Set();
+  const fixedMarks = dqTypoFixedMarks_(ok);
+  let fixedPending = 0;
   const push = (name, x) => {
     if (seen.has(name) || ok[x.key]) return;
     const g = byName[name];
     const live = g.filter(p => Number(p.qty) > 0);
     if (!live.length) return;
     seen.add(name);
+    const marks = fixedMarks[String(name).trim().toLowerCase()] || [];
+    if (marks.some(m => dqTypoFixedHides_(m, state.inventoryAsOfMs))) { fixedPending++; return; }
     out.push(Object.assign({
       name,
       stores: live.map(p => p.store),
@@ -5584,6 +5627,7 @@ function computeNameTypos() {
   }
 
   out.sort((a, b) => b.sold28 - a.sold28 || String(a.name).localeCompare(String(b.name)));
+  out.fixedPending = fixedPending;   // rows marked fixed, hidden until newer data -- said on screen
   return out;
 }
 // == end product-name typos ====================================================
@@ -5616,6 +5660,26 @@ let _typoDismissKeys = [];
 function dqDismissTypo(e, i) {
   const key = _typoDismissKeys[i];
   if (key) dqDismiss(e, key);
+}
+// "fixed ✓" on a typo row. Adds a fresh time-stamped mark, and sends toggle-offs for this name's older
+// marks that no longer hide anything, so a name corrected and re-corrected keeps one entry, not a pile.
+// Only reached from a VISIBLE row, which means none of its marks are still hiding it -- every old mark
+// for the name is spent, so switching them all off cannot un-hide something.
+let _typoFixedNames = [];
+function dqMarkTypoFixed(e, i) {
+  if (e) e.stopPropagation();
+  const name = _typoFixedNames[i];
+  if (!name) return;
+  const o = getDqOkObj(), by = _killerName(), ts = Date.now();
+  for (const m of dqTypoFixedMarks_(o)[String(name).trim().toLowerCase()] || []) {
+    delete o[m.key];
+    dqShare_(m.key, by);
+  }
+  const key = dqTypoFixedKey(name, ts);
+  o[key] = { ts, by };
+  saveDqOkObj(o);
+  dqShare_(key, by);
+  renderFlags();
 }
 // Same fix for "brand is right", which passed the brand name through the onclick and so did nothing
 // for any brand with an apostrophe in it. None was on the list when this was found (2026-09-09).
@@ -8696,7 +8760,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.053';
+const APP_VERSION = 'v3.054';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
