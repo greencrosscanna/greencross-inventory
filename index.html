@@ -3005,7 +3005,7 @@ function renderMargin() {
 function renderBrandIssuesHtml() {
   const iss = computeBrandIssues();
   const typos = computeNameTypos();
-  const recv  = computeReceivedNoBrand();
+  const recv  = computeReceivedGaps();
   if (!iss.total && !typos.length && !typos.fixedPending && !recv.rows.length) return '';
   const esc = escapeHtml;
 
@@ -3076,7 +3076,7 @@ function renderBrandIssuesHtml() {
         <div class="flag-icon" style="color:var(--amber)">▼</div>
         <div class="flag-text" style="flex:1">
           <strong>${esc(x.name)}</strong>${sold(x.sold28)}<br>
-          <span style="font-size:11px"><strong style="color:var(--amber)">no brand</strong> · received ${esc(fmtDate(x.receivedOn))}${
+          <span style="font-size:11px"><strong style="color:var(--amber)">${esc(x.missing)}</strong> · received ${esc(fmtDate(x.receivedOn))}${
             x.vendors.length ? ` from ${esc(x.vendors.join(', '))}` : ''
           } · ${Math.round(x.qty)} on hand</span><br>${storeBits(x.stores)}
         </div>
@@ -3086,8 +3086,8 @@ function renderBrandIssuesHtml() {
     const unseen = recv.notYetInData
       ? ` ${recv.notYetInData} more product${recv.notYetInData === 1 ? '' : 's'} arrived after the product data above was built and ${recv.notYetInData === 1 ? 'is' : 'are'} not checked yet.`
       : '';
-    section('Received this week without a brand',
-      `Came in during the last ${DQ_RECEIVED_DAYS} days. Set the brand in Dutchie while the delivery is fresh; the older backlog is in the sections below.` + unseen,
+    section('Received this week, missing a brand or vendor',
+      `Came in during the last ${DQ_RECEIVED_DAYS} days. Fix it while the delivery is fresh — the <strong>brand</strong> on the product, the <strong>vendor</strong> on the package itself (the product record does not reach stock already on the shelf). The older backlog is in the sections below.` + unseen,
       rows, 'This week');
   }
 
@@ -5657,16 +5657,22 @@ function computeNameTypos() {
 }
 // == end product-name typos ====================================================
 
-// == Received this week without a brand ========================================
+// == Received this week with a gap =============================================
 // The flow version of the brand list. A 65-row backlog is a chore nobody does; "three products came
 // in this week without a brand" is a two-minute job done while the delivery is still fresh, and it is
 // what keeps the catalog clean after the one-off cleanup instead of needing another one in March.
 // Deliveries come from Dutchie's receiving history (engine route receivedrecent), because the inventory
-// feed has no receive date. Brand comes from the inventory rows, joined on SKU: a receipt line carries
-// sku, product and package but no brand. Blank means blank at EVERY store -- a SKU branded somewhere
-// already has an answer, and "Brand missing at some stores" covers it.
+// feed has no receive date. Brand and vendor come from the inventory rows, joined on SKU: a receipt
+// line carries sku, product and package but neither field.
+// The two gaps are NOT symmetrical, and the difference decides where each is judged:
+//   brand  lives on the PRODUCT, so blank means blank at every store -- a SKU branded somewhere already
+//          has its answer, and "Brand missing at some stores" covers the partial case.
+//   vendor lives on the PACKAGE, stamped at receiving, so only the stores this delivery actually went
+//          to can be judged. Another store's row carries its own packages' vendors and says nothing
+//          about this arrival. (Measured 2026-09-08; editing it on the package was confirmed to reach
+//          stock on hand on 2026-09-15, which is why a blank vendor is worth surfacing at all.)
 const DQ_RECEIVED_DAYS = 7;
-function computeReceivedNoBrand() {
+function computeReceivedGaps() {
   const rec = state.receivedRecent;
   if (!rec || !Array.isArray(rec.rows) || !rec.rows.length) return { rows: [], notYetInData: 0 };
   const ok = getDqOkObj();
@@ -5675,28 +5681,37 @@ function computeReceivedNoBrand() {
     if (!p.sku) continue;
     (bySku[p.sku] || (bySku[p.sku] = [])).push(p);
   }
-  const out = {}, unseen = new Set();
+  const deliveries = {}, unseen = new Set();
   for (const r of rec.rows) {
     const sku = String(r.sku || '').trim();
     if (!sku || /\bsample\b/i.test(r.product || '')) continue;
-    const inv = bySku[sku];
-    if (!inv) { unseen.add(sku); continue; }            // received after the product data was built
-    if (!inv.every(dqIsTracked_)) continue;              // samples and shake, as everywhere else
-    if (inv.some(p => String(p.brand || '').trim())) continue;
-    if (ok[dqSkuKey(sku)]) continue;                     // "skip" on any brand section skips it here too
-    const x = out[sku] || (out[sku] = { sku, name: inv[0].name, receivedOn: '', vendors: new Set(),
-      stores: new Set(), qty: inv.reduce((t, p) => t + (Number(p.qty) || 0), 0),
-      sold28: inv.reduce((t, p) => t + (Number(p.qty28) || 0), 0) });
-    if (String(r.receivedOn) > x.receivedOn) x.receivedOn = String(r.receivedOn);
-    if (r.vendor) x.vendors.add(r.vendor);
-    x.stores.add(r.store);
+    if (!bySku[sku]) { unseen.add(sku); continue; }     // received after the product data was built
+    const d = deliveries[sku] || (deliveries[sku] = { receivedOn: '', vendors: new Set(), stores: new Set() });
+    if (String(r.receivedOn) > d.receivedOn) d.receivedOn = String(r.receivedOn);
+    if (r.vendor) d.vendors.add(r.vendor);
+    d.stores.add(r.store);
   }
-  const rows = Object.values(out)
-    .map(x => Object.assign(x, { vendors: [...x.vendors], stores: [...x.stores] }))
-    .sort((a, b) => b.receivedOn.localeCompare(a.receivedOn) || String(a.name).localeCompare(String(b.name)));
+  const rows = [];
+  for (const sku of Object.keys(deliveries)) {
+    const d = deliveries[sku], inv = bySku[sku];
+    if (!inv.every(dqIsTracked_)) continue;              // samples and shake, as everywhere else
+    if (ok[dqSkuKey(sku)]) continue;                     // "skip" on any brand section skips it here too
+    const noBrand = !inv.some(p => String(p.brand || '').trim());
+    const here = inv.filter(p => d.stores.has(p.store));
+    const noVendor = here.length > 0 && !here.some(p => String(p.vendor || '').trim());
+    if (!noBrand && !noVendor) continue;
+    rows.push({
+      sku, name: inv[0].name, receivedOn: d.receivedOn,
+      vendors: [...d.vendors], stores: [...d.stores],
+      missing: noBrand && noVendor ? 'no brand and no vendor' : (noBrand ? 'no brand' : 'no vendor'),
+      qty:    inv.reduce((t, p) => t + (Number(p.qty) || 0), 0),
+      sold28: inv.reduce((t, p) => t + (Number(p.qty28) || 0), 0),
+    });
+  }
+  rows.sort((a, b) => b.receivedOn.localeCompare(a.receivedOn) || String(a.name).localeCompare(String(b.name)));
   return { rows, notYetInData: unseen.size };
 }
-// == end received without a brand ==============================================
+// == end received with a gap ===================================================
 
 // Fetched once per page load, the first time Flags renders. ~11s cold across six stores, so it is
 // cached for an hour and never blocks the tab: the section appears when it lands.
@@ -8844,7 +8859,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.055';
+const APP_VERSION = 'v3.056';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
