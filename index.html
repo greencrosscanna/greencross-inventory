@@ -745,6 +745,8 @@
   .inv-table-wrap { overflow-x: auto; }
   .inv-load-warn { margin: 6px 2px 10px; padding: 9px 12px; border-radius: 8px; line-height: 1.45;
     background: rgba(239,159,39,.13); border: 1px solid rgba(239,159,39,.42); color: var(--amber); font-size: 13px; }
+  .inv-stale-warn { margin: 6px 2px 10px; padding: 9px 12px; border-radius: 8px; line-height: 1.45;
+    background: rgba(239,68,68,.13); border: 1px solid rgba(239,68,68,.45); color: var(--red); font-size: 13px; }
   table.inv-table {
     width: 100%; border-collapse: collapse; font-size: 13px; min-width: 800px; table-layout: fixed;
   }
@@ -2195,16 +2197,89 @@ const DOH_WARN     = 21;  // < 21 days → warn class (kiosk DOH badge)
 const CACHE_PREFIX = 'gc_inv5_';
 const CACHE_VERSION = 1; // bump to force-evict all localStorage caches on schema change
 const OPERATIONAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // same-day data is fine for buyer decisions
-function cacheGet(key) {
+
+/* ── EXPIRY MEANS "STOP SERVING THIS AS FRESH". IT DOES NOT MEAN "BURN IT". ───────────────────────
+   cacheGet used to removeItem() an entry the instant its TTL lapsed, which destroyed the copy at
+   exactly the moment it became the only copy left. With OPERATIONAL_CACHE_TTL_MS at 12h that is
+   most mornings: the overnight entry lapses, the first read of the day erases it, and if the engine
+   is then unreachable the inventory tab has nothing to show but a red error.
+
+   Expired entries are now KEPT, and reachable only through cacheGetStale — which the caller has to
+   ask for by name, for a key on an allowlist, with the entry's own timestamp handed back so the
+   screen can state a real age. cacheGet's own contract is unchanged: fresh data, or null.
+
+   A schema-version mismatch is a different thing and still deletes. That data cannot be read by
+   this build at ANY age, so keeping it buys nothing. The quota eviction in cacheSet also stays —
+   that one is real pressure, and expired entries surviving actually improves it, because the oldest
+   entry it reaps is now usually a lapsed one rather than something still in use. */
+const STALE_FALLBACK_MAX_MS = 7 * 24 * 60 * 60 * 1000; // past a week an old count is not evidence
+
+// Raw read. Null only when there is genuinely nothing usable.
+function cacheRead(key) {
   const raw = localStorage.getItem(CACHE_PREFIX + key);
   if (!raw) return null;
   try {
     const { ts, ttl, v, data } = JSON.parse(raw);
     if (v !== CACHE_VERSION) { localStorage.removeItem(CACHE_PREFIX + key); return null; }
-    if (Date.now() - ts < ttl) return data;
-    localStorage.removeItem(CACHE_PREFIX + key);
+    const ageMs = Date.now() - ts;
+    return { data, ts, ageMs, ttl, fresh: ageMs < ttl };
   } catch {}
   return null;
+}
+
+/* The ordinary read, with the behavior every existing call site already relies on. Two of them make
+   the point about why the stale path must stay opt-in: the transfer-donor lookup reads another
+   store's on-hand to propose physically moving units, and getOperationalStatus is the thing the app
+   asks HOW FRESH the data is. Neither may ever be quietly handed an old answer. */
+function cacheGet(key) {
+  const e = cacheRead(key);
+  return e && e.fresh ? e.data : null;
+}
+
+/* ── WHICH KEYS MAY BE SERVED STALE, AND WHY EACH ONE ─────────────────────────────────────────────
+   Inventory is a BUYING tool, so this is an allowlist and not a policy. A stale stock level is not
+   merely old the way a stale sales total on a TV is old — someone may place an order against it.
+
+   ALLOWED, because together they are "the board" and a buyer with an hours-old board is strictly
+   better off than one with a red error, PROVIDED the age is on screen:
+     operational_bundle_all — the snapshot of all stores. It carries its own generatedAt, so the
+                              app already shows it as hours old on a good day; the honest label
+                              exists and this only makes it louder.
+     vel_all                — sales rates over 7/14/28/90 days. A day of drift moves a 28-day
+                              average by a rounding error.
+     inv_<store>            — a store's live on-hand. The sharpest of the three, which is why it
+                              is banner-labeled and why a manual Refresh never takes this path.
+
+   REFUSED, each for its own reason:
+     op_status              — this is the freshness oracle itself. Serving it stale would let the
+                              app report a snapshot time that has been superseded, and it also
+                              drives the background eviction check. A wrong answer here corrupts
+                              the age label on everything else.
+     *_cogs / *_sales / fin_*_s / fin_*_c / inv_lostsales_v1 — money. These feed COGS %, margin and
+                              lost-revenue figures; a stale number there reads as a reported result,
+                              not as a working estimate.
+     ll_orders_v1           — open LeafLink orders. Its whole job is to say what is already on the
+                              way, so that a buyer does not order it twice. Stale is the exact
+                              failure it exists to prevent.
+     oosmap_v1, inv_subconfig_v1, fatty_tracker_v1 — no outage story; they degrade to nothing and
+                              the page already handles their absence.                               */
+function cacheKeyMayServeStale(key) {
+  if (key === 'operational_bundle_all' || key === 'vel_all') return true;
+  // Per-store inventory only. Matched against the live store registry, so inv_lostsales_v1 and
+  // inv_subconfig_v1 — which share the prefix and are NOT allowed — can never slip in.
+  return key.slice(0, 4) === 'inv_' && !!STORE_BY_NAME[key.slice(4)];
+}
+
+/* Opt-in stale read. Returns { data, ts, ageMs } or null. The timestamp is the entry's OWN write
+   time, never the time the failure was noticed — an outage discovered at 09:00 against a copy
+   saved at 21:00 is twelve hours old, and saying "1 min ago" because that is when the fetch threw
+   is the kind of label that makes a stale number look live. */
+function cacheGetStale(key) {
+  if (!cacheKeyMayServeStale(key)) return null;
+  const e = cacheRead(key);
+  if (!e || e.fresh) return null;                      // fresh entries belong to cacheGet
+  if (!(e.ts > 0) || e.ageMs > STALE_FALLBACK_MAX_MS) return null;
+  return { data: e.data, ts: e.ts, ageMs: e.ageMs };
 }
 function cacheSet(key, data, ttlMs) {
   // Slim velocity data before persisting — brand/category/hasSalesHistory are only
@@ -2251,7 +2326,22 @@ function cacheSet(key, data, ttlMs) {
     }
   }
 }
+// Destroy an entry outright. Reach for cacheExpire instead unless the data is genuinely unusable —
+// deleting is what removed the outage fallback in the first place.
 function cacheDelete(key) { localStorage.removeItem(CACHE_PREFIX + key); }
+
+// Supersede without destroying: cacheGet will never serve this again, cacheGetStale still can.
+// "The server has something newer" is a reason to stop calling this current. It is not a reason to
+// be left with nothing when the next fetch cannot reach the engine.
+function cacheExpire(key) {
+  const raw = localStorage.getItem(CACHE_PREFIX + key);
+  if (!raw) return;
+  try {
+    const entry = JSON.parse(raw);
+    entry.ttl = 0;                                  // ageMs < 0 is impossible, so this never reads fresh
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(entry));
+  } catch { localStorage.removeItem(CACHE_PREFIX + key); }
+}
 
 // Shared operationalstatus helper — caches result for 5 min so multiple call sites
 // (Beta feed, Settings panel, inventory load freshness check) share one round-trip.
@@ -2385,12 +2475,28 @@ function withTimeout(promise, ms, label = 'Request') {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
-async function proxyFetch(params, cacheKey = null, ttlMs = 0) {
+/* opts.staleFallback — if the engine cannot be REACHED, serve the saved copy of cacheKey rather
+   than throwing. Opt-in per call site, and only for the keys cacheKeyMayServeStale allows.
+
+   Deliberately only the thrown case: a transport failure or a timeout means the data is
+   unreachable, and an hours-old board beats a red error. A structured { error: ... } means the
+   engine answered and is telling us something specific and usually actionable ("snapshot is not
+   ready — build it"), and swallowing that behind stale data would hide the fix. Auth errors never
+   reach the fallback at all; that path clears the session and reloads to the login screen. */
+async function proxyFetch(params, cacheKey = null, ttlMs = 0, opts = null) {
   if (cacheKey) {
     const cached = cacheGet(cacheKey);
     if (cached) return cached;
   }
-  const json = await engineGet(params);
+  let json;
+  try {
+    json = await engineGet(params);
+  } catch (err) {
+    const stale = (opts && opts.staleFallback && cacheKey) ? cacheGetStale(cacheKey) : null;
+    if (!stale) throw err;
+    noteStaleServed(cacheKey, stale, err);
+    return stale.data;
+  }
   if (json && (json.error === 'Auth required' || json.error === 'Session expired' || json.error === 'Invalid session')) {
     try { localStorage.removeItem(LS.AUTH); } catch {}
     location.reload();
@@ -2399,6 +2505,17 @@ async function proxyFetch(params, cacheKey = null, ttlMs = 0) {
   if (json.error) throw new Error(json.error);
   if (cacheKey && ttlMs) cacheSet(cacheKey, json, ttlMs);
   return json;
+}
+
+/* What this load had to fall back to, and how old each copy is. Written only by proxyFetch's
+   fallback path, reset at the top of loadInventoryData, read by inventoryStaleBannerHtml. If this
+   stays empty — the normal case — nothing about the screen changes. */
+function noteStaleServed(key, stale, err) {
+  if (!state.staleServed) state.staleServed = [];
+  state.staleServed.push({ key, ts: stale.ts, ageMs: stale.ageMs, error: err && err.message || '' });
+  console.warn('[GC] engine unreachable for', key, '— served the saved copy from',
+               new Date(stale.ts).toISOString(), '(' + Math.round(stale.ageMs / 3600000) + 'h old):',
+               err && err.message);
 }
 function loginViaJsonp(user, pass) {
   return new Promise((resolve, reject) => {
@@ -4642,6 +4759,7 @@ function setLoadingAll() {
 // ════════════════════════════════════════════════════════
 state.inventoryData = null; // merged + enriched product array
 state.inventoryLoadFailures = []; // stores whose inventory fetch failed this load — surfaced as a banner
+state.staleServed = [];   // cache keys served from a saved copy because the engine was unreachable
 state.oosMap        = {};   // "store::sku" → last-in-stock date (YYYY-MM-DD)
 state.llOrders      = [];   // open LeafLink orders
 state.llProductMap  = {};   // normName → [{status,seller,orderId,qty}]
@@ -4895,6 +5013,7 @@ async function loadInventoryData() {
   try {
     const forceServerRefresh = !!state.forceServerRefresh;
     let invResults = null;
+    state.staleServed = [];   // rebuilt per load; anything in it at the end gets a banner
 
     // Normally try the operational snapshot first — it contains all stores, so it works for
     // single-store views too. The 12h localStorage cache means switching "All"↔"Bend" costs
@@ -4903,7 +5022,8 @@ async function loadInventoryData() {
     // per-store inventory below, so the numbers reflect Dutchie right now, not the last build.
     const bundle = forceServerRefresh
       ? null
-      : await proxyFetch({ action: 'operationalbundle' }, 'operational_bundle_all', OPERATIONAL_CACHE_TTL_MS);
+      : await proxyFetch({ action: 'operationalbundle' }, 'operational_bundle_all',
+                         OPERATIONAL_CACHE_TTL_MS, { staleFallback: true });
 
     // Background version check: if the server has a newer snapshot than what we just served
     // from the 12h localStorage cache, silently evict so the next load gets fresh data.
@@ -4913,8 +5033,10 @@ async function loadInventoryData() {
       getOperationalStatus().then(status => {
         if (status && status.generatedAt && status.generatedAt !== cachedGeneratedAt) {
           console.log('[GC] Bundle stale — cached:', cachedGeneratedAt, '/ server:', status.generatedAt, '— evicting cache');
-          cacheDelete('operational_bundle_all');
-          cacheDelete('vel_all');
+          // Superseded, not worthless: the next load fetches the newer snapshot, but if the engine
+          // is unreachable by then this copy is still the best thing we have to put on screen.
+          cacheExpire('operational_bundle_all');
+          cacheExpire('vel_all');
         }
       }).catch(() => {}); // best-effort, never throws
     }
@@ -4965,7 +5087,8 @@ async function loadInventoryData() {
     // (sales rates) is owned by the nightly/hourly sync and doesn't change on a manual refresh,
     // so we always read it from the fast cached path — never force the expensive velmap rebuild.
     if (!state.velocityData) {
-      state.velocityData = await proxyFetch({ action: 'velocity' }, 'vel_all', OPERATIONAL_CACHE_TTL_MS);
+      state.velocityData = await proxyFetch({ action: 'velocity' }, 'vel_all',
+                                            OPERATIONAL_CACHE_TTL_MS, { staleFallback: true });
     }
     // Velocity is sourced from the Green Cross shared cache (Phase C — local sync retired), so it's
     // always current. Show "Auto · current" whenever we have velocity data. This does NOT rely on the
@@ -4995,7 +5118,10 @@ async function loadInventoryData() {
       let done = 0;
       invResults = await Promise.all(targetStores.map(async store => {
         const invParams = forceServerRefresh ? { action: 'inventory', store, force: '1' } : { action: 'inventory', store };
-        const res = await proxyFetch(invParams, forceServerRefresh ? null : 'inv_' + store, OPERATIONAL_CACHE_TTL_MS);
+        // A manual Refresh means "give me live numbers or tell me you cannot" — it passes no cache
+        // key, so it neither reads nor falls back to a saved copy. Only the ordinary load does.
+        const res = await proxyFetch(invParams, forceServerRefresh ? null : 'inv_' + store,
+                                     OPERATIONAL_CACHE_TTL_MS, { staleFallback: !forceServerRefresh });
         done++;
         const pct = 15 + (done / targetStores.length) * 85;
         const bar = document.getElementById('loadBar');
@@ -6551,6 +6677,7 @@ function renderAssortmentView(el) {
   const singleHead = singles.length ? `<tr class="assort-cathead"><td colspan="11">Individually-managed (continuity) products — ${singles.length}</td></tr>` : '';
 
   el.innerHTML = `
+    ${inventoryStaleBannerHtml()}
     <div class="assort-note"><b>Grouped view.</b> Substitutable categories (flower strains, Fatty/infused pre-rolls) are collapsed into one row per group.
       <b>Group DOH</b> = combined on-hand ÷ combined 28-day velocity of <i>all</i> member SKUs — dead strains' demand still counts because it moves to the group.
       Click a group to expand its SKUs (hide/flag the ones that won't return; their velocity still feeds the group). Toggle Grouping off for full item-by-item detail.</div>
@@ -6573,6 +6700,43 @@ function inventoryLoadFailureHtml() {
     ⚠️ <b>Showing ${STORES.length - fails.length} of ${STORES.length} stores.</b>
     ${escapeHtml(names)} did not load, so totals, DOH and reorder figures below exclude ${them}.
     Reload to try again.
+  </div>`;
+}
+
+/* Saved-data warning. The counterpart to the partial-load banner above, for a different failure:
+   there every store on screen was current and some were missing; here every store is present and
+   some are not current.
+
+   THE AGE COMES FROM THE DATA, NOT FROM THE FAILURE. Each entry carries the timestamp it was
+   written at, and the snapshot carries the time Dutchie was actually read. The banner states the
+   OLDEST of those, so it can overstate freshness by nothing. Measuring from when the fetch threw
+   would label a twelve-hour-old board "1 min ago" — the single worst thing this screen could say,
+   because it makes a stale number look live at the exact moment someone is deciding what to buy. */
+function staleKeyLabel_(key) {
+  if (key === 'operational_bundle_all') return 'the all-store snapshot';
+  if (key === 'vel_all') return 'sales velocity';
+  if (key.slice(0, 4) === 'inv_') return storeDisplay(key.slice(4)) + ' on-hand';
+  return key;
+}
+function fmtAgeShort_(ms) {
+  const mins = Math.round(ms / 60000);
+  return mins < 90 ? mins + ' min old' : Math.round(ms / 3600000) + 'h old';
+}
+function inventoryStaleBannerHtml() {
+  const served = state.staleServed || [];
+  if (!served.length) return '';
+  // Oldest fact on screen: the oldest saved copy, and the snapshot's own build time if we have one.
+  let asOfMs = Math.min(...served.map(x => x.ts));
+  const genMs = Date.parse(state.inventoryGeneratedAt || '');
+  if (genMs && !Number.isNaN(genMs)) asOfMs = Math.min(asOfMs, genMs);
+  const what = [...new Set(served.map(x => staleKeyLabel_(x.key)))].join(', ');
+  const why  = [...new Set(served.map(x => x.error).filter(Boolean))].join(' · ');
+  return `<div class="inv-stale-warn" title="${escapeHtml(why)}">
+    ⚠️ <b>Saved data — not current.</b> Dutchie could not be reached, so ${escapeHtml(what)}
+    ${served.length > 1 ? 'are' : 'is'} being shown from the last copy this browser saved:
+    as of ${escapeHtml(fmtDateTimeShort(asOfMs))} · <b>${fmtAgeShort_(Date.now() - asOfMs)}</b>.
+    Sales, receiving and transfers since then are <b>not</b> in these numbers — check in Dutchie
+    before ordering against them. Hit Refresh once the connection is back.
   </div>`;
 }
 
@@ -7391,6 +7555,7 @@ function renderInventory() {
     : `${visibleGroups.length} product${visibleGroups.length !== 1 ? 's' : ''}`;
 
   el.innerHTML = `
+    ${inventoryStaleBannerHtml()}
     ${inventoryLoadFailureHtml()}
     ${inventoryDecisionHealthHtml()}
     <div class="row-count" style="display:flex;justify-content:space-between;align-items:center">

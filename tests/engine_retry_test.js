@@ -62,8 +62,16 @@ ok(/withTimeout\(fetch\(proxyUrl\(params\)\), ceilingMs/.test(src),
    'the no-GXClient fallback is bounded too');
 
 // ── Reads route through the helper ───────────────────────────────────────────────────────
-ok(/const json = await engineGet\(params\)/.test(src),
+/* Matched on the CALL, not on the declaration it used to sit in. proxyFetch now wraps this line in
+   a try/catch so an unreachable engine can be answered from the saved cache copy (the stale-fallback
+   work, 2026-09-16), which turned `const json = await engineGet(params)` into `json = await
+   engineGet(params)`. The invariant here was never about the `const` — it is that the single read
+   path goes through engineGet and so through the retry ladder. */
+ok(/\bjson = await engineGet\(params\)/.test(src),
    'proxyFetch() — and so all 28 of its call sites — routes through engineGet');
+ok(!/await fetch\(proxyUrl/.test(src.slice(src.indexOf('async function proxyFetch'),
+                                          src.indexOf('function loginViaJsonp'))),
+   'proxyFetch itself never reaches for a bare fetch');
 
 /* The only two `fetch(proxyUrl(` occurrences allowed in this file:
      1. inside engineGet, the degradation path when the remote gx-client script fails to load
