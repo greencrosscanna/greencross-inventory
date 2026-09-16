@@ -404,13 +404,32 @@ function authParamValue_(params) {
   return '';
 }
 
-/* Credential-bearing query parameters that are NOT session tokens; the auth names are appended.
-   Order is alternation order, and no entry is a prefix of an earlier one at the same position, so
-   `?connector_secret=` still matches `connector_secret` rather than stopping at `secret`. */
-const SECRET_PARAM_NAMES_ = ['connector_secret', 'deploy_secret', 'secret', 'api_?key', 'key', 'password']
-  .concat(AUTH_PARAM_NAMES_);
+/* Credential WORDS, not parameter names: each one is matched ANYWHERE inside the parameter name,
+   so a prefix and a suffix are both covered by shape. The auth names are appended rather than
+   retyped, so a name this app accepts as a credential is a name it redacts, by construction.
 
-const SECRET_PARAM_RE_ = new RegExp('([?&](?:' + SECRET_PARAM_NAMES_.join('|') + ')=)[^&\\s"\'<>]*', 'gi');
+   THIS LIST HELD PREFIXED NAMES UNTIL 2026-09-16 — `connector_secret`, `deploy_secret`, `api_?key`
+   — because the pattern anchored the word immediately after a `?` or `&` and an underscore in
+   front of it was enough to walk straight past. Enumerating the prefixes covered the ones somebody
+   thought of and made a THIRD hand-kept list beside the auth list and this one, which is the exact
+   drift the derivation above had just removed. Sales measured the family that walks past an
+   enumerated list: refresh_token, access_token, client_secret, x_auth, sessionid. A leading
+   wildcard alone would still miss the SUFFIXED forms — `session` does not match `sessionid=`
+   unless the name may also continue AFTER the word — and GX Core shipped a scrub that passed 29
+   assertions while leaking `sessionid=` and `tokenValue=` for want of the second wildcard.
+   Wildcards on BOTH sides is the form greencross-sales and greencross-price-cards already ship.
+
+   THE ACCEPTED COST, stated so it is not a surprise: a parameter whose name merely CONTAINS a
+   credential word is redacted too — `?keyword=` and `?monkey=` lose their values to `key`. A
+   redacted diagnostic is an inconvenience; a printed credential is an incident. `api_?key` is
+   unnecessary under this shape, since `_` is an ordinary name character on either side of `key`. */
+const SECRET_WORD_NAMES_ = ['secret', 'password', 'pwd', 'key', 'credential'].concat(AUTH_PARAM_NAMES_);
+
+/* Value characters stop at & " ' whitespace < > or a backslash, so this is safe to run over an
+   already-serialized JSON string as well as over a bare url. */
+const SECRET_PARAM_RE_ = new RegExp(
+  '([?&][A-Za-z0-9_.\\-]*(?:' + SECRET_WORD_NAMES_.join('|') + ')[A-Za-z0-9_.\\-]*=)[^&\\s"\'<>\\\\]*',
+  'gi');
 
 function scrubSecrets_(s) {
   if (s === null || s === undefined) return '';

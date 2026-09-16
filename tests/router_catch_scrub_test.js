@@ -68,7 +68,8 @@ function liftScrubUnit() {
   if (start < 0 || !fnSrc) return null;
   const end = code.indexOf(fnSrc[0]) + fnSrc[0].length;
   return new Function(code.slice(start, end) +
-    '\nreturn { scrub: scrubSecrets_, authNames: AUTH_PARAM_NAMES_, authValue: authParamValue_ };')();
+    '\nreturn { scrub: scrubSecrets_, authNames: AUTH_PARAM_NAMES_, authValue: authParamValue_,' +
+    '         words: SECRET_WORD_NAMES_, re: SECRET_PARAM_RE_ };')();
 }
 
 console.log('1. the router catch does not hand raw exception text to the caller');
@@ -124,8 +125,17 @@ console.log('\n3. the scrub actually redacts — running the real helper, not gr
   ok('ordinary text is left alone',
      scrub('No Dutchie key resolved for any store after mapping store_id to name') ===
      'No Dutchie key resolved for any store after mapping store_id to name');
-  ok('a non-secret param that merely ends in the word key is not mangled',
-     scrub('?monkey=1&storeKey=Bend') === '?monkey=1&storeKey=Bend');
+  /* THE ACCEPTED COST, asserted rather than left to be discovered. The credential word matches
+     anywhere inside the parameter name, so a name that merely CONTAINS one is redacted too. This
+     assertion used to say the opposite — `?monkey=1&storeKey=Bend` had to survive untouched — and
+     that requirement is exactly what an anchored pattern buys you, at the price of walking past
+     `connector_secret=` and `sessionid=`. Sales and Price Cards took the same trade. A redacted
+     diagnostic is an inconvenience; a printed credential is an incident. */
+  ok('ACCEPTED COST: a harmless param containing a credential word is redacted too',
+     scrub('?monkey=1&storeKey=Bend') === '?monkey=1&storeKey=[redacted]' ||
+     scrub('?monkey=1&storeKey=Bend') === '?monkey=[redacted]&storeKey=[redacted]');
+  ok('...and a param with no credential word in it is still left alone',
+     scrub('?action=stores&store=Bend&limit=50') === '?action=stores&store=Bend&limit=50');
   ok('null and undefined do not throw', scrub(null) === '' && scrub(undefined) === '');
 
   // The pattern is a shared /g regex. .replace() resets lastIndex; .test() would not, so a second
@@ -194,8 +204,102 @@ console.log('\n5. every parameter name the auth check accepts comes back redacte
   // reopens the drift tomorrow, so say plainly that the pattern is built from the auth list.
   ok('the pattern is built from the auth list, not a second copy of it',
      /\.concat\(\s*AUTH_PARAM_NAMES_\s*\)/.test(code) &&
-     /new RegExp\([\s\S]{0,160}SECRET_PARAM_NAMES_\.join/.test(code));
+     /new RegExp\([\s\S]{0,200}SECRET_WORD_NAMES_\.join/.test(code));
 }
+
+/* THE SHAPE, NOT THE WORDS (2026-09-16, second pass).
+ *
+ * §5 above proves the pattern follows the AUTH list. It cannot see the other half of the hazard:
+ * the pattern used to anchor the credential word immediately after a `?` or `&`, so every PREFIXED
+ * name walked straight past it — and the first fix for that ENUMERATED the prefixes
+ * (`connector_secret`, `deploy_secret`, `api_?key`), which is a third hand-kept list beside the
+ * other two and covers only the names somebody thought of. Sales measured the family that walks
+ * past an enumerated list on its own live deployment: refresh_token, access_token, client_secret,
+ * x_auth, sessionid. And a leading wildcard alone still misses SUFFIXED names — GX Core leaked
+ * `sessionid=` and `tokenValue=` through a scrub that had passed 29 assertions, because the name
+ * had to END where the list entry ended.
+ *
+ * SO EVERY NAME BELOW IS HARDCODED AND IS IN NEITHER SOURCE LIST — not the auth names, not the
+ * credential words. That is the point: this block CANNOT be satisfied by adding a word to a list
+ * in the implementation, only by a pattern that matches by shape. Proven red by reverting the
+ * pattern to the enumerated form it replaced. */
+console.log('\n6. prefixed AND suffixed credential names are redacted — by shape, not by enumeration');
+{
+  const unit = liftScrubUnit();
+  const scrub = unit.scrub;
+  const listed = [].concat(unit.authNames || [], unit.words || []).map(String);
+
+  // Assembled, never written down — gx-preflight flags a credential-shaped literal.
+  const FIX = ['NOT', 'A', 'REAL', 'CREDENTIAL'].join('-') + '-' + 'q'.repeat(12) + '-002';
+
+  const PREFIXED = ['connector_secret', 'deploy_secret', 'client_secret', 'refresh_token',
+                    'access_token', 'api_key', 'apikey', 'x_auth', 'gc_session', 'session_token',
+                    'user-password'];
+  const SUFFIXED = ['sessionid', 'tokenValue', 'authHeader', 'keyId', 'secretRef'];
+
+  PREFIXED.concat(SUFFIXED).forEach(function (name) {
+    // The floor is only a floor if the name is genuinely absent from both shipped lists; a name
+    // that happens to BE a list entry would prove nothing about the shape.
+    ok('`' + name + '` is in neither source list (so this cannot be satisfied by adding a word)',
+       listed.indexOf(name) === -1);
+    const url = 'Address unavailable: https://script.google.com/macros/s/AKfycbx9mjeCB/exec' +
+                '?action=operationalstatus&' + name + '=' + FIX;
+    ok('the fixture carries the needle before scrubbing (' + name + ')', url.indexOf(FIX) !== -1);
+    const out = scrub(url);
+    ok('`' + name + '=` comes back redacted', out.indexOf(FIX) === -1);
+    ok('...and still says which parameter it was (' + name + ')',
+       out.indexOf(name + '=[redacted]') !== -1);
+    ok('...also in the FIRST parameter position, after ? rather than & (' + name + ')',
+       scrub('boom https://x/exec?' + name + '=' + FIX).indexOf(FIX) === -1);
+  });
+
+  // The message is still a message: parameters with no credential word in them survive intact.
+  ok('non-credential parameters beside a redacted one are untouched',
+     /action=operationalstatus/.test(scrub('https://x/exec?action=operationalstatus&sessionid=' + FIX)));
+
+  /* NO THIRD LIST. Read the shipped word array out of the source and assert every entry is a bare
+     credential WORD — no underscore, no `?`, no hyphen. A prefixed entry reappearing here is the
+     enumeration coming back, and it would pass every assertion above while covering only the names
+     whoever typed it happened to think of. */
+  const arr = code.match(/const SECRET_WORD_NAMES_ = \[([^\]]*)\]/);
+  ok('the credential-word list is readable from the source', !!arr);
+  const words = arr[1].split(',').map(function (w) { return w.trim().replace(/^'|'$/g, ''); })
+                      .filter(Boolean);
+  ok('every entry is a bare word — no enumerated prefix has crept back in',
+     words.length > 0 && words.every(function (w) { return /^[a-z]+$/.test(w); }));
+  ok('the old enumerated prefixes are gone from the list',
+     words.indexOf('connector_secret') === -1 && words.indexOf('deploy_secret') === -1 &&
+     words.indexOf('api_?key') === -1);
+
+  /* And the pattern itself allows name characters on BOTH sides of the word. A leading wildcard
+     alone passes every PREFIXED case above and still leaks `sessionid=`; this says so directly. */
+  ok('the pattern allows name characters BEFORE the credential word',
+     /\[\?&\]\[A-Za-z0-9_\.\\\\-\]\*\(\?:/.test(code));
+  ok('the pattern allows name characters AFTER it too (the suffix half)',
+     /\)\[A-Za-z0-9_\.\\\\-\]\*=\)/.test(code));
+}
+
+/* MUTATION LOG — every count below was MEASURED, on a SCRATCH COPY of the file and never the
+ * shipped one, on 2026-09-16:
+ *
+ *   · the whole enumerated form restored — words back to
+ *     ['connector_secret','deploy_secret','secret','api_?key','key','password'] and the pattern
+ *     back to '([?&](?:' + … + ')=)'                      → 43 fail, 84 pass. Named in the output:
+ *     client_secret, refresh_token, access_token, x_auth, gc_session, session_token, user-password,
+ *     sessionid, tokenValue, authHeader, keyId, secretRef — plus both shape assertions, both
+ *     no-third-list assertions, and the accepted-cost one.
+ *   · the SUFFIX half alone removed (leading wildcard kept) → 16 fail, 111 pass, and every failure
+ *     is a suffixed name: sessionid, tokenValue, authHeader, keyId, secretRef. This is the mutation
+ *     that matters most, because a leading wildcard passes all ten PREFIXED cases and still leaks —
+ *     it is the exact hole GX Core shipped through 29 green assertions.
+ *   · scrubSecrets_ returning its input unchanged           → 63 fail, 64 pass (§3, §5 and §6)
+ *   · `session` dropped from AUTH_PARAM_NAMES_              → 6 fail: gc_session and sessionid, from
+ *     the HARDCODED floor. §5 simply stops exercising the name and says nothing — which is the whole
+ *     reason the floor is here beside the derivation rather than instead of it. (session_token still
+ *     redacts, on `token`; overlap is not coverage, and the floor is what shows the difference.)
+ *
+ * A clean run against already-correct code proves nothing. That is the lesson these sections exist
+ * for, and it is why the log records the counts rather than asserting the tests are good. */
 
 console.log('\n' + (fail ? '✗ ' + fail + ' failed, ' : '✓ ') + pass + ' passed');
 process.exit(fail ? 1 : 0);
