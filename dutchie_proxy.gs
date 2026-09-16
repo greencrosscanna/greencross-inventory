@@ -366,6 +366,29 @@ function maskSecret_(v) {
   return s.slice(0, 4) + '…' + s.slice(-4) + ' (' + s.length + ' chars)';
 }
 
+/* SCRUB BEFORE ANYTHING LEAVES THIS FILE.
+ *
+ * The router's catch below used to hand `err.message` AND `err.stack` straight to the browser. That
+ * is only a formatting choice until a handler THROWS a UrlFetchApp failure instead of catching it —
+ * Google's own message for one is "Address unavailable: <the whole url>", query string included.
+ * getDutchieStoreKeys_ fetches GX Core with `connector_secret=` in that query string and does not
+ * catch, so a single DNS blip would print the credential that unlocks EVERY store's Dutchie key
+ * into an error banner any signed-in user can read. Reported by core-admin 2026-09-15, after SPIFF
+ * found the same shape in its own router and fixed it (v1.423); GX Crew's equivalent helper carries
+ * a comment saying its live secret reached an on-screen error once already.
+ *
+ * The LOG is scrubbed too, not just the reply: ?action=gaserrors replays the error log to any
+ * authenticated caller, so writing the raw text there just moves the leak one route over.
+ */
+const SECRET_PARAM_RE_ = /([?&](?:connector_secret|deploy_secret|secret|token|api_?key|key|password|auth)=)[^&\s"'<>]*/gi;
+
+function scrubSecrets_(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(SECRET_PARAM_RE_, '$1[redacted]')
+    .replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._-]{8,}/gi, '$1 [redacted]');
+}
+
 function doGet(e) {
   const params = e.parameter;
   // Serve the frontend app when no action is specified
@@ -473,7 +496,12 @@ function doGet(e) {
     if (params.action === 'loadingquotes')  return jsonOut(getLoadingQuotes());
     return jsonOut({ error: 'Unknown action' }, params.callback);
   } catch (err) {
-    return jsonOut({ error: err.message, stack: err.stack }, params.callback);
+    // The stack is the widest half of this and nothing in index.html ever read it, so it does not
+    // go back over the wire at all — it is logged, scrubbed, where getGasErrors can reach it.
+    const safeMsg = scrubSecrets_((err && err.message) || err);
+    _logGasError('doGet:' + String(params.action || ''),
+                 safeMsg + ' || ' + scrubSecrets_(err && err.stack));
+    return jsonOut({ error: safeMsg }, params.callback);
   }
 }
 
@@ -779,7 +807,15 @@ function getDutchieStoreKeys_() {
   const url = GX_CORE_EXEC_URL + '?action=dutchie_keys&connector_secret=' + encodeURIComponent(secret);
   let byStoreId = null, lastErr = '';
   for (let i = 0; i < 5; i++) {
-    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    // Scrubbed at the throw site as well as in the router, because this is the one url in the file
+    // that carries a credential in its query string. A future caller that catches this somewhere
+    // other than doGet still gets a message it can safely show.
+    let resp;
+    try {
+      resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    } catch (fetchErr) {
+      throw new Error('GX Core dutchie_keys fetch failed: ' + scrubSecrets_((fetchErr && fetchErr.message) || fetchErr));
+    }
     let data = null;
     try { data = JSON.parse(resp.getContentText()); } catch (e) { lastErr = 'unparseable body'; }
     if (data && data.ok === true && data.keys && Object.keys(data.keys).length) { byStoreId = data.keys; break; }
