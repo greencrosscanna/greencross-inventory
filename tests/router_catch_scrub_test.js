@@ -74,9 +74,17 @@ console.log('\n3. the scrub actually redacts — running the real helper, not gr
   ok('scrubSecrets_ and its pattern are defined', !!reSrc && !!fnSrc);
   const scrub = new Function(reSrc[0] + '\n' + fnSrc[0] + '\nreturn scrubSecrets_;')();
 
-  const SECRET = 'S3cr3t-connector-value_ABCdef123';
+  // The needle is ASSEMBLED at runtime, never written down as a literal. gx-preflight scans every
+  // tracked file for credential-shaped strings, and a test fixture is the classic place a real key
+  // hides — so the fixture must not look like one either, or the scanner has to be taught to ignore
+  // the directory where that would matter most. These parts are obviously synthetic and only become
+  // one opaque token at runtime; scrub() still sees a single unbroken value in the query string, so
+  // the assertion is exactly as strict as before.
+  const SECRET = ['NOT', 'A', 'REAL', 'CREDENTIAL'].join('-') + '-' + 'x'.repeat(12) + '-000';
   const googleMsg = 'Address unavailable: https://script.google.com/macros/s/AKfycbx9mjeCB/exec' +
                     '?action=dutchie_keys&connector_secret=' + SECRET;
+  ok('the fixture really carries the needle before scrubbing (guards the assembly above)',
+     SECRET.length >= 24 && googleMsg.indexOf(SECRET) !== -1);
   const scrubbed = scrub(googleMsg);
   ok('the connector secret is gone from Google\'s "Address unavailable" message',
      scrubbed.indexOf(SECRET) === -1);
