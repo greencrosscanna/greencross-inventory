@@ -380,7 +380,37 @@ function maskSecret_(v) {
  * The LOG is scrubbed too, not just the reply: ?action=gaserrors replays the error log to any
  * authenticated caller, so writing the raw text there just moves the leak one route over.
  */
-const SECRET_PARAM_RE_ = /([?&](?:connector_secret|deploy_secret|secret|token|api_?key|key|password|auth)=)[^&\s"'<>]*/gi;
+/* THE ONE LIST OF PARAMETER NAMES THAT CAN CARRY A SESSION CREDENTIAL.
+ *
+ * requireAuth_ and requireWriteAuth_ take the token from these names (through authParamValue_
+ * below), and SECRET_PARAM_RE_ is BUILT from this same array — so any name this app will accept
+ * as a credential is redacted by construction, not by someone remembering to type it twice.
+ *
+ * That is the actual fix core-admin asked for on 2026-09-16. Until then the accepted names and the
+ * scrubbed names were two hand-maintained lists that had already drifted: requireAuth_ accepted
+ * `session=` and the regex did not name it, so a url carrying a live session token came back
+ * un-redacted into an on-screen error. Measured the same night, three of the suite's four scrubs
+ * leaked `session=` and two also leaked `auth=`. Adding the word "session" here would have closed
+ * that one gap and left the mechanism that made it, which is why the list moved instead. */
+const AUTH_PARAM_NAMES_ = ['token', 'session', 'auth'];
+
+/* Read the session token out of a request. The ONLY sanctioned way to do it — reading
+   params.<something> directly at a call site is what puts a name outside the scrub's reach. */
+function authParamValue_(params) {
+  const p = params || {};
+  for (let i = 0; i < AUTH_PARAM_NAMES_.length; i++) {
+    if (p[AUTH_PARAM_NAMES_[i]]) return p[AUTH_PARAM_NAMES_[i]];
+  }
+  return '';
+}
+
+/* Credential-bearing query parameters that are NOT session tokens; the auth names are appended.
+   Order is alternation order, and no entry is a prefix of an earlier one at the same position, so
+   `?connector_secret=` still matches `connector_secret` rather than stopping at `secret`. */
+const SECRET_PARAM_NAMES_ = ['connector_secret', 'deploy_secret', 'secret', 'api_?key', 'key', 'password']
+  .concat(AUTH_PARAM_NAMES_);
+
+const SECRET_PARAM_RE_ = new RegExp('([?&](?:' + SECRET_PARAM_NAMES_.join('|') + ')=)[^&\\s"\'<>]*', 'gi');
 
 function scrubSecrets_(s) {
   if (s === null || s === undefined) return '';
@@ -6141,7 +6171,7 @@ function verifyWrite_(verify, token) {
 }
 
 function requireWriteAuth_(params) {
-  const token = params.token || params.session || params.auth || '';
+  const token = authParamValue_(params);
   if (typeof GXCore === 'undefined' || !GXCore || typeof GXCore.verifySession !== 'function') {
     return { ok: false, error: 'Write blocked: pinned GXCore has no verifySession() — needs v161+', via: 'unbound' };
   }
@@ -6188,7 +6218,7 @@ function writeAuthProbe_() {
 }
 
 function requireAuth_(params) {
-  return validateSessionToken_(params.token || params.session || params.auth || '');
+  return validateSessionToken_(authParamValue_(params));
 }
 
 // Phase 1 shared sign-on: Inventory authenticates through GX Core (which also enforces the

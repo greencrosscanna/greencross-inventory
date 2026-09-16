@@ -45,6 +45,32 @@ function routerCatchBody() {
 }
 const CATCH = routerCatchBody();
 
+/* Brace-matched body of a named function, so an assertion about requireAuth_ cannot be satisfied by
+   text belonging to its neighbor — the same trap §1 exists for. */
+function funcBody(name) {
+  const at = code.indexOf('function ' + name + '(');
+  if (at < 0) throw new Error(name + ' not found');
+  const open = code.indexOf('{', at);
+  let depth = 0, i = open;
+  for (; i < code.length; i++) {
+    if (code[i] === '{') depth++;
+    else if (code[i] === '}') { depth--; if (depth === 0) break; }
+  }
+  return code.slice(open + 1, i);
+}
+
+/* Lift the whole scrub unit — the auth name list, the pattern built from it, and the helper — and
+   run it. Taking AUTH_PARAM_NAMES_ from the source rather than restating it here is what makes §5
+   a test of the DERIVATION: add a name to the shipped list and §5 starts asserting about it. */
+function liftScrubUnit() {
+  const start = code.indexOf('const AUTH_PARAM_NAMES_ =');
+  const fnSrc = code.match(/function scrubSecrets_\(s\) \{[\s\S]*?\n\}/);
+  if (start < 0 || !fnSrc) return null;
+  const end = code.indexOf(fnSrc[0]) + fnSrc[0].length;
+  return new Function(code.slice(start, end) +
+    '\nreturn { scrub: scrubSecrets_, authNames: AUTH_PARAM_NAMES_, authValue: authParamValue_ };')();
+}
+
 console.log('1. the router catch does not hand raw exception text to the caller');
 {
   ok('the catch returns no stack at all',
@@ -69,10 +95,9 @@ console.log('\n3. the scrub actually redacts — running the real helper, not gr
 {
   // Lift the helper and its regex out of the source and run them. If the implementation stops
   // redacting, this fails even though the call site still reads correctly.
-  const reSrc = code.match(/const SECRET_PARAM_RE_ = [^\n]+/);
-  const fnSrc = code.match(/function scrubSecrets_\(s\) \{[\s\S]*?\n\}/);
-  ok('scrubSecrets_ and its pattern are defined', !!reSrc && !!fnSrc);
-  const scrub = new Function(reSrc[0] + '\n' + fnSrc[0] + '\nreturn scrubSecrets_;')();
+  const unit = liftScrubUnit();
+  ok('scrubSecrets_ and its pattern are defined', !!unit);
+  const scrub = unit.scrub;
 
   // The needle is ASSEMBLED at runtime, never written down as a literal. gx-preflight scans every
   // tracked file for credential-shaped strings, and a test fixture is the classic place a real key
@@ -116,6 +141,60 @@ console.log('\n4. the one url that carries a credential is scrubbed at the throw
      /try\s*\{[\s\S]{0,200}UrlFetchApp\.fetch\(url/.test(fn));
   ok('...and what it rethrows is scrubbed',
      /catch\s*\(fetchErr\)[\s\S]{0,300}scrubSecrets_\(/.test(fn));
+}
+
+/* THE HAZARD, NOT THE FIX (core-admin, 2026-09-16).
+ *
+ * The bug was never "the word session is missing". It was that the names this app ACCEPTS as a
+ * credential and the names it REDACTS were two hand-kept lists, free to drift — and they had:
+ * requireAuth_ took `session=` while the pattern named only token and auth, so a url carrying a
+ * live session token printed it on screen. Three of the suite's four scrubs had the same hole.
+ *
+ * So this section never names a parameter. It reads the list the AUTH side accepts out of the
+ * source, and for each name runs the real scrub on a real url carrying it. Add a fourth name to
+ * the auth list without the pattern following, and this goes red on the name itself — which is
+ * the only way a test can outlive the specific word that was missing.
+ */
+console.log('\n5. every parameter name the auth check accepts comes back redacted');
+{
+  const unit = liftScrubUnit();
+  const names = (unit && unit.authNames) || [];
+  ok('the accepted-name list is derivable from the source', names.length >= 2);
+
+  // The derivation is only as good as its coverage: a token read straight off params at some call
+  // site is outside the list, so the list would not describe what the app accepts.
+  ['requireAuth_', 'requireWriteAuth_'].forEach(function (fn) {
+    const body = funcBody(fn);
+    ok(fn + ' takes its token from the shared list', /authParamValue_\(\s*params\s*\)/.test(body));
+    ok(fn + ' reads no parameter off params directly', !/\bparams\s*\.\s*[A-Za-z_]/.test(body));
+  });
+  const direct = new RegExp('params\\s*\\.\\s*(?:' + names.join('|') + ')\\b');
+  ok('no call site anywhere reads an accepted name off params itself',
+     !direct.test(code.replace(funcBody('authParamValue_'), '')));
+
+  // Assembled, never written down — gx-preflight flags a credential-shaped literal (commit c861566).
+  const NEEDLE = ['NOT', 'A', 'REAL', 'CREDENTIAL'].join('-') + '-' + 'z'.repeat(12) + '-001';
+  names.forEach(function (name) {
+    const url = 'Address unavailable: https://script.google.com/macros/s/AKfycbx9mjeCB/exec' +
+                '?action=operationalstatus&' + name + '=' + NEEDLE;
+    ok('the fixture carries the needle before scrubbing (' + name + ')', url.indexOf(NEEDLE) !== -1);
+    const scrubbed = unit.scrub(url);
+    ok('a url carrying ' + name + '= comes back redacted', scrubbed.indexOf(NEEDLE) === -1);
+    ok('...and still says which parameter it was (' + name + ')',
+       scrubbed.indexOf(name + '=[redacted]') !== -1);
+    // Same name as the FIRST parameter, where the separator is ? rather than &.
+    ok('...also when it is the first parameter (' + name + ')',
+       unit.scrub('boom https://x/exec?' + name + '=' + NEEDLE).indexOf(NEEDLE) === -1);
+    // authParamValue_ must really accept it, or the list overstates what is gated.
+    const p = {}; p[name] = NEEDLE;
+    ok('authParamValue_ actually accepts ' + name, unit.authValue(p) === NEEDLE);
+  });
+
+  // Tripwire on the mechanism itself: re-hardcoding the pattern passes everything above today and
+  // reopens the drift tomorrow, so say plainly that the pattern is built from the auth list.
+  ok('the pattern is built from the auth list, not a second copy of it',
+     /\.concat\(\s*AUTH_PARAM_NAMES_\s*\)/.test(code) &&
+     /new RegExp\([\s\S]{0,160}SECRET_PARAM_NAMES_\.join/.test(code));
 }
 
 console.log('\n' + (fail ? '✗ ' + fail + ' failed, ' : '✓ ') + pass + ' passed');
