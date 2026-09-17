@@ -2,6 +2,12 @@
 /* ─── every way an engine SAYS something must scrub credentials on the way out ────────────────────
  *   RUN:  node tests/exit_scrub_test.js          (synced from greencross-gx-theme/gx-exit-scrub-test.js)
  *
+ *   SOURCE-SHAPED: this reads every engine file as TEXT and asks which exits are unaccounted for.
+ *   Its subject is the SHAPE of the source, not a function, so there is nothing here to execute —
+ *   the same declaration greencross-spiff/tests/suite_shape_test.js asks every file to make. The
+ *   limits of reading rather than running are spelled out under WHAT IT CANNOT DO below; each app
+ *   still needs its own executing test for whether the scrub itself is correct.
+ *
  * WHY THIS IS SHARED AND NOT PER-APP. On 2026-09-17 four apps were audited by hand, one session each,
  * and every one of them had an exit nobody had counted:
  *
@@ -63,11 +69,43 @@ const REPO = process.cwd();
  * the content goes through setReply_, which scrubs. Fifteen false positives in the app that had just
  * shipped a real fix is precisely how a test gets switched off, so the pattern has to follow the
  * data rather than the constructor. */
+/* DO NOT REQUIRE `ContentService` ON THE SAME LINE. The first version matched
+ * /ContentService\s*\.\s*createTextOutput\s*\(/ and greencross-leaderboard wraps it:
+ *
+ *     return ContentService
+ *       .createTextOutput(callback + '(' + json + ')')
+ *
+ * so its ONLY reply builder was never counted, and the test reported "0 unaccounted" for replies
+ * while never having looked at one. Caught by the leaderboard session, which did not trust the pass
+ * and went looking by hand — and found two unscrubbed reply exits returning a GX Core exception that
+ * carries the deploy secret in its URL.
+ *
+ * That is the same failure as the anchored-scrub regex this file's header already describes, and the
+ * same as the green gates the hub's CLAUDE.md warns about: a pattern that quietly excludes the
+ * commonest case, reporting success while testing nothing. Twice in one file is the argument for
+ * running a new test against every real engine and then disbelieving the passes. */
 const EXITS = [
-  { kind: 'reply', re: /ContentService\s*\.\s*createTextOutput\s*\(\s*[^)\s]/ },
-  { kind: 'reply', re: /\.\s*setContent\s*\(\s*[^)\s]/ },
-  { kind: 'mail', re: /\b(?:MailApp|GmailApp)\s*\.\s*sendEmail\s*\(/ },
+  { kind: 'reply', keyword: 'createTextOutput', re: /createTextOutput\s*\(\s*[^)\s]/ },
+  { kind: 'reply', keyword: 'setContent', re: /setContent\s*\(\s*[^)\s]/ },
+  { kind: 'mail', keyword: 'sendEmail', re: /\b(?:MailApp|GmailApp)\s*\.\s*sendEmail\s*\(/ },
 ];
+/* MATCHED OVER A SMALL WINDOW, NOT ONE LINE, because Apps Script source wraps in at least three ways
+ * and each one has hidden an exit in this suite:
+ *
+ *     return ContentService                       <- keyword on the NEXT line (leaderboard)
+ *       .createTextOutput(body)
+ *
+ *     return ContentService.createTextOutput(     <- ARGUMENT on the next line
+ *       body
+ *     ).setMimeType(...)
+ *
+ * The first cost a vacuous pass on greencross-leaderboard, whose only reply builder was invisible to
+ * this test while it was unscrubbed. The second was found by writing a fixture for the first rather
+ * than taking the fix on trust — nobody had named it, and it would have gone on passing.
+ *
+ * The keyword must appear on the line being reported, so a call is counted once and at its own line
+ * number; the window only supplies what comes after it. */
+const WINDOW = 3;
 /* NOT ANCHORED BEFORE THE KEYWORD, and this file got it wrong first time round in the exact shape it
    was written to catch. The original was /\b[A-Za-z_$][\w$]*(?:scrub|redact|sanitiz)…/ — one
    character of prefix REQUIRED — so `scrubSecrets_(`, where the word starts the identifier, never
@@ -132,8 +170,10 @@ for (const file of sources) {
   const lines = fs.readFileSync(file, 'utf8').split('\n');
   lines.forEach((line, i) => {
     if (line.trim().startsWith('*') || line.trim().startsWith('//')) return;   // a mention in prose
+    const window = lines.slice(i, i + WINDOW).join(' ');
     for (const exit of EXITS) {
-      if (!exit.re.test(line)) continue;
+      if (line.indexOf(exit.keyword) === -1) continue;   // report it at ITS line, once
+      if (!exit.re.test(window)) continue;
       const where = `${path.relative(REPO, file)}:${i + 1}`;
       const context = lines.slice(Math.max(0, i - 3), i + 2).join('\n');
       const fn = enclosing(lines, i);
