@@ -222,7 +222,26 @@ case "$CMD" in
     ;;
 
   who)
-    if live_claim; then echo "$REPO: held by $(describe_holder) since ${c_started:-?}"
+    # ─── SAY WHEN THE HOLDER IS YOU ───────────────────────────────────────────────────────────────
+    # `who` printed "held by session 928b0ddd" whether that session was somebody else or the caller
+    # itself, and `who` is the command the suite CLAUDE.md tells everyone to run. A session reading
+    # its own claim back has no way to tell — a SUBAGENT especially, because it shares its parent's
+    # CLAUDE_PID (so the claim genuinely is its own) while knowing nothing about its parent's session
+    # id. The observed cost is a session standing down from a tree it already holds, waiting for a
+    # handover that will never come because there is nobody to hand over.
+    #
+    # `check` was never wrong about this — held_by_other() has always compared c_pid to ME, so the
+    # GATE has always let a session through its own claim. Only the advisory line was ambiguous,
+    # which is why this presented as sessions politely refusing to work rather than as a hard failure.
+    # Sky, 2026-09-16: "we keep having an issue where a session thinks its locked, but it's seeing
+    # the lock from it's own session."
+    #
+    # Exit code stays 0 in every branch on purpose. Nothing can depend on a non-zero today, so adding
+    # one would be a silent behavior change to every caller for the sake of a line they can read.
+    if live_claim; then
+      _mine=""
+      [ -n "$ME" ] && [ "$c_pid" = "$ME" ] && _mine=" — THIS SESSION. You already hold it; go ahead."
+      echo "$REPO: held by $(describe_holder) since ${c_started:-?}$_mine"
     else
       _others="$(others_here)"
       if [ -n "$_others" ]; then
