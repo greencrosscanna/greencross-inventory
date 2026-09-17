@@ -118,7 +118,13 @@ function _logGasError(fn, msg) {
     const props = PropertiesService.getScriptProperties();
     const raw   = props.getProperty(GAS_ERROR_LOG_KEY);
     const log   = raw ? JSON.parse(raw) : [];
-    log.push({ ts: new Date().toISOString(), fn: String(fn), msg: String(msg).slice(0, 300) });
+    /* SCRUB AT THE WRITE, not at each of the ~30 call sites. Only the router's catch passed already-
+       scrubbed text; every other caller hands over a raw `e.message`, and ?action=gaserrors replays
+       this buffer verbatim to any authenticated user. Scrubbing here covers every caller by
+       construction, is idempotent for the one that already scrubbed, and is the one thing a source-
+       reading test cannot check — a stored value is only a leak when something reads it back, and
+       this one has a reader in the Settings UI. */
+    log.push({ ts: new Date().toISOString(), fn: String(fn), msg: scrubSecrets_(msg).slice(0, 300) });
     if (log.length > GAS_ERROR_LOG_MAX) log.splice(0, log.length - GAS_ERROR_LOG_MAX);
     props.setProperty(GAS_ERROR_LOG_KEY, JSON.stringify(log));
   } catch(e) { /* never let error logging itself crash anything */ }
@@ -290,7 +296,11 @@ function workbookTarget_(name) {
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 function testEmail() {
-  MailApp.sendEmail('sky@greencrosscanna.com', '🐞 Bug Reporter Test', 'Mail scope is working — bug reports will now send emails.');
+  sendMail_({
+    to:      'sky@greencrosscanna.com',
+    subject: '🐞 Bug Reporter Test',
+    body:    'Mail scope is working — bug reports will now send emails.',
+  });
 }
 
 /* Set or rotate the LeafLink API key. Select setLeafLinkKey in the editor and press Run.
@@ -379,6 +389,18 @@ function maskSecret_(v) {
  *
  * The LOG is scrubbed too, not just the reply: ?action=gaserrors replays the error log to any
  * authenticated caller, so writing the raw text there just moves the leak one route over.
+ *
+ * WHERE THAT SENTENCE WAS TRUE OF ONE CALLER AND READ AS TRUE OF THE BUFFER (corrected 2026-09-17).
+ * The router's catch did scrub before logging, and it was the only caller that did — about thirty
+ * others hand _logGasError a raw `e.message`. The scrub now lives inside _logGasError itself, so
+ * this is a property of the buffer rather than of whoever was writing to it.
+ *
+ * AND IT IS NOT THE ONLY EXIT, which is the general form of the same mistake. A scrub at one exit
+ * says nothing about a second. This app had three more: two MailApp sends (now behind sendMail_)
+ * and jsonOut, where every route's payload leaves — including the ~10 handlers that return
+ * `{ error: e.message }` without ever passing through the catch below. tests/exit_scrub_test.js
+ * (shared, from gx-theme) finds an exit nobody has looked at; tests/exit_scrub_behavior_test.js
+ * runs each one and checks what actually comes out.
  */
 /* THE ONE LIST OF PARAMETER NAMES THAT CAN CARRY A SESSION CREDENTIAL.
  *
@@ -436,6 +458,34 @@ function scrubSecrets_(s) {
   return String(s)
     .replace(SECRET_PARAM_RE_, '$1[redacted]')
     .replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._-]{8,}/gi, '$1 [redacted]');
+}
+
+/* THE ONE MAIL EXIT. Every MailApp send in this file goes through here, and the reason is not that
+ * the scrub was missing — v3.058 shipped a correct one for the router catch and it is the function
+ * directly above. The reason is that a scrub at ONE exit says nothing about a SECOND exit. On
+ * 2026-09-17 four apps were audited: crew had seven sends and exactly one scrubbed — the one
+ * somebody had gone looking at. This app had two, and neither did.
+ *
+ * MAIL IS THE WORSE EXIT OF THE TWO. A screen shows an error to one person and is gone; an email
+ * sits in a mailbox, gets forwarded, and is searchable for years. Apps Script puts the WHOLE url
+ * into an exception message, so a caught UrlFetchApp failure reads
+ * "Address unavailable: https://...?connector_secret=..." — query string included — and
+ * bugNotify_'s Diagnostics line renders whatever the browser captured, verbatim.
+ *
+ * SCRUBBING IS IDEMPOTENT, so a caller that already scrubbed (the router catch at doGet, the
+ * dutchie_keys fetch) stays correct passing through here. Route new sends through this, not around
+ * it — tests/exit_scrub_test.js fails on any MailApp/GmailApp call site that skips it.
+ *
+ * Takes the object form only. The positional signature is deliberately not supported: two shapes is
+ * how the second send stops looking like the first one and drifts. */
+function sendMail_(msg) {
+  const m = msg || {};
+  const out = {};
+  for (const k in m) { if (Object.prototype.hasOwnProperty.call(m, k)) out[k] = m[k]; }
+  if (out.subject   !== undefined) out.subject   = scrubSecrets_(out.subject);
+  if (out.body      !== undefined) out.body      = scrubSecrets_(out.body);
+  if (out.htmlBody  !== undefined) out.htmlBody  = scrubSecrets_(out.htmlBody);
+  MailApp.sendEmail(out);
 }
 
 function doGet(e) {
@@ -554,8 +604,26 @@ function doGet(e) {
   }
 }
 
+/* THE ONE REPLY EXIT, and it scrubs for the same reason sendMail_ does: a scrub at one exit says
+ * nothing about a second one. The router's catch below already scrubs the error it returns — that
+ * fix is correct and stays — but it is only ONE of the ways an error message reaches this function.
+ * About ten handlers return `{ error: e.message }` of their own (getGasErrors, snapshotWorkbooks,
+ * getLeafLinkOrders, velBackfillStatus's stored `error:` status, the write-grant check), none of
+ * them through that catch, and any one of them can be holding a UrlFetchApp failure — which on
+ * Apps Script carries the WHOLE url, `connector_secret=` included.
+ *
+ * SCRUBBING THE SERIALIZED BODY IS DELIBERATE rather than scrubbing each field: SECRET_PARAM_RE_
+ * stops its value at & " ' whitespace < > or a backslash precisely so it is safe to run over
+ * already-serialized JSON (see the comment above it), and a per-field scrub is a list somebody has
+ * to keep complete. Scrubbing is idempotent, so the already-scrubbed catch stays correct.
+ *
+ * The accepted cost is the one stated at SECRET_WORD_NAMES_: an ordinary value that sits in a url
+ * query under a name containing key/secret/password loses that value to [redacted]. A redacted
+ * diagnostic is an inconvenience; a printed credential is an incident. Nothing this app returns as
+ * DATA is shaped like `?key=` — the session token comes back as a JSON field, which the regex does
+ * not match because it requires a `?` or `&` before the name. */
 function jsonOut(obj, callback) {
-  const body = JSON.stringify(obj);
+  const body = scrubSecrets_(JSON.stringify(obj));
   if (callback && /^[A-Za-z_$][0-9A-Za-z_$]*$/.test(String(callback))) {
     return ContentService
       .createTextOutput(String(callback) + '(' + body + ');')
@@ -730,7 +798,7 @@ function handleBugReport(b) {
    Diagnostics go last and raw: on the UNFILED path nothing else holds them. */
 function bugNotify_(o) {
   try {
-    MailApp.sendEmail({
+    sendMail_({
       to:      'sky@greencrosscanna.com',
       subject: o.subject,
       body: o.lead.concat([

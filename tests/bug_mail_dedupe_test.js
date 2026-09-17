@@ -91,7 +91,21 @@ function loadBugFns() {
   const endMarker = '\n// ─── Store helpers ';
   const end = SRC.indexOf(endMarker, bStart);
   if (end < 0) throw new Error('could not find the end of the bug-report block');
-  const code = SRC.slice(start, end);
+
+  /* THE MAIL EXIT IS NOT IN THIS SLICE, so it has to be lifted by name too. bugNotify_ stopped
+     calling MailApp directly on 2026-09-17: every send in the engine now goes through sendMail_,
+     which scrubs subject/body/htmlBody first. Lifting it — together with the real scrub unit it
+     calls, rather than a stub — means these assertions run against the SHIPPING exit, and the
+     Diagnostics line below is checked as it would actually be mailed. Stubbing sendMail_ would
+     have kept the suite green while testing a send this app no longer makes. */
+  const scrubStart = SRC.indexOf('const AUTH_PARAM_NAMES_ =');
+  if (scrubStart < 0) throw new Error('AUTH_PARAM_NAMES_ not found — the scrub unit moved');
+  const mailFn = SRC.match(/function sendMail_\(msg\) \{[\s\S]*?\n\}/);
+  if (!mailFn) throw new Error('sendMail_ not found in dutchie_proxy.gs — the single mail exit is gone');
+  const scrubEnd = SRC.indexOf(mailFn[0]) + mailFn[0].length;
+  if (scrubEnd < scrubStart) throw new Error('sendMail_ no longer follows the scrub unit');
+
+  const code = SRC.slice(scrubStart, scrubEnd) + '\n' + SRC.slice(start, end);
 
   const sandbox = {
     MailApp: { sendEmail: function (msg) { SENT.push(msg); } },

@@ -73,7 +73,21 @@ const end = SRC.indexOf('\n// ─── Store helpers ', start);
 ok(end > start, 'the bug-report block has a findable end');
 const block = SRC.slice(start, end);
 
-const mailsLocally = /MailApp\.sendEmail/.test(block);
+/* THE SEND, HOWEVER IT LEAVES. On 2026-09-17 every MailApp call in the engine moved behind
+   sendMail_, which scrubs the subject and body first — so a block that still mails no longer
+   contains the string `MailApp.sendEmail`, and this read as "the local send was deleted". The
+   question this test asks is whether a bug filed during a GX Core outage reaches anybody; routing
+   it through the scrubbing exit does not change that answer, and requiring the raw call would be a
+   test insisting the send skip the scrub. `sendMail_` is asserted to exist below, so this cannot be
+   satisfied by a helper that was removed. */
+const mailsLocally = /MailApp\.sendEmail|\bsendMail_\s*\(/.test(block);
+/* Scoped to sendMail_'s OWN body, brace-matched. A whole-file grep for the scrub is the trap this
+   repo has already sprung once — SPIFF's first router test passed while the bug was live because it
+   matched a call inside a different function. */
+const mailExit = SRC.match(/function sendMail_\(msg\) \{[\s\S]*?\n\}/);
+ok(!!mailExit && /scrubSecrets_\(/.test(mailExit[0]),
+   'the single mail exit exists and scrubs — a send that skips it prints whatever it caught',
+   'sendMail_ is missing or no longer scrubs; tests/exit_scrub_test.js covers the call sites.');
 
 // ── The pairing ───────────────────────────────────────────────────────────────
 if (pinned >= CONSOLIDATED_FROM) {
