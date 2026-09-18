@@ -73,15 +73,15 @@ ok(!/await fetch\(proxyUrl/.test(src.slice(src.indexOf('async function proxyFetc
                                           src.indexOf('function loginViaJsonp'))),
    'proxyFetch itself never reaches for a bare fetch');
 
-/* The only two `fetch(proxyUrl(` occurrences allowed in this file:
-     1. inside engineGet, the degradation path when the remote gx-client script fails to load
-     2. the setupcentry WRITE, which must never be retried
-   Anything else is a new bare read that skipped the retry. */
+/* The only `fetch(proxyUrl(` allowed in this file is inside engineGet: the degradation path when the
+   remote gx-client script fails to load. Anything else is a new bare read that skipped the retry.
+   (The setupcentry WRITE used to be the second; it now goes through engineWriteOnce_, which bounds
+   it and still never re-sends it — see bounded_fetch_test.js.) */
 const bare = (src.match(/fetch\(proxyUrl\(/g) || []).length;
-ok(bare === 2, 'exactly two bare fetch(proxyUrl( remain — the fallback and the write',
+ok(bare === 1, 'exactly one bare fetch(proxyUrl( remains — the no-GXClient fallback',
    'found ' + bare + '; a new one is a read that bypassed engineGet');
 
-ok(/DELIBERATELY NOT engineGet[\s\S]{0,600}?fetch\(proxyUrl\(\{ action: 'setupcentry'/.test(src),
+ok(/DELIBERATELY NOT engineGet[\s\S]{0,600}?engineWriteOnce_\(proxyUrl\(\{ action: 'setupcentry'/.test(src),
    'the setupcentry write is still a single un-retried attempt, and says why');
 
 ok(!/engineGet\(\{ action: 'setupcentry'/.test(src),

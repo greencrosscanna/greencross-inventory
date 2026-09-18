@@ -2475,6 +2475,40 @@ function withTimeout(promise, ms, label = 'Request') {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
+
+/* @test-slice boundedFetch
+   EVERY OTHER fetch IN THIS FILE GOES THROUGH HERE, so none of them can wait forever.
+   A browser fetch has no deadline, and when /exec stalls it does not fail — it never answers. The
+   hide/retire/flag syncs below were fire-and-forget bare fetches: a stalled one never failed, never
+   logged, and the item simply never reached anyone else's screen. This aborts the request (armed
+   across the body read, where the Drive-HTML miss lives) rather than only racing it. Resolves
+   { res, text }. */
+function boundedFetch_(url, ms, init = {}) {
+  const ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch {} }, ms) : null;
+  const opts = { ...init };
+  if (ctl) opts.signal = ctl.signal;
+  return fetch(url, opts)
+    .then(res => res.text().then(text => ({ res, text })))
+    .then(r => { if (timer) clearTimeout(timer); return r; },
+          e => {
+            if (timer) clearTimeout(timer);
+            throw (e && e.name === 'AbortError') ? new Error('timed out after ' + ms + 'ms') : e;
+          });
+}
+/* A WRITE TO THIS APP'S ENGINE: ONE bounded attempt, NEVER re-sent. Same rule as sales v2.608.
+   Apps Script finishes a request the browser gave up on, so a timed-out write has almost always run
+   and a re-send is a second write — and `sharedflag` is a TOGGLE, so a second one silently un-flags
+   the item. The ceiling is ENGINE_CEILING_MS because this engine was measured answering validly at
+   43s; a shorter one would report a working write as lost. The try/catch is not belt-and-braces:
+   gx-dev.js blocks undeclared writes by throwing SYNCHRONOUSLY, which a .catch cannot contain. */
+function engineWriteOnce_(url, what) {
+  try {
+    boundedFetch_(url, ENGINE_CEILING_MS)
+      .catch(err => console.warn('[GC] ' + what + ' not confirmed by the engine (not re-sent):', err && err.message || err));
+  } catch (err) { console.warn('[GC] ' + what + ' not sent', err); }
+}
+/* @test-slice end */
 /* opts.staleFallback — if the engine cannot be REACHED, serve the saved copy of cacheKey rather
    than throwing. Opt-in per call site, and only for the keys cacheKeyMayServeStale allows.
 
@@ -5859,15 +5893,12 @@ async function loadReceivedRecent() {
 
 // Dismiss = "this is not a mistake." Shared, because it is a judgement call, and re-asking the next
 // person is exactly the nagging that gets a review list ignored.
-// Push one dismissal to the shared store, best-effort. The try/catch is NOT belt-and-braces: fetch
-// here can throw SYNCHRONOUSLY, so a bare `.catch()` does not contain it — that only catches a
-// rejected promise. gx-dev.js blocks undeclared writes by throwing on the spot, and the first build
-// of this lost the re-render to exactly that: the dismissal saved locally, the row stayed on screen,
-// and the only cure was clicking again on something already done. Anything that patches fetch (an
-// extension, a CSP failure) can do the same in production.
+// Push one dismissal to the shared store, best-effort. engineWriteOnce_ contains a SYNCHRONOUS throw
+// from gx-dev.js (or anything else that patches fetch) — the first build of this lost the re-render
+// to exactly that: the dismissal saved locally, the row stayed on screen, and the only cure was
+// clicking again on something already done.
 function dqShare_(key, by) {
-  try { const p = fetch(sharedStateQuery('shareddqok', { key, by })); if (p && p.catch) p.catch(() => {}); }
-  catch (err) { console.warn('[GC] dq dismissal not synced to shared state', err); }
+  engineWriteOnce_(sharedStateQuery('shareddqok', { key, by }), 'shareddqok');
 }
 function dqDismiss(e, key) {
   if (e) e.stopPropagation();
@@ -5955,7 +5986,7 @@ function resurrectHiddenGroup(e, gid) {
   if (e) e.stopPropagation();
   const keys = _hiddenGroupKeys[gid] || [];
   const obj = getKilledObj();
-  for (const key of keys) { delete obj[key]; fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); }
+  for (const key of keys) { delete obj[key]; engineWriteOnce_(sharedStateQuery('sharedunkill', { key }), 'sharedunkill'); }
   saveKilledSet(obj);
   renderFlags();
   renderInventory();
@@ -5967,8 +5998,8 @@ function retireHiddenGroup(e, gid) { // promote a Hidden group → Retire workli
   const r = getRetiredObj(), k = getKilledObj();
   for (const key of keys) {
     r[key] = { ts, by };
-    if (k[key]) { delete k[key]; fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); }
-    fetch(sharedStateQuery('sharedretire', { key, ts, by })).catch(() => {});
+    if (k[key]) { delete k[key]; engineWriteOnce_(sharedStateQuery('sharedunkill', { key }), 'sharedunkill'); }
+    engineWriteOnce_(sharedStateQuery('sharedretire', { key, ts, by }), 'sharedretire');
   }
   saveRetiredSet(r); saveKilledSet(k);
   renderFlags(); renderInventory();
@@ -5984,8 +6015,8 @@ function unretireGroup(e, gid) {
   for (const key of keys) {
     delete r[key];
     if (!f[key]) f[key] = { ts: Date.now(), by }; // land in Flagged for review
-    fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {});
-    fetch(sharedStateQuery('sharedflag', { key, by })).catch(() => {}); // toggle → adds (item wasn't flagged)
+    engineWriteOnce_(sharedStateQuery('sharedunretire', { key }), 'sharedunretire');
+    engineWriteOnce_(sharedStateQuery('sharedflag', { key, by }), 'sharedflag'); // toggle → adds (item wasn't flagged)
   }
   saveRetiredSet(r); saveFlaggedObj(f);
   renderFlags();
@@ -6034,9 +6065,8 @@ function sharedStateQuery(action, extra = {}) {
 async function syncSharedState() {
   if (isUnconfigured()) return;
   try {
-    const res = await fetch(sharedStateQuery('getstate'));
-    if (!res.ok) return;
-    const data = await res.json();
+    // A read, so it takes the bounded, retried read path like every other engine read.
+    const data = await engineGet(state.betaEnabled ? { action: 'getstate', beta: '1' } : { action: 'getstate' });
     let changed = false;
     if (data.killed) {
       const prev = localStorage.getItem(LS.KILLED);
@@ -6097,7 +6127,7 @@ function killItem(e, key) {
   const ts = Date.now(), by = _killerName();
   obj[key] = { ts, by };
   saveKilledSet(obj);
-  fetch(sharedStateQuery('sharedkill', { key, ts, by })).catch(() => {});
+  engineWriteOnce_(sharedStateQuery('sharedkill', { key, ts, by }), 'sharedkill');
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }
@@ -6106,7 +6136,7 @@ function resurrectItem(e, key) {
   const obj = getKilledObj();
   delete obj[key];
   saveKilledSet(obj);
-  fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {});
+  engineWriteOnce_(sharedStateQuery('sharedunkill', { key }), 'sharedunkill');
   renderFlags();
 }
 // ── Retire = a stronger Hide: removes from inventory AND queues for manual retirement in Dutchie ──
@@ -6116,7 +6146,7 @@ function isRetired(retiredObj, key, product) {
   if (!(key in retiredObj)) return false;
   const at = killedTs(retiredObj[key]); // auto-un-retire if it comes back in stock after the retire date
   if (at > 0 && product && product.qty > 0 && product.lastMod && new Date(product.lastMod).getTime() > at) {
-    delete retiredObj[key]; saveRetiredSet(retiredObj); fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {}); return false;
+    delete retiredObj[key]; saveRetiredSet(retiredObj); engineWriteOnce_(sharedStateQuery('sharedunretire', { key }), 'sharedunretire'); return false;
   }
   return true;
 }
@@ -6124,15 +6154,15 @@ function retireItem(e, key) {
   if (e) e.stopPropagation();
   const ts = Date.now(), by = _killerName();
   const r = getRetiredObj(); r[key] = { ts, by }; saveRetiredSet(r);
-  const k = getKilledObj(); if (k[key]) { delete k[key]; saveKilledSet(k); fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); } // promote Hidden → Retire
-  fetch(sharedStateQuery('sharedretire', { key, ts, by })).catch(() => {});
+  const k = getKilledObj(); if (k[key]) { delete k[key]; saveKilledSet(k); engineWriteOnce_(sharedStateQuery('sharedunkill', { key }), 'sharedunkill'); } // promote Hidden → Retire
+  engineWriteOnce_(sharedStateQuery('sharedretire', { key, ts, by }), 'sharedretire');
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }
 function unretireItem(e, key) {
   if (e) e.stopPropagation();
   const r = getRetiredObj(); delete r[key]; saveRetiredSet(r);
-  fetch(sharedStateQuery('sharedunretire', { key })).catch(() => {});
+  engineWriteOnce_(sharedStateQuery('sharedunretire', { key }), 'sharedunretire');
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }
@@ -6144,8 +6174,8 @@ function retireGroup(event, gKey) {
   for (const p of items) {
     const key = flagKey(p);
     r[key] = { ts, by };
-    if (k[key]) { delete k[key]; fetch(sharedStateQuery('sharedunkill', { key })).catch(() => {}); }
-    fetch(sharedStateQuery('sharedretire', { key, ts, by })).catch(() => {});
+    if (k[key]) { delete k[key]; engineWriteOnce_(sharedStateQuery('sharedunkill', { key }), 'sharedunkill'); }
+    engineWriteOnce_(sharedStateQuery('sharedretire', { key, ts, by }), 'sharedretire');
   }
   saveRetiredSet(r); saveKilledSet(k);
   renderInventory();
@@ -6156,7 +6186,7 @@ function toggleFlag(e, key) {
   const o = getFlaggedObj();
   if (o[key]) delete o[key]; else o[key] = { ts: Date.now(), by: _killerName() };
   saveFlaggedObj(o);
-  fetch(sharedStateQuery('sharedflag', { key, by: _killerName() })).catch(() => {});
+  engineWriteOnce_(sharedStateQuery('sharedflag', { key, by: _killerName() }), 'sharedflag');
   renderInventory();
   if (state.tab === 'flags') renderFlags();
 }
@@ -8683,9 +8713,8 @@ function upcMapSave(code, name) {
      looks failed may already have run; retrying it re-runs it. Leave this a single bare
      attempt unless someone makes setupcentry idempotent (it overwrites one UPC key, so it
      very nearly is — but "very nearly" is not a thing to retry on). The same rule is why
-     gx-client's postJSON defaults to zero retries. */
-  fetch(proxyUrl({ action: 'setupcentry', upc: code, name }))
-    .catch(() => {});
+     gx-client's postJSON defaults to zero retries. engineWriteOnce_ bounds it and never re-sends. */
+  engineWriteOnce_(proxyUrl({ action: 'setupcentry', upc: code, name }), 'setupcentry');
 }
 
 function lookupScanCode(code) {
@@ -9024,7 +9053,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.063';
+const APP_VERSION = 'v3.064';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -9919,8 +9948,9 @@ function updatePriceTagsBadge() {
      badge to whether the CURRENT Inventory user holds a pricecards grant, and many do not, so it
      would blank for a reason unrelated to the queue.
      THIS SWAP GATES THEIR ROLLOUT: they will not enforce reads while this badge would break. */
-  fetch(PRICETAGS_ENGINE + '?action=queueCount', { cache: 'no-store' })
-    .then(r => r.json())
+  // 20s is gx-client's GET_TIMEOUT. Not retried: the 30s poll is its retry.
+  boundedFetch_(PRICETAGS_ENGINE + '?action=queueCount', 20000, { cache: 'no-store' })
+    .then(r => JSON.parse(r.text))
     .then(d => {
       const n = (d && d.ok && typeof d.count === 'number') ? d.count : 0;
       badge.textContent = n;
@@ -11124,7 +11154,7 @@ function killGroup(event, gKey) {
   for (const p of items) {
     const key = flagKey(p);
     obj[key] = { ts, by };
-    fetch(sharedStateQuery('sharedkill', { key, ts, by })).catch(() => {});
+    engineWriteOnce_(sharedStateQuery('sharedkill', { key, ts, by }), 'sharedkill');
   }
   saveKilledSet(obj);
   renderInventory();
@@ -11140,7 +11170,7 @@ function flagGroup(event, gKey) {
   for (const p of items) {
     const key = flagKey(p);
     if (allFlagged) delete o[key]; else o[key] = { ts: Date.now(), by };
-    fetch(sharedStateQuery('sharedflag', { key, by })).catch(() => {});
+    engineWriteOnce_(sharedStateQuery('sharedflag', { key, by }), 'sharedflag');
   }
   saveFlaggedObj(o);
   renderInventory();
