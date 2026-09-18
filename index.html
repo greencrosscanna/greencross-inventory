@@ -2424,6 +2424,9 @@ const _ENGINE = (typeof GXClient === 'function')
 
 /* THE CEILING IS NOT OPTIONAL, AND IT IS THE PART THAT ALMOST GOT MISSED.
  *
+ * (Written before 2026-09-03. getJSON now aborts each attempt — at 20s unless told otherwise, which
+ * is why engineGet passes its ceiling down as timeoutMs. The rest is history.)
+ *
  * gx-client's getJSON has no per-attempt timeout and no AbortController — its TIMEOUT and
  * LAST_TIMEOUT belong to jsonp(), not to it. So retrying through it does not merely fail to
  * help against a hung request, it MULTIPLIES it: one unbounded fetch becomes three in series.
@@ -2448,6 +2451,7 @@ const _ENGINE = (typeof GXClient === 'function')
  * sits above a legitimately slow answer under today's conditions and below infinity. If GX Core's
  * latency is brought back under control this should come down; leaving it at 45s forever means a
  * genuinely hung call holds a spinner for 45 seconds. */
+/* @test-slice engineGet — executed by tests/slow_engine_read_test.js */
 const ENGINE_CEILING_MS = 45000;
 
 async function engineGet(params = {}, ceilingMs = ENGINE_CEILING_MS) {
@@ -2460,7 +2464,12 @@ async function engineGet(params = {}, ceilingMs = ENGINE_CEILING_MS) {
      answer stayed a guess. The action is in hand right here; putting it in the message costs
      nothing and makes the next report self-diagnosing. */
   const label = 'Engine request' + (action ? ' (' + action + ')' : '');
-  if (_ENGINE) return withTimeout(_ENGINE.getJSON(action, p), ceilingMs, label);
+  /* timeoutMs: ceilingMs IS THE FIX FOR A SILENT REGRESSION (v3.065). gx-client's getJSON gained a
+     20s PER-ATTEMPT abort on 2026-09-03 — the same day this ceiling was raised to 45s for a 43s
+     answer. Nothing passed the ceiling down, so every attempt was killed at 20s and re-sent: a call
+     that needs 21s+ could never succeed, and each abort re-ran the work on the server. An attempt
+     may now use the whole budget; a fast bounce (the Drive-HTML miss) still retries inside it. */
+  if (_ENGINE) return withTimeout(_ENGINE.getJSON(action, p, { timeoutMs: ceilingMs }), ceilingMs, label);
 
   /* gx-client.js is a remote <script>. If it failed to load, one plain attempt still beats
      nothing — this path is the OLD behavior, so it is a degradation, never an upgrade. */
@@ -2475,6 +2484,7 @@ function withTimeout(promise, ms, label = 'Request') {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
+/* @test-slice end */
 
 /* @test-slice boundedFetch
    EVERY OTHER fetch IN THIS FILE GOES THROUGH HERE, so none of them can wait forever.
@@ -9053,7 +9063,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.064';
+const APP_VERSION = 'v3.065';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
