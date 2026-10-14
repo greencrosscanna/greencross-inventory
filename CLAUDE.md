@@ -15,27 +15,21 @@ and forwards bug reports to it).
 | backend | `dutchie_proxy.gs` at the repo root, deployed with clasp (`.clasp.json`) |
 | version | the **`APP_VERSION = 'vN.NN'` constant** in `index.html` — no `?v=` cache-buster here (there's no external `.js` to hang one on); `deploy.sh` falls back to reading this constant |
 | run | `python3 serve.py` → <http://localhost:3001> (`--lan` to bind 0.0.0.0 for a kiosk/phone) |
-| ship | commit → push (Pages) → `./deploy.sh` records the release to `version_history` |
-| tests | `tests/*_test.js` — **6 suites**, run by the pre-push hook via `gx-preflight.sh`; a failure blocks the push. Run them yourself with `ls tests/*_test.js \| xargs -n1 node`. Still verify against the live app — see below |
+| ship | commit → push (Pages) → `./deploy.sh` records the release to GX Core's `app_versions` |
+| tests | `tests/*_test.js`, run by the pre-push hook via `gx-preflight.sh`; a failure blocks the push. Run one with `node tests/<name>_test.js`. Still verify against the live app — see below |
 
 The dev server talks to the **live** backend; `gx-dev.js` paints a banner saying so and **blocks writes
 until you arm them**. `gx-preflight.sh` is installed as a **pre-push hook** and refuses to ship dev
 leftovers — fixtures on, writes armed, localhost URLs, or anything tagged `@devonly`.
 
-*Corrected 2026-09-03: the tests row said "no automated suite in this repo" while six suites were
-already running behind the pre-push hook. A doc that tells a session there is nothing to run invites
-skipping a gate that works — the same correction Sales made to its own CLAUDE.md on 2026-08-25, for
-the same reason.*
-
-**A green suite is not a verified app here, and today proved it twice.** Every suite in this repo
-reads the source as TEXT — they assert that a call site is bounded, that a helper exists, that a
-pattern is absent. None of them runs the page. On 2026-09-03 the Sales session shipped a fix with a
-green suite that was aimed at the wrong function, and the same day this app's own live screen sat on
-"Loading inventory…" for over a minute while every test passed. **Open the app signed in before
+**A green suite is not a verified app here.** Every suite in this repo reads the source as TEXT — they
+assert that a call site is bounded, that a helper exists, that a pattern is absent. None of them runs
+the page, so a screen stuck on "Loading inventory…" passes every test. **Open the app signed in before
 calling anything done** — `python3 serve.py`, or the deployed page with a `?cb=` cache-buster.
 
-**Sub-apps:** Price Cards and SPIFF embed here as tabs, and their bug reports bucket to **this** app
-(`app=inventory`, `tab=pricecards` / `tab=spiff`) rather than to their own streams.
+**Sub-apps:** Price Cards and SPIFF embed here as tabs. A bug filed from the Price Cards tab goes to
+`app=pricecards, tab=pricetags` (`TAB_TO_APP` in `dutchie_proxy.gs`); everything else, the SPIFF tab
+included, files as `app=inventory`. Add a sub-app to that map when it gets its own key.
 
 **Shared files** (`deploy.sh`, `serve.py`, `gx-preflight.sh`, `.claude/gx-brain-notes.sh`) come from
 **gx-theme** via `./gx-sync.sh`, filled from `.gx_app`. Edit them **there**, not here, then re-sync — a
@@ -51,8 +45,8 @@ Coordination is now the **central brain-notes inbox** in GX Core (this repo's `B
 writes note-backs to any app (`add_note`). The SessionStart hook surfaces the same inbox.
 
 App-specific facts for the sync check: app key **`inventory`** in GX Core; integrated via bug forwarding
-(`gxIngestBug` + `tab`), changelog read from `version_history`, and auto-record on deploy (central
-`deploy_version` endpoint + shared untracked `.gx_deploy_secret`); binds the `GXCore` library. **The pinned version is deliberately not written here** — ask the running app (`?action=libversion`) or run `./gxpins.sh --live` from the hub. This line said **v220 (verified live)** until 2026-08-29, when it had been v241 for hours; a doc that asserts a version it cannot re-check is worse than one that points at the check.
+(`gxIngestBug` + `tab`), changelog read from the `version_history` route (tab `app_versions`), and auto-record on deploy (central
+`deploy_version` endpoint + shared untracked `.gx_deploy_secret`); binds the `GXCore` library. **The pinned version is deliberately not written here** — ask the running app (`?action=libversion`) or run `./gxpins.sh --live` from the hub; a written version goes stale.
 
 **What to build next — `/gxwhatsnext`:** run `/gxwhatsnext` in this chat to pull this app's next prioritized work — the Command Center's dependency-ordered build sequence, filtered to this app — so you can build here without switching to the CC. It reads the app key above automatically.
 
@@ -62,15 +56,8 @@ App-specific facts for the sync check: app key **`inventory`** in GX Core; integ
 ## The HUB is core-admin's — send a note, don't edit (rule from Sky, 2026-09-02 · applied here 2026-09-06)
 
 **Never edit `greencross-command-center` or `greencross-gx-theme` from this chat.** Both belong to
-core-admin. It is here because it was broken, not because it was theorized.
-
-On 2026-09-02 a spoke session made a small, correct, tested fix to GX Core and put it on a branch for
-Sky to merge, because Core library cuts are PR-gated. **Another Claude session had the same repo open
-at the same time.** These repos are Dropbox-synced, so the two sessions shared one working tree and
-one HEAD: the branch was switched out from under the first session, its commit landed on `main`
-instead, and the other session pushed `main` and shipped it. The change went out as library v284 with
-no PR and no review. The code was fine — that is the point. Nothing failed, nothing warned, and the
-gate on the highest-stakes repo in the suite simply was not there that time.
+core-admin. It is here because it was broken: two sessions sharing one Dropbox checkout once shipped an
+unreviewed GX Core change as library v284, with nothing failing and nothing warning.
 
 Two sessions cannot share a git checkout. Neither can see the other, `git checkout -b` is not atomic
 against a second process, and the loser finds out afterwards by reading the log.
