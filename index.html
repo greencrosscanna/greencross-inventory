@@ -4832,7 +4832,13 @@ const STATUS_LABELS   = { oos: 'OOS', critical: 'Critical', low: 'Low', watch: '
 
 function inventoryNormName(name) {
   let s = String(name || '').trim();
+  // Accessories are named "$5.00 | Glass Bowl 14mm | CODE": the price is not the product. Without this
+  // every $5 item matched every other $5 item and borrowed its sales.
+  s = s.replace(/^\$\s*\d+(?:\.\d+)?\s*\|\s*/, '');
+  // "Blue Dream | Shake" is not "Blue Dream | Oregon Roots" flower — keep the form when it is shake/trim.
+  const form = /\|\s*(shake|trim|smalls)\b/i.exec(s);
   if (s.includes(' | ')) s = s.slice(0, s.indexOf(' | ')).trim();
+  if (form) s += ' ' + form[1].toLowerCase();
   return s
     .toLowerCase()
     .replace(/\b(\d+)\s*pack\b/g, '$1pk')
@@ -4840,6 +4846,31 @@ function inventoryNormName(name) {
     .replace(/\s*\d+\s*(packs|pack|pk|ct|count|pieces|piece|pc|pcs)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// The loose name key drops pack size and everything after " | ", so two brands' products can share
+// one ("Sour Apple Sativa Gummies 10pk" from Green Cross and "Sour Apple Sativa Gummies 10pc | 100mg"
+// from Wyld both become "sour apple sativa gummies"). Every loose-name match must also agree on brand,
+// or one brand inherits the other's sales. A blank brand on either side can't disagree, so it passes.
+function inventoryBrandKey(brand) {
+  return String(brand || '').trim().toLowerCase();
+}
+function sameBrandOrUnknown(a, b) {
+  const x = inventoryBrandKey(a), y = inventoryBrandKey(b);
+  return !x || !y || x === y;
+}
+// "Lime Seltzer | 100mg" and "Lime Seltzer | 25mg" share a loose name but are different products.
+// Only a dose on BOTH sides can disagree; a name with no dose still matches its dosed twin.
+function inventoryDoseMg(name) {
+  const m = /(\d+(?:\.\d+)?)\s*mg\b/i.exec(String(name || ''));
+  return m ? Number(m[1]) : null;
+}
+function sameDoseOrUnknown(a, b) {
+  const x = inventoryDoseMg(a), y = inventoryDoseMg(b);
+  return x == null || y == null || x === y;
+}
+function inventoryNormBrandKey(name, brand) {
+  return inventoryBrandKey(brand) + '::' + inventoryNormName(name);
 }
 
 function requiresStrictVelocityMatch(p) {
@@ -4856,14 +4887,17 @@ function velocityEntryForProduct(p, storeName, velMap) {
     const bySku = Object.values(storeVel).find(v => {
       const vSku = String(v.sku || '').trim();
       const vDigits = vSku.replace(/[^0-9]/g, '');
-      return vSku && (vSku === sku || (skuDigits && vDigits === skuDigits));
+      if (!vSku) return false;
+      if (vSku === sku) return true;
+      return !!skuDigits && vDigits === skuDigits && sameBrandOrUnknown(p.brand, v.brand);
     });
     if (bySku) return bySku;
   }
   if (requiresStrictVelocityMatch(p)) return {};
   const needle = inventoryNormName(p.name);
   if (needle) {
-    const byName = Object.entries(storeVel).find(([name]) => inventoryNormName(name) === needle);
+    const byName = Object.entries(storeVel).find(([name, v]) =>
+      inventoryNormName(name) === needle && sameBrandOrUnknown(p.brand, v && v.brand) && sameDoseOrUnknown(p.name, name));
     if (byName) return byName[1];
   }
   return {};
@@ -5201,7 +5235,7 @@ async function loadInventoryData() {
     for (const p of allProducts) {
       if (p.sku && p.name) {
         nameToSku[p.name] = p.sku;
-        nameToSkuNorm[inventoryNormName(p.name)] = p.sku;
+        nameToSkuNorm[inventoryNormBrandKey(p.name, p.brand)] = p.sku;
       }
     }
     for (const store of targetStores) {
@@ -5209,11 +5243,11 @@ async function loadInventoryData() {
       const storeProducts   = allProducts.filter(p => p.store === store);
       const inInventory     = new Set(storeProducts.map(p => p.name));
       const inInventorySkus = new Set(storeProducts.filter(p => p.sku).map(p => p.sku));
-      const inInventoryNorm = new Set(storeProducts.map(p => inventoryNormName(p.name)));
       for (const [name, vel] of Object.entries(storeVel)) {
         if (inInventory.has(name)) continue;                              // exact name match
         if (vel.sku && inInventorySkus.has(vel.sku)) continue;           // SKU match (most reliable)
-        if (inInventoryNorm.has(inventoryNormName(name))) continue;      // normalized name (handles 10pack vs 10pk, etc.)
+        const velNorm = inventoryNormName(name);                          // normalized name (handles 10pack vs 10pk, etc.) — same brand only
+        if (storeProducts.some(p => inventoryNormName(p.name) === velNorm && sameBrandOrUnknown(p.brand, vel.brand) && sameDoseOrUnknown(p.name, name))) continue;
         // Surface ANY product with sales history at this store that's now out of stock —
         // not just last-28-day sellers. A product that sold (even 1 unit) and is now empty
         // is a real OOS at this location; gating on vel28 hid slower movers that sold
@@ -5226,7 +5260,7 @@ async function loadInventoryData() {
         allProducts.push({
           name,
           // Best-effort SKU: exact name → normalized name → velocity record → none
-          sku:       nameToSku[name] || nameToSkuNorm[inventoryNormName(name)] || vel.sku || '',
+          sku:       nameToSku[name] || nameToSkuNorm[inventoryNormBrandKey(name, vel.brand)] || vel.sku || '',
           category:  vel.category || 'Other',
           brand:     vel.brand    || '',
           vendor:    '',
@@ -5268,12 +5302,11 @@ async function loadInventoryData() {
     for (const p of allProducts) {
       if (!(p.unitCost > 0)) continue;
       if (p.sku) costBySku[p.sku] = p.unitCost;
-      const norm = inventoryNormName(p.name);
-      if (norm) costByName[norm] = p.unitCost;
+      if (inventoryNormName(p.name)) costByName[inventoryNormBrandKey(p.name, p.brand)] = p.unitCost;
     }
     for (const p of allProducts) {
       if (!(p.qty > 0) || p.value > 0) continue;
-      const fallbackCost = (p.sku && costBySku[p.sku]) || costByName[inventoryNormName(p.name)] || 0;
+      const fallbackCost = (p.sku && costBySku[p.sku]) || costByName[inventoryNormBrandKey(p.name, p.brand)] || 0;
       if (fallbackCost > 0) {
         p.unitCost = fallbackCost;
         p.value = Math.round(p.qty * fallbackCost * 100) / 100;
@@ -9063,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.065';
+const APP_VERSION = 'v3.066';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
