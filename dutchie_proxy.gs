@@ -4634,7 +4634,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v3'; // v3: .supply sales from GX Core velocity
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v4'; // v4: FATTY sales summed across product ids
 
 function _getHarvestMap() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
@@ -4729,21 +4729,28 @@ function buildFattyWeekly_(skuVintage) {
   return out;
 }
 
-// FATTY units sold per (store, product) over the trailing 7/14/21/28 days, from GX Core's shared velocity
-// summary (getVelocityMap -> GXCore.getVelocity, ~3s). The local Vel Cache sheet is no longer synced, so it
-// must not be read here. Shape: lineQ[store][productName] = [qty7, qty14, qty21, qty28]. Raw inputs only;
-// the supply math lives in index.html (computeFattySupply) where tests can run it.
+// FATTY units sold per (store, product name) over the trailing 7/14/21/28 days, from GX Core's shared
+// velocity summary (GXCore.getVelocity, ~3s). The local Vel Cache sheet is no longer synced, so it must not
+// be read here. Read the rows DIRECTLY and SUM them: the summary is one row per store × product_ID, and
+// FATTY has many product ids sharing one name (Bend especially). getVelocityMap keys by name and keeps only
+// the last id, which showed Bend selling ~124 in 4 weeks when Dutchie says 503 (2026-11-16).
+// Shape: lineQ[store][productName] = [qty7, qty14, qty21, qty28]. Math lives in index.html.
 function readFattySales_() {
   const out = { source: 'gxcore-velocity', lineQ: {} };
   try {
-    const vm = getVelocityMap() || {};
-    Object.keys(vm).forEach(function (store) {
-      Object.keys(vm[store] || {}).forEach(function (name) {
-        if (!/fatty/i.test(name)) return;
-        const e = vm[store][name];
-        if (!(e.qty28 > 0)) return;
-        (out.lineQ[store] || (out.lineQ[store] = {}))[name] = [e.qty7 || 0, e.qty14 || 0, e.qty21 || 0, e.qty28 || 0];
-      });
+    const slugToName = {};
+    (GXCore.getStores() || []).forEach(function (s) {
+      const id = String(s.store_id || '').trim().toLowerCase(), nm = String(s.dutchie_name || '').trim();
+      if (id && nm) slugToName[id] = nm;
+    });
+    (GXCore.getVelocity('') || []).forEach(function (r) {
+      const name = String(r.product_name || '').trim();
+      if (!/fatty/i.test(name)) return;
+      const store = slugToName[String(r.store || '').trim().toLowerCase()];
+      if (!store || !(Number(r.qty28) > 0)) return;
+      const st = out.lineQ[store] || (out.lineQ[store] = {});
+      const q = st[name] || (st[name] = [0, 0, 0, 0]);
+      q[0] += Number(r.qty7) || 0; q[1] += Number(r.qty14) || 0; q[2] += Number(r.qty21) || 0; q[3] += Number(r.qty28) || 0;
     });
   } catch (e) { _logGasError('readFattySales_', e && e.message); }
   return out;
@@ -4800,7 +4807,9 @@ function buildFattyTracker_(force) {
   };
   delete weekly.dailyTotals;
   const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, supply: supply, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
-  try { scriptCache.put(FATTY_TRACKER_CACHE, JSON.stringify(result), 60 * 60); } catch (e) {}
+  // 6h (CacheService max). A cold build takes ~90s, past the app's 45s timeout, so a 1h cache left the first
+  // visitor of every hour on "Couldn't reach". Inputs move slowly: snapshots nightly, velocity every 6h.
+  try { scriptCache.put(FATTY_TRACKER_CACHE, JSON.stringify(result), 6 * 60 * 60); } catch (e) {}
   return result;
 }
 
