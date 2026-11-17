@@ -4634,7 +4634,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v4'; // v4: FATTY sales summed across product ids
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v5'; // v5: names Core's unnamed sales rows
 
 function _getHarvestMap() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
@@ -4735,8 +4735,14 @@ function buildFattyWeekly_(skuVintage) {
 // FATTY has many product ids sharing one name (Bend especially). getVelocityMap keys by name and keeps only
 // the last id, which showed Bend selling ~124 in 4 weeks when Dutchie says 503 (2026-11-16).
 // Shape: lineQ[store][productName] = [qty7, qty14, qty21, qty28]. Math lives in index.html.
-function readFattySales_() {
-  const out = { source: 'gxcore-velocity', lineQ: {} };
+// NAMES: Core writes product_name '' for a product missing from its /products dict (its "Product #id"
+// gap), so those rows never matched /fatty/ — at Bend that hid Divine Banana, Pineapple Bigbud and Cali
+// Burger, ~3/4 of Bend's FATTY sales (2026-11-16). The row still carries product_id, so the name is
+// resolved from idNames (this run's live inventory) and then this app's persisted ProductCatalog.
+function readFattySales_(idNames) {
+  const out = { source: 'gxcore-velocity', lineQ: {}, namedByUs: 0 };
+  idNames = idNames || {};
+  var catalog = null;
   try {
     const slugToName = {};
     (GXCore.getStores() || []).forEach(function (s) {
@@ -4744,7 +4750,17 @@ function readFattySales_() {
       if (id && nm) slugToName[id] = nm;
     });
     (GXCore.getVelocity('') || []).forEach(function (r) {
-      const name = String(r.product_name || '').trim();
+      var name = String(r.product_name || '').trim();
+      if (!name || name === 'Unknown' || /^Product #/i.test(name)) {
+        const pid = String(r.product_id || '').trim();
+        if (!pid) return;
+        if (idNames[pid]) name = idNames[pid];
+        else {
+          if (!catalog) catalog = _loadPersistedCatalog_();
+          name = String((catalog[pid] || {}).name || '').trim();
+        }
+        if (/fatty/i.test(name)) out.namedByUs++;
+      }
       if (!/fatty/i.test(name)) return;
       const store = slugToName[String(r.store || '').trim().toLowerCase()];
       if (!store || !(Number(r.qty28) > 0)) return;
@@ -4768,6 +4784,7 @@ function buildFattyTracker_(force) {
   const current = {};               // store -> { vintage -> qty }
   const vintagesSet = {};
   const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
+  const idNames = {};               // Dutchie productId -> FATTY product name, from live inventory
   var unresolved = 0;
   stores.forEach(function (store, i) {
     var items = [];
@@ -4779,9 +4796,10 @@ function buildFattyTracker_(force) {
     const hmap = resolveHarvestDates_(store, batchNames);
     current[store] = {};
     fatties.forEach(function (it) {
+      const lname = String(it.productName || it.name || '').trim();
+      if (it.productId != null && it.productId !== '') idNames[String(it.productId)] = lname;  // names Core's unnamed sales rows
       const qty = Number(it.quantityAvailable || it.quantity || 0) || 0;
       if (qty <= 0) return;
-      const lname = String(it.productName || it.name || '').trim();
       const lk = store + '|' + lname;
       const ln = lines[lk] || (lines[lk] = { store: store, name: lname, qty: 0, cost: 0 });
       ln.qty += qty;
@@ -4802,7 +4820,7 @@ function buildFattyTracker_(force) {
   const supply = {
     today: todayPT_(),
     lines: Object.keys(lines).map(function (k) { const l = lines[k]; return { store: l.store, name: l.name, qty: l.qty, cost: Math.round(l.cost * 100) / 100 }; }),
-    sales: readFattySales_(),
+    sales: readFattySales_(idNames),
     snapDaily: weekly.dailyTotals || {}
   };
   delete weekly.dailyTotals;
