@@ -9096,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.071';
+const APP_VERSION = 'v3.072';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10308,6 +10308,23 @@ function fattySeriesFor(sel, d, vints) {
       const vals = {}; vints.forEach(v => vals[v] = r.vals[v] || 0);
       rows.push({ t: r.t, vals: vals, total: vints.reduce((a, v) => a + vals[v], 0) });
     });
+    // The seed is hand-typed and stops on a fixed date. After it, continue with the REAL weekly snapshot
+    // summed across every store — without this the chart jumped straight from the seed's last week to "now"
+    // with nothing in between (Aug 14 → Nov 16 was blank). The two sources count differently (the snapshot
+    // only places SKUs whose harvest year resolves from today's stock), so the first live week is a SEAM:
+    // its step from the seed is a change of source, not joints made or sold, and is excluded from both.
+    const lastSeedT = rows.length ? rows[rows.length - 1].t : -Infinity;
+    const weeks = (d.weekly && d.weekly.weeks) || [];
+    const allBy = (d.weekly && d.weekly.byStore) || {};
+    let first = true;
+    weeks.forEach(wk => {
+      const t = parse(wk);
+      if (t <= lastSeedT) return;
+      const vals = {};
+      vints.forEach(v => vals[v] = stores.reduce((a, s) => a + (((allBy[s] || {})[wk] || {})[v] || 0), 0));
+      rows.push({ t: t, vals: vals, total: vints.reduce((a, v) => a + vals[v], 0), seam: first && rows.length > 0 });
+      first = false;
+    });
   } else {
     const weeks = (d.weekly && d.weekly.weeks) || [];
     const byStore = (d.weekly && d.weekly.byStore && d.weekly.byStore[sel]) || {};
@@ -10321,8 +10338,19 @@ function fattySeriesFor(sel, d, vints) {
     ? stores.reduce((a, s) => a + (((d.current || {})[s] || {})[v] || 0), 0)
     : (((d.current || {})[sel] || {})[v] || 0));
   const nowRow = { t: new Date(todayStr() + 'T00:00:00Z').getTime(), vals: nowVals, total: vints.reduce((a, v) => a + nowVals[v], 0) };
-  if (rows.length && (nowRow.t - rows[rows.length - 1].t) <= 4 * FATTY_DAY) rows[rows.length - 1] = nowRow;
-  else rows.push(nowRow);
+  // "Now" is counted per package (exact harvest year); the weekly history maps whole SKUs to one year. Swapping
+  // sources between two points moves joints between years on paper, which read as hundreds of joints "made"
+  // and "sold" in the latest week. So "now" is DISPLAYED, but week-over-week math compares against `cmp` —
+  // the same-source weekly row it replaced — and a "now" with no weekly row this week is a seam.
+  const lastRow = rows[rows.length - 1];
+  if (lastRow && (nowRow.t - lastRow.t) <= 4 * FATTY_DAY) {
+    nowRow.cmp = lastRow.vals;
+    nowRow.seam = !!lastRow.seam;
+    rows[rows.length - 1] = nowRow;
+  } else {
+    nowRow.seam = rows.length > 0;
+    rows.push(nowRow);
+  }
   // Production ("new joints added") per week = the week-over-week INCREASE per vintage — the mirror of the
   // sell-through decline calc below. On-hand nets production against sales, so neither the total nor its
   // delta shows what was actually made; the rise inside a vintage does. At All stores, transfers between
@@ -10336,9 +10364,12 @@ function fattySeriesFor(sel, d, vints) {
     const pr = i > 0 ? rows[i - 1] : null;
     const gapWk = pr ? Math.max(1, (r.t - pr.t) / (7 * FATTY_DAY)) : 1;
     const add = {};
-    vints.forEach(v => add[v] = pr ? Math.max(0, (r.vals[v] || 0) - (pr.vals[v] || 0)) / gapWk : 0);
+    const cur = r.cmp || r.vals;
+    vints.forEach(v => add[v] = pr && !r.seam ? Math.max(0, (cur[v] || 0) - (pr.vals[v] || 0)) / gapWk : 0);
     r.add = add;
     r.addTotal = vints.reduce((a, v) => a + add[v], 0);
+    // On-hand change vs the prior point; null across a seam (a change of source, not of stock).
+    r.step = pr && !r.seam ? vints.reduce((a, v) => a + (cur[v] || 0), 0) - pr.total : null;
   });
   return rows;
 }
@@ -10350,7 +10381,8 @@ function fattyVelocity(rows, v, win) {
   if (n < 1) return 0;
   let sum = 0;
   for (let i = rows.length - n; i < rows.length; i++) {
-    const decl = (rows[i - 1].vals[v] || 0) - (rows[i].vals[v] || 0);
+    if (rows[i].seam) continue; // a change of data source, not a sale
+    const decl = (rows[i - 1].vals[v] || 0) - ((rows[i].cmp || rows[i].vals)[v] || 0);
     if (decl > 0) sum += decl;
   }
   return sum / n;
@@ -10420,7 +10452,7 @@ function fattyHoverMove(e) {
     document.getElementById('fattyTipTotal').textContent = (prod && p.addTotal > 0 ? '+' : '') + fattyFmt(prod ? p.addTotal : p.total);
     document.getElementById('fattyTipDelta').textContent = prod
       ? (p.addTotal > 0 ? 'new joints added per week' : 'nothing added')
-      : (p.prev != null ? ((p.total - p.prev >= 0 ? '+' : '−') + fattyFmt(Math.abs(p.total - p.prev)) + ' vs prior week') : 'first week with data');
+      : (p.step != null ? ((p.step >= 0 ? '+' : '−') + fattyFmt(Math.abs(p.step)) + ' vs prior week') : 'counted a new way from here');
   }
 }
 function fattyHoverLeave() {
@@ -10585,7 +10617,7 @@ function renderFatty() {
   const fmt = fattyFmt;
   const rows = fattySeriesFor(sel, d, vints);
   const last = rows[rows.length - 1], prev = rows[rows.length - 2] || last;
-  const total = last.total, totalPrev = prev.total;
+  const total = last.total, totalPrev = total - (last.step || 0); // step: same-source change, 0 across a seam
   const burn = fattyBurn(rows, vints, WIN);
   const runWeeks = burn > 0 ? total / burn : Infinity;
   const wowChip = (delta, sz) => `<span style="font-size:${sz || 12}px;font-weight:600;white-space:nowrap;color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(delta))} wk</span>`;
@@ -10618,7 +10650,8 @@ function renderFatty() {
     </div>`;
 
   const tiles = vints.map((v, i) => {
-    const n = last.vals[v] || 0, p = prev.vals[v] || 0, vel = fattyVelocity(rows, v, WIN), addv = fattyAdded(rows, v, WIN);
+    // p is set so (n - p) is the SAME-SOURCE weekly change (cmp vs prior week), and 0 across a seam.
+    const n = last.vals[v] || 0, p = last.seam || last === prev ? n : n - (((last.cmp || last.vals)[v] || 0) - (prev.vals[v] || 0)), vel = fattyVelocity(rows, v, WIN), addv = fattyAdded(rows, v, WIN);
     const dim = iso && iso !== v;
     const share = total ? (n / total) * 100 : 0;
     const older = vints.slice(0, i).some(o => (last.vals[o] || 0) > 0);
@@ -10672,7 +10705,7 @@ function renderFatty() {
       return `<div class="fatty-scard" onclick="pickFattyStore('${s.replace(/'/g, "\\'")}')" style="background:rgba(255,255,255,.03);border:1px solid ${on ? col : 'var(--border)'};border-radius:10px;padding:11px 12px;cursor:pointer">
           <div style="font-size:12px;font-weight:600;color:${col}">${escapeHtml(storeDisplay(s))}</div>
           <div style="font-size:22px;font-weight:700;line-height:1.15;margin-top:3px;font-variant-numeric:tabular-nums">${fmt(cur.total)}</div>
-          <div style="font-size:11px;font-weight:600;color:${(cur.total - pr.total) >= 0 ? 'var(--green)' : 'var(--red)'}">${(cur.total - pr.total) >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(cur.total - pr.total))} wk</div>
+          <div style="font-size:11px;font-weight:600;color:${(cur.step || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${(cur.step || 0) >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(cur.step || 0))} wk</div>
           <svg viewBox="0 0 100 30" width="100%" height="30" style="display:block;margin-top:6px"><path d="M ${pts.join(' L ')}" fill="none" stroke="${col}" stroke-width="1.6"/><path d="M ${pts.join(' L ')} L 100,30 L 0,30 Z" fill="${col}" fill-opacity="0.14" stroke="none"/></svg>
           <div style="font-size:11px;color:var(--muted);margin-top:4px">${old ? 'oldest ' + old + ' · ' + fmt(cur.vals[old] || 0) : 'clear'}</div>
         </div>`;
@@ -10754,17 +10787,18 @@ function fattyChartSvg(rows, vints, range, mode, iso) {
     return `<text x="${x(p.t).toFixed(1)}" y="243" text-anchor="middle" font-size="9" fill="${isLast ? 'var(--green)' : 'var(--muted)'}">${isLast ? 'now' : fattyDateLabel(p.t)}</text>`;
   }).join('');
 
-  const maxDelta = Math.max(1, ...vis.slice(1).map((p, i) => Math.abs(p.total - vis[i].total)));
+  const maxDelta = Math.max(1, ...vis.slice(1).map(p => Math.abs(p.step || 0)));
   const barW = Math.max(3, Math.min(16, (plotW / Math.max(vis.length, 2)) * 0.55));
-  const bars = vis.slice(1).map((p, i) => {
-    const delta = p.total - vis[i].total, up = delta >= 0;
+  const bars = vis.slice(1).map(p => {
+    if (p.step == null) return '';
+    const delta = p.step, up = delta >= 0;
     const h = Math.max(1, (Math.abs(delta) / maxDelta) * 26), cx = x(p.t) - barW / 2;
     return `<rect x="${cx.toFixed(1)}" y="${(up ? 272 - h : 272).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${up ? 'var(--green)' : 'var(--red)'}" rx="1" style="transform-origin:${cx.toFixed(1)}px 272px;animation:fattyGrow .45s ease both"/>`;
   }).join('');
 
   _fattyGeo = { padL, mode, vints, pts: vis.map((p, i) => {
     const vy = {}; vints.forEach(v => vy[v] = y(p.vals[v] || 0));
-    return { xpx: x(p.t), ty: y(p.total), vy, vals: p.vals, total: p.total, add: p.add || {}, addTotal: p.addTotal || 0, aty: y(p.addTotal || 0), label: fattyDateLabel(p.t), isLast: i === vis.length - 1, prev: i > 0 ? vis[i - 1].total : null };
+    return { xpx: x(p.t), ty: y(p.total), vy, vals: p.vals, total: p.total, add: p.add || {}, addTotal: p.addTotal || 0, aty: y(p.addTotal || 0), label: fattyDateLabel(p.t), isLast: i === vis.length - 1, step: i > 0 ? p.step : null };
   }) };
 
   return `<svg viewBox="0 0 1000 320" width="100%" style="max-width:100%;height:auto;display:block" onmousemove="fattyHoverMove(event)" onmouseleave="fattyHoverLeave()" role="img" aria-label="${isProd ? 'New FATTY joints added per week by harvest vintage' : 'FATTY joints on hand by harvest vintage over time'}">
