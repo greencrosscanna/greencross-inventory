@@ -4677,7 +4677,10 @@ function _setHarvestMap(map) {
 // harvest date entered later still resolves on a future run).
 function resolveHarvestDates_(store, batchNames) {
   const map = _getHarvestMap();
-  const missing = batchNames.filter(function (b) { return b && !map[b]; });
+  // A cached date in the future is a typo someone may since have corrected in Dutchie — re-ask for it
+  // every build instead of trusting the permanent cache, or the fix never shows up here.
+  const thisYear = todayPT_().slice(0, 4);
+  const missing = batchNames.filter(function (b) { return b && (!map[b] || map[b].slice(0, 4) > thisYear); });
   if (missing.length) {
     const hdrs = { Authorization: dutchieAuth(store), Accept: 'application/json' };
     var found = false;
@@ -4692,7 +4695,7 @@ function resolveHarvestDates_(store, batchNames) {
           if (r.getResponseCode() === 200) {
             const arr = JSON.parse(r.getContentText());
             const hd = arr && arr[0] && arr[0].HarvestDate;
-            if (hd) { map[chunk[j]] = String(hd).slice(0, 10); found = true; }
+            if (hd && map[chunk[j]] !== String(hd).slice(0, 10)) { map[chunk[j]] = String(hd).slice(0, 10); found = true; }
           }
         } catch (e) {}
       });
