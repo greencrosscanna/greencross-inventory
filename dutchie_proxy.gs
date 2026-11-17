@@ -4634,7 +4634,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v5'; // v5: names Core's unnamed sales rows
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v6'; // v6: unnamed sales rows named per store only
 
 function _getHarvestMap() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
@@ -4737,12 +4737,14 @@ function buildFattyWeekly_(skuVintage) {
 // Shape: lineQ[store][productName] = [qty7, qty14, qty21, qty28]. Math lives in index.html.
 // NAMES: Core writes product_name '' for a product missing from its /products dict (its "Product #id"
 // gap), so those rows never matched /fatty/ — at Bend that hid Divine Banana, Pineapple Bigbud and Cali
-// Burger, ~3/4 of Bend's FATTY sales (2026-11-16). The row still carries product_id, so the name is
-// resolved from idNames (this run's live inventory) and then this app's persisted ProductCatalog.
+// Burger, ~3/4 of Bend's FATTY sales (2026-11-16). The row still carries product_id, so the name is taken
+// from idNames, keyed STORE|productId from this run's live inventory. Never match an id across stores and
+// never use the cross-store ProductCatalog here: product ids are not unique across stores, and doing
+// either credited Bend with Capri Skunk and Runtz Buttonz sales it never had (+22% chain-wide).
+// Unnamed rows that still can't be resolved are counted in unnamedQty28 rather than guessed.
 function readFattySales_(idNames) {
-  const out = { source: 'gxcore-velocity', lineQ: {}, namedByUs: 0 };
+  const out = { source: 'gxcore-velocity', lineQ: {}, namedByUs: 0, unnamedQty28: 0 };
   idNames = idNames || {};
-  var catalog = null;
   try {
     const slugToName = {};
     (GXCore.getStores() || []).forEach(function (s) {
@@ -4750,20 +4752,15 @@ function readFattySales_(idNames) {
       if (id && nm) slugToName[id] = nm;
     });
     (GXCore.getVelocity('') || []).forEach(function (r) {
+      const store = slugToName[String(r.store || '').trim().toLowerCase()];
+      if (!store || !(Number(r.qty28) > 0)) return;
       var name = String(r.product_name || '').trim();
       if (!name || name === 'Unknown' || /^Product #/i.test(name)) {
         const pid = String(r.product_id || '').trim();
-        if (!pid) return;
-        if (idNames[pid]) name = idNames[pid];
-        else {
-          if (!catalog) catalog = _loadPersistedCatalog_();
-          name = String((catalog[pid] || {}).name || '').trim();
-        }
-        if (/fatty/i.test(name)) out.namedByUs++;
+        name = (pid && idNames[store + '|' + pid]) || '';
+        if (name) out.namedByUs++; else { out.unnamedQty28 += Number(r.qty28) || 0; return; }
       }
       if (!/fatty/i.test(name)) return;
-      const store = slugToName[String(r.store || '').trim().toLowerCase()];
-      if (!store || !(Number(r.qty28) > 0)) return;
       const st = out.lineQ[store] || (out.lineQ[store] = {});
       const q = st[name] || (st[name] = [0, 0, 0, 0]);
       q[0] += Number(r.qty7) || 0; q[1] += Number(r.qty14) || 0; q[2] += Number(r.qty21) || 0; q[3] += Number(r.qty28) || 0;
@@ -4784,7 +4781,7 @@ function buildFattyTracker_(force) {
   const current = {};               // store -> { vintage -> qty }
   const vintagesSet = {};
   const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
-  const idNames = {};               // Dutchie productId -> FATTY product name, from live inventory
+  const idNames = {};               // 'Store|productId' -> FATTY product name, from live inventory (ids repeat across stores)
   var unresolved = 0;
   stores.forEach(function (store, i) {
     var items = [];
@@ -4797,7 +4794,7 @@ function buildFattyTracker_(force) {
     current[store] = {};
     fatties.forEach(function (it) {
       const lname = String(it.productName || it.name || '').trim();
-      if (it.productId != null && it.productId !== '') idNames[String(it.productId)] = lname;  // names Core's unnamed sales rows
+      if (it.productId != null && it.productId !== '') idNames[store + '|' + it.productId] = lname;  // names Core's unnamed sales rows
       const qty = Number(it.quantityAvailable || it.quantity || 0) || 0;
       if (qty <= 0) return;
       const lk = store + '|' + lname;
