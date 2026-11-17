@@ -9096,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.073';
+const APP_VERSION = 'v3.074';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10603,6 +10603,43 @@ function fattySupplyCard(d) {
   return box(head + tiles + storeTable + weekTable + flagList);
 }
 
+// Shake = work-in-progress pre-rolls (FATTYs are rolled from it), so it shares the FIFO-by-harvest-year
+// view. Bulk grams straight from Dutchie; vintage from the batch's lab-result HarvestDate (backend).
+// Older payloads (before v3.074) have no d.shake and the card simply doesn't render.
+function fattyShakeCard(d, sel) {
+  const sk = d.shake;
+  if (!sk || !sk.current) return '';
+  const storeList = sel === 'All stores' ? Object.keys(sk.current) : [sel];
+  const grams = {}, cost = {};
+  storeList.forEach(s => {
+    const g = sk.current[s] || {}, c = (sk.cost || {})[s] || {};
+    Object.keys(g).forEach(v => { grams[v] = (grams[v] || 0) + (Number(g[v]) || 0); cost[v] = (cost[v] || 0) + (Number(c[v]) || 0); });
+  });
+  const vints = (sk.vintages || []).filter(v => (grams[v] || 0) > 0);
+  const total = vints.reduce((a, v) => a + grams[v], 0);
+  const totalCost = vints.reduce((a, v) => a + (cost[v] || 0), 0);
+  const lb = g => (g / 453.592).toFixed(1);
+  const money = n => '$' + Math.round(n).toLocaleString();
+  const dated = vints.filter(v => v !== 'Unknown');
+  const tiles = vints.map(v => {
+    const n = grams[v], share = total ? (n / total) * 100 : 0;
+    const unknown = v === 'Unknown';
+    const tag = unknown ? 'NO DATE' : (dated[0] === v ? 'USE FIRST' : 'BEHIND');
+    const col = unknown ? '#8a8a8a' : fattyColor(v);
+    return `<div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${col}"></span>${unknown ? 'Harvest date missing' : v + ' harvest'}<span style="margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.4px;color:${tag === 'USE FIRST' ? 'var(--green)' : 'var(--muted)'}">${tag}</span></div>
+        <div style="font-size:26px;font-weight:700;line-height:1.1;margin:6px 0 4px;font-variant-numeric:tabular-nums">${fattyFmt(n)} g</div>
+        <div style="height:3px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${share.toFixed(1)}%;background:${col}"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>${lb(n)} lb</span><span>${money(cost[v] || 0)} cost</span></div>
+      </div>`;
+  }).join('');
+  const where = sel === 'All stores' ? 'all stores' : storeDisplay(sel);
+  return `<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Shake · WIP pre-rolls · by harvest year</span><span style="font-size:12px;color:var(--muted)">${escapeHtml(where)} · <b style="color:var(--text)">${fattyFmt(total)} g</b> (${lb(total)} lb) · ${money(totalCost)} cost</span></div>
+      ${vints.length ? `<div class="fatty-fifo-grid">${tiles}</div>` : '<div style="font-size:12px;color:var(--muted)">No shake on hand.</div>'}
+    </div>`;
+}
+
 function renderFatty() {
   const d = state.fattyData;
   const el = document.getElementById('fattyContent');
@@ -10724,6 +10761,7 @@ function renderFatty() {
       <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${pills}${compareBtn}</div>
     </div>
     <div class="fatty-grid2">${hero}${fifoCard}</div>
+    ${fattyShakeCard(d, sel)}
     ${fattySupplyCard(d)}
     <div style="margin-top:12px">${chartCard}</div>
     ${compareRow}`;
