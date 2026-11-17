@@ -9096,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.076';
+const APP_VERSION = 'v3.077';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10432,7 +10432,7 @@ function fattyHoverMove(e) {
   const p = g.pts[best];
   const ch = document.getElementById('fattyCrosshair');
   if (ch) { ch.setAttribute('x1', p.xpx.toFixed(1)); ch.setAttribute('x2', p.xpx.toFixed(1)); ch.setAttribute('stroke-opacity', '1'); }
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const dot = document.getElementById('fattyDot' + i); if (!dot) continue;
     if (g.mode === 'lines' && i < g.vints.length) {
       const v = g.vints[i]; dot.setAttribute('cx', p.xpx.toFixed(1)); dot.setAttribute('cy', p.vy[v].toFixed(1)); dot.setAttribute('fill', fattyColor(v)); dot.setAttribute('opacity', '1');
@@ -10457,7 +10457,7 @@ function fattyHoverMove(e) {
 }
 function fattyHoverLeave() {
   const ch = document.getElementById('fattyCrosshair'); if (ch) ch.setAttribute('stroke-opacity', '0');
-  for (let i = 0; i < 3; i++) { const dot = document.getElementById('fattyDot' + i); if (dot) dot.setAttribute('opacity', '0'); }
+  for (let i = 0; i < 4; i++) { const dot = document.getElementById('fattyDot' + i); if (dot) dot.setAttribute('opacity', '0'); }
   const tip = document.getElementById('fattyTip'); if (tip) tip.style.opacity = '0';
 }
 
@@ -10661,16 +10661,20 @@ function renderFatty() {
   if (!d || !el) return;
   const stores = d.stores || [];
   const vints = (d.vintages || []).filter(v => v !== 'Unknown');
+  // Chart + totals also carry 'Unknown': products whose harvest year can't be looked up any more (sold out
+  // before their year was recorded, or no lab date). Leaving them out made older weeks read low. The FIFO
+  // tiles stay real years only.
+  const svints = vints.concat((d.vintages || []).includes('Unknown') ? ['Unknown'] : []);
   const sel = state.fattyStore || 'All stores';
   const mode = state.fattyMode || 'stack';
   const iso = state.fattyIsolate;
   const cmp = state.fattyCompare;
   const WIN = 4;
   const fmt = fattyFmt;
-  const rows = fattySeriesFor(sel, d, vints);
+  const rows = fattySeriesFor(sel, d, svints);
   const last = rows[rows.length - 1], prev = rows[rows.length - 2] || last;
   const total = last.total, totalPrev = total - (last.step || 0); // step: same-source change, 0 across a seam
-  const burn = fattyBurn(rows, vints, WIN);
+  const burn = fattyBurn(rows, svints, WIN);
   const runWeeks = burn > 0 ? total / burn : Infinity;
   const wowChip = (delta, sz) => `<span style="font-size:${sz || 12}px;font-weight:600;white-space:nowrap;color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(delta))} wk</span>`;
 
@@ -10681,7 +10685,7 @@ function renderFatty() {
   }).join('');
   const compareBtn = `<button onclick="toggleFattyCompare()" style="flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid ${cmp ? 'var(--green)' : 'var(--border)'};background:${cmp ? 'rgba(74,222,128,.12)' : 'transparent'};color:${cmp ? 'var(--green)' : 'var(--muted)'};font-size:12px;cursor:pointer;margin-left:4px">⊞ Compare</button>`;
 
-  const made = fattyProduction(rows, vints, WIN);
+  const made = fattyProduction(rows, svints, WIN);
   const burnLabel = (burn > 0 ? `selling ${fmt(burn)}/wk` : 'no depletion')
     + ' · ' + (made > 0 ? `adding ${fmt(made)}/wk` : 'nothing added') + ` (${WIN}-wk avg)`;
   const weeksSupply = burn > 0 ? runWeeks.toFixed(1) : '—';
@@ -10727,9 +10731,9 @@ function renderFatty() {
       ${segBtn('stack', 'Stacked', 'Units on hand, vintages stacked')}${segBtn('lines', 'Lines', 'Units on hand, one line per vintage')}${segBtn('production', 'Production', 'New joints added each week, by vintage — the week-over-week rise inside each harvest year')}
     </div>`;
   const rangeBtns = `<div style="display:flex;gap:3px">${[['1m', '1M'], ['3m', '3M'], ['6m', '6M'], ['1y', '1Y'], ['all', 'All']].map(r => `<button class="fatty-range-btn${state.fattyRange === r[0] ? ' on' : ''}" onclick="setFattyRange('${r[0]}')">${r[1]}</button>`).join('')}</div>`;
-  const legend = vints.map(v => {
+  const legend = svints.map(v => {
     const on = !iso || iso === v;
-    return `<button onclick="setFattyIsolate('${v}')" style="display:flex;align-items:center;gap:5px;font-size:12px;padding:3px 9px;border-radius:999px;cursor:pointer;border:1px solid ${iso === v ? fattyColor(v) : 'var(--border)'};background:transparent;color:${on ? 'var(--text)' : 'var(--muted)'};opacity:${on ? 1 : 0.45};transition:opacity .15s"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${fattyColor(v)}"></span>${v}</button>`;
+    return `<button onclick="setFattyIsolate('${v}')" style="display:flex;align-items:center;gap:5px;font-size:12px;padding:3px 9px;border-radius:999px;cursor:pointer;border:1px solid ${iso === v ? fattyColor(v) : 'var(--border)'};background:transparent;color:${on ? 'var(--text)' : 'var(--muted)'};opacity:${on ? 1 : 0.45};transition:opacity .15s"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${fattyColor(v)}"></span>${v === 'Unknown' ? 'Year unknown' : v}</button>`;
   }).join('');
   const tooltip = `<div id="fattyTip" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);pointer-events:none;opacity:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:150px;box-shadow:0 6px 18px rgba(0,0,0,.5);transition:opacity .1s">
       <div id="fattyTipDate" style="font-size:11px;color:var(--muted);margin-bottom:5px"></div>
@@ -10742,13 +10746,13 @@ function renderFatty() {
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">${mode === 'production' ? 'New joints added by week' : 'On hand by week'}</span>${seg}${rangeBtns}</div>
         <div style="display:flex;gap:6px;align-items:center">${legend}</div>
       </div>
-      <div style="position:relative">${fattyChartSvg(rows, vints, state.fattyRange, mode, iso)}${tooltip}</div>
+      <div style="position:relative">${fattyChartSvg(rows, svints, state.fattyRange, mode, iso)}${tooltip}</div>
     </div>`;
 
   let compareRow = '';
   if (cmp) {
     const cards = stores.map(s => {
-      const srows = fattySeriesFor(s, d, vints).slice(-12);
+      const srows = fattySeriesFor(s, d, svints).slice(-12);
       const cur = srows[srows.length - 1], pr = srows[srows.length - 2] || cur;
       const mn = Math.min(...srows.map(r => r.total)), mx = Math.max(1, ...srows.map(r => r.total)), rng = Math.max(1, mx - mn);
       const pts = srows.map((r, i) => (srows.length < 2 ? 0 : (i / (srows.length - 1)) * 100).toFixed(1) + ',' + (28 - ((r.total - mn) / rng) * 24).toFixed(1));
@@ -10865,6 +10869,7 @@ function fattyChartSvg(rows, vints, range, mode, iso) {
       <circle id="fattyDot0" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
       <circle id="fattyDot1" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
       <circle id="fattyDot2" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
+      <circle id="fattyDot3" r="3.5" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>
     </svg>`;
 }
 

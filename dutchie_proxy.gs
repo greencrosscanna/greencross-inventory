@@ -4639,7 +4639,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v9'; // v9: names shake batches with a missing/future harvest date
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v10'; // v10: history counts sold-out SKUs as Unknown year
 
 // Bulk shake rows: Dutchie category "Cannabis Bulk Shake", or a name ending "| Shake" filed under flower
 // (e.g. "Lemonchello | SHAKE"). A strain merely NAMED Shake ("Shake Shack") doesn't match either test.
@@ -4748,8 +4748,10 @@ function buildFattyWeekly_(skuVintage) {
         dt[dateStr] = (dt[dateStr] || 0) + qty;
       }
       const sku = String(row[5] || '').trim();
-      const v = skuVintage[sku];
-      if (!v) continue;
+      // A SKU's harvest year is only known while some of it is still in stock (skuVintage comes from today's
+      // packages), so a product that has since sold out has no year. Count it as 'Unknown' rather than
+      // dropping it — dropping made every older week read low (Sky's call, 2026-11-16).
+      const v = skuVintage[sku] || 'Unknown';
       (byKeyDate[k] || (byKeyDate[k] = {}))[v] = (byKeyDate[k][v] || 0) + qty;
     }
     const latestDate = {}; // store|week -> dateStr
@@ -4866,7 +4868,10 @@ function buildFattyTracker_(force) {
   });
   const weekly = buildFattyWeekly_(skuVintage);
   const vintages = Object.keys(vintagesSet).filter(function (v) { return v !== 'Unknown'; }).sort();
-  if (vintagesSet['Unknown']) vintages.push('Unknown');
+  const weeklyHasUnknown = Object.keys(weekly.byStore || {}).some(function (st) {
+    return Object.keys(weekly.byStore[st]).some(function (wk) { return (weekly.byStore[st][wk].Unknown || 0) > 0; });
+  });
+  if (vintagesSet['Unknown'] || weeklyHasUnknown) vintages.push('Unknown');
   // Supply card inputs (raw; math in index.html computeFattySupply).
   const supply = {
     today: todayPT_(),
