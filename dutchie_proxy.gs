@@ -4634,11 +4634,43 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v7'; // v7: names come from GX Core v375, no local fallback
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v8'; // v8: adds shake (WIP pre-rolls) by harvest vintage
 
+// Bulk shake rows: Dutchie category "Cannabis Bulk Shake", or a name ending "| Shake" filed under flower
+// (e.g. "Lemonchello | SHAKE"). A strain merely NAMED Shake ("Shake Shack") doesn't match either test.
+function isShakeItem_(it) {
+  const cat = String(it.category || '') + ' ' + String(it.masterCategory || '');
+  return /shake/i.test(cat) || /\|\s*shake\s*$/i.test(String(it.productName || it.name || ''));
+}
+
+// The map is sharded across HARVEST_BY_BATCH_KEY, _2, _3… because one Script Property holds at most
+// 9 KB (~200 batches) and shake roughly tripled the batch count. Shard 1 keeps the original key, so a
+// map written before sharding still reads.
+const HARVEST_SHARD_CHARS = 8000;
 function _getHarvestMap() {
-  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
-  catch (e) { return {}; }
+  const props = PropertiesService.getScriptProperties();
+  const map = {};
+  for (var i = 1; i <= 50; i++) {
+    const raw = props.getProperty(i === 1 ? HARVEST_BY_BATCH_KEY : HARVEST_BY_BATCH_KEY + '_' + i);
+    if (!raw) break;
+    try { Object.assign(map, JSON.parse(raw)); } catch (e) {}
+  }
+  return map;
+}
+function _setHarvestMap(map) {
+  const shards = [];
+  var cur = {}, len = 2;
+  Object.keys(map).forEach(function (k) {
+    const add = JSON.stringify(k).length + JSON.stringify(map[k]).length + 2;
+    if (len + add > HARVEST_SHARD_CHARS && Object.keys(cur).length) { shards.push(cur); cur = {}; len = 2; }
+    cur[k] = map[k]; len += add;
+  });
+  shards.push(cur);
+  const props = PropertiesService.getScriptProperties();
+  try {
+    shards.forEach(function (s, i) { props.setProperty(i === 0 ? HARVEST_BY_BATCH_KEY : HARVEST_BY_BATCH_KEY + '_' + (i + 1), JSON.stringify(s)); });
+    props.deleteProperty(HARVEST_BY_BATCH_KEY + '_' + (shards.length + 1)); // end marker for the reader
+  } catch (e) { _logGasError('_setHarvestMap', e && e.message); }
 }
 // Resolve HarvestDate (YYYY-MM-DD) for batchNames at a store. Fetches uncached via /inventory/labresults
 // (chunked fetchAll, rate-limit friendly) and caches only FOUND dates permanently (so a batch that gets a
@@ -4665,7 +4697,7 @@ function resolveHarvestDates_(store, batchNames) {
         } catch (e) {}
       });
     }
-    if (found) PropertiesService.getScriptProperties().setProperty(HARVEST_BY_BATCH_KEY, JSON.stringify(map));
+    if (found) _setHarvestMap(map);
   }
   return map;
 }
@@ -4774,14 +4806,30 @@ function buildFattyTracker_(force) {
   const vintagesSet = {};
   const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
   var unresolved = 0;
+  const shake = { current: {}, cost: {}, unresolvedGrams: 0, vintagesSet: {} }; // store -> { vintage -> grams | $ }
   stores.forEach(function (store, i) {
     var items = [];
     try { if (resps[i].getResponseCode() === 200) { const raw = JSON.parse(resps[i].getContentText()); items = Array.isArray(raw) ? raw : (raw.data || raw.items || []); } } catch (e) {}
     const fatties = items.filter(function (it) { return /fatty/i.test(String(it.productName || it.name || '')); });
+    const shakes = items.filter(isShakeItem_);
     const batchNames = [];
     const seenB = {};
-    fatties.forEach(function (it) { const b = String(it.batchName || ''); if (b && !seenB[b]) { seenB[b] = 1; batchNames.push(b); } });
+    fatties.concat(shakes).forEach(function (it) { const b = String(it.batchName || ''); if (b && !seenB[b]) { seenB[b] = 1; batchNames.push(b); } });
     const hmap = resolveHarvestDates_(store, batchNames);
+    // Shake = work-in-progress pre-rolls (FATTYs are rolled from it), so it is bucketed by the same
+    // harvest-year vintage. Grams, as Dutchie reports bulk; cost = qty × unitCost.
+    const sh = shake.current[store] = {};
+    const shc = shake.cost[store] = {};
+    shakes.forEach(function (it) {
+      const qty = Number(it.quantityAvailable || it.quantity || 0) || 0;
+      if (qty <= 0) return;
+      const hd = hmap[String(it.batchName || '')] || '';
+      const vintage = hd ? hd.slice(0, 4) : 'Unknown';
+      if (vintage === 'Unknown') shake.unresolvedGrams += qty;
+      sh[vintage] = (sh[vintage] || 0) + qty;
+      shc[vintage] = (shc[vintage] || 0) + qty * (Number(it.unitCost || 0) || 0);
+      shake.vintagesSet[vintage] = true;
+    });
     current[store] = {};
     fatties.forEach(function (it) {
       const lname = String(it.productName || it.name || '').trim();
@@ -4811,7 +4859,16 @@ function buildFattyTracker_(force) {
     snapDaily: weekly.dailyTotals || {}
   };
   delete weekly.dailyTotals;
-  const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, supply: supply, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
+  const shakeVintages = Object.keys(shake.vintagesSet).filter(function (v) { return v !== 'Unknown'; }).sort();
+  if (shake.vintagesSet['Unknown']) shakeVintages.push('Unknown');
+  Object.keys(shake.current).forEach(function (s) {
+    Object.keys(shake.current[s]).forEach(function (v) {
+      shake.current[s][v] = Math.round(shake.current[s][v] * 100) / 100;
+      shake.cost[s][v] = Math.round(shake.cost[s][v] * 100) / 100;
+    });
+  });
+  const shakeOut = { vintages: shakeVintages, current: shake.current, cost: shake.cost, unresolvedGrams: Math.round(shake.unresolvedGrams * 100) / 100 };
+  const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, supply: supply, shake: shakeOut, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
   // 6h (CacheService max). A cold build takes ~90s, past the app's 45s timeout, so a 1h cache left the first
   // visitor of every hour on "Couldn't reach". Inputs move slowly: snapshots nightly, velocity every 6h.
   try { scriptCache.put(FATTY_TRACKER_CACHE, JSON.stringify(result), 6 * 60 * 60); } catch (e) {}
