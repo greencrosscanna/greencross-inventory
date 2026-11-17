@@ -19,6 +19,10 @@ const BETA_SPREADSHEET_ID         = '1expq2qh9uRU51BdBKq_GmYgyHLrRhmryPtWjDJsWdx
 const SALES_HISTORY_SPREADSHEET_ID = '18f8iwnnMucXog5fMsLN2VwEoC6kFu3h-b8MDpZlc7ks';
 const SALES_HISTORY_GID            = 1938453538;
 const SNAPSHOT_SHEET_NAME          = 'Inv Snapshot';
+// SHARED READER: GX Core (v377+, hub PRs 113/114) reads this tab read-only, by name, as its last-resort
+// source for naming sales of retired products. Renaming it, moving it, reordering its columns
+// (productName, sku) or trimming old rows silently drops those names from every app's sales counts.
+// Tell core-admin before changing any of that.
 const SKU_DICT_SHEET_NAME          = 'Product SKU Dict';
 const STORE_CONFIG_SHEET_NAME      = 'Config - Stores';
 const SKU_OVERRIDES_SHEET_NAME     = 'Config - SKU Overrides';
@@ -4155,6 +4159,7 @@ function buildNameSkuFromSnapshot() {
 }
 
 // Update the persistent SKU dictionary with any new name→sku pairs from this snapshot run.
+// Append-only on purpose: GX Core reads this tab to name retired products (see SKU_DICT_SHEET_NAME).
 function updateSkuDict(ss, products) {
   let sheet = ss.getSheetByName(SKU_DICT_SHEET_NAME);
   if (!sheet) {
