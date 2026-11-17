@@ -9096,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.074';
+const APP_VERSION = 'v3.075';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10624,7 +10624,8 @@ function fattyShakeCard(d, sel) {
   const tiles = vints.map(v => {
     const n = grams[v], share = total ? (n / total) * 100 : 0;
     const unknown = v === 'Unknown';
-    const tag = unknown ? 'NO DATE' : (dated[0] === v ? 'USE FIRST' : 'BEHIND');
+    const future = !unknown && +v > new Date().getFullYear(); // a harvest year that hasn't happened is a typo
+    const tag = unknown ? 'NO DATE' : future ? 'BAD DATE' : (dated[0] === v ? 'USE FIRST' : 'BEHIND');
     const col = unknown ? '#8a8a8a' : fattyColor(v);
     return `<div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${col}"></span>${unknown ? 'Harvest date missing' : v + ' harvest'}<span style="margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.4px;color:${tag === 'USE FIRST' ? 'var(--green)' : 'var(--muted)'}">${tag}</span></div>
@@ -10634,9 +10635,17 @@ function fattyShakeCard(d, sel) {
       </div>`;
   }).join('');
   const where = sel === 'All stores' ? 'all stores' : storeDisplay(sel);
+  // Batches whose lab result has no harvest date, or one in the future — named so someone can fix them in Dutchie.
+  const fix = (sk.fix || []).filter(f => sel === 'All stores' || f.store === sel);
+  const fixList = fix.length ? `<details style="margin-top:12px"><summary style="cursor:pointer;font-size:12px"><b style="color:var(--red)">${fix.length}</b> shake batch${fix.length === 1 ? '' : 'es'} with a missing or impossible harvest date — fix in Dutchie lab results</summary>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px">
+        <tr style="color:var(--muted);text-align:left"><th style="padding:4px 6px">Store</th><th style="padding:4px 6px">Product</th><th style="padding:4px 6px">Batch (Metrc tag)</th><th style="padding:4px 6px">Harvest date</th><th style="padding:4px 6px;text-align:right">Grams</th></tr>
+        ${fix.map(f => `<tr style="border-top:1px solid rgba(255,255,255,.05)"><td style="padding:4px 6px">${escapeHtml(storeDisplay(f.store))}</td><td style="padding:4px 6px">${escapeHtml(f.product)}</td><td style="padding:4px 6px;font-family:monospace">${escapeHtml(f.batch || '(none)')}</td><td style="padding:4px 6px">${escapeHtml(f.harvestDate || 'missing')}</td><td style="padding:4px 6px;text-align:right">${fattyFmt(f.grams)}</td></tr>`).join('')}
+      </table></div></details>` : '';
   return `<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Shake · WIP pre-rolls · by harvest year</span><span style="font-size:12px;color:var(--muted)">${escapeHtml(where)} · <b style="color:var(--text)">${fattyFmt(total)} g</b> (${lb(total)} lb) · ${money(totalCost)} cost</span></div>
       ${vints.length ? `<div class="fatty-fifo-grid">${tiles}</div>` : '<div style="font-size:12px;color:var(--muted)">No shake on hand.</div>'}
+      ${fixList}
     </div>`;
 }
 

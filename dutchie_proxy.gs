@@ -4634,7 +4634,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v8'; // v8: adds shake (WIP pre-rolls) by harvest vintage
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v9'; // v9: names shake batches with a missing/future harvest date
 
 // Bulk shake rows: Dutchie category "Cannabis Bulk Shake", or a name ending "| Shake" filed under flower
 // (e.g. "Lemonchello | SHAKE"). A strain merely NAMED Shake ("Shake Shack") doesn't match either test.
@@ -4806,7 +4806,7 @@ function buildFattyTracker_(force) {
   const vintagesSet = {};
   const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
   var unresolved = 0;
-  const shake = { current: {}, cost: {}, unresolvedGrams: 0, vintagesSet: {} }; // store -> { vintage -> grams | $ }
+  const shake = { current: {}, cost: {}, unresolvedGrams: 0, vintagesSet: {}, fix: {}, thisYear: todayPT_().slice(0, 4) }; // store -> { vintage -> grams | $ }
   stores.forEach(function (store, i) {
     var items = [];
     try { if (resps[i].getResponseCode() === 200) { const raw = JSON.parse(resps[i].getContentText()); items = Array.isArray(raw) ? raw : (raw.data || raw.items || []); } } catch (e) {}
@@ -4826,6 +4826,14 @@ function buildFattyTracker_(force) {
       const hd = hmap[String(it.batchName || '')] || '';
       const vintage = hd ? hd.slice(0, 4) : 'Unknown';
       if (vintage === 'Unknown') shake.unresolvedGrams += qty;
+      // A missing or future harvest date is a data-entry problem someone has to fix in Dutchie, so the
+      // batch is named (store, product, Metrc tag) rather than only counted.
+      if (vintage === 'Unknown' || vintage > shake.thisYear) {
+        const b = String(it.batchName || '');
+        const fk = store + '|' + b + '|' + String(it.productName || it.name || '');
+        const f = shake.fix[fk] || (shake.fix[fk] = { store: store, product: String(it.productName || it.name || '').trim(), batch: b, harvestDate: hd, grams: 0 });
+        f.grams += qty;
+      }
       sh[vintage] = (sh[vintage] || 0) + qty;
       shc[vintage] = (shc[vintage] || 0) + qty * (Number(it.unitCost || 0) || 0);
       shake.vintagesSet[vintage] = true;
@@ -4867,7 +4875,9 @@ function buildFattyTracker_(force) {
       shake.cost[s][v] = Math.round(shake.cost[s][v] * 100) / 100;
     });
   });
-  const shakeOut = { vintages: shakeVintages, current: shake.current, cost: shake.cost, unresolvedGrams: Math.round(shake.unresolvedGrams * 100) / 100 };
+  const shakeFix = Object.keys(shake.fix).map(function (k) { const f = shake.fix[k]; f.grams = Math.round(f.grams * 100) / 100; return f; })
+    .sort(function (a, b) { return b.grams - a.grams; });
+  const shakeOut = { vintages: shakeVintages, current: shake.current, cost: shake.cost, unresolvedGrams: Math.round(shake.unresolvedGrams * 100) / 100, fix: shakeFix };
   const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, supply: supply, shake: shakeOut, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
   // 6h (CacheService max). A cold build takes ~90s, past the app's 45s timeout, so a 1h cache left the first
   // visitor of every hour on "Couldn't reach". Inputs move slowly: snapshots nightly, velocity every 6h.

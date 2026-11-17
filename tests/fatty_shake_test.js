@@ -82,5 +82,18 @@ const hb = fattyShakeCard(d, 'Hillsboro');
 check('one store: Hillsboro total 250 g', hb.includes('250 g') && !hb.includes('1,750 g'));
 check('old payload without shake renders nothing', fattyShakeCard({}, 'All stores') === '');
 
+d.shake.vintages = ['2024', '2025', '2029', 'Unknown'];
+d.shake.current.Hillsboro['2029'] = 35; d.shake.cost.Hillsboro['2029'] = 19;
+d.shake.fix = [
+  { store: 'Hillsboro', product: 'Goofiez | Shake', batch: '1A4TESTBATCH2029', harvestDate: '2029-10-01', grams: 35 },
+  { store: 'Bend', product: 'MAC | Shake', batch: '', harvestDate: '', grams: 12 },
+];
+const fx = fattyShakeCard(d, 'All stores');
+check('future harvest year tagged BAD DATE', /2029 harvest[\s\S]*?BAD DATE/.test(fx));
+check('bad-date batch named with its Metrc tag', fx.includes('1A4TESTBATCH2029') && fx.includes('Goofiez | Shake') && fx.includes('2029-10-01'));
+check('missing-date batch listed as missing', fx.includes('MAC | Shake') && fx.includes('missing'));
+const fxB = fattyShakeCard(d, 'Bend');
+check('fix list follows the store pick', fxB.includes('MAC | Shake') && !fxB.includes('1A4TESTBATCH2029'));
+
 console.log(fails ? '\n' + fails + ' FAILED' : '\nall passed');
 process.exit(fails ? 1 : 0);
