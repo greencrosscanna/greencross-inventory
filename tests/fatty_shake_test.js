@@ -27,7 +27,7 @@ function lift(src, re, what) {
 }
 const shakeSrc = lift(gs, /function isShakeItem_\(it\) \{[\s\S]*?\n\}/, 'isShakeItem_');
 const mapSrc = lift(gs, /const HARVEST_SHARD_CHARS[\s\S]*?\nfunction _setHarvestMap\(map\) \{[\s\S]*?\n\}/, '_getHarvestMap/_setHarvestMap');
-const cardSrc = lift(html, /function fattyShakeCard\(d, sel\) \{[\s\S]*?\n\}/, 'fattyShakeCard');
+const cardSrc = lift(html, /const FATTY_SHAKE_G_PER_JOINT[\s\S]*?\nfunction fattyShakeCard\(d, sel\) \{[\s\S]*?\n\}/, 'FATTY_SHAKE_G_PER_JOINT + fattyShakeCard');
 
 let fails = 0;
 function check(label, cond, detail) {
@@ -77,6 +77,8 @@ const all = fattyShakeCard(d, 'All stores');
 check('all stores: 2024 = 1,200 g', all.includes('1,200 g'));
 check('all stores: total 1,750 g', all.includes('1,750 g'));
 check('oldest dated vintage tagged USE FIRST', /2024 harvest[\s\S]*?USE FIRST/.test(all));
+check('2024 tile: 1,200 g ≈ 1,142 pre-rolls at 1.05 g each', all.includes('<b>1,142</b> pre-rolls'));
+check('header: 1,750 g ≈ 1,666 pre-rolls', all.includes('1,666</b> pre-rolls'));
 check('missing harvest date shown', all.includes('Harvest date missing'));
 const hb = fattyShakeCard(d, 'Hillsboro');
 check('one store: Hillsboro total 250 g', hb.includes('250 g') && !hb.includes('1,750 g'));
