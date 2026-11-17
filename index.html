@@ -1494,6 +1494,8 @@
     'skuprobe', 'stores', 'storetxhistory', 'txprobe', 'velocity', 'version_history'
   ];
 </script>
+<!-- gx-handoff.js FIRST: it takes a portal sign-in code (#gxcode=) out of the address bar before anything reads it. -->
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-handoff.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-client.js" data-app="inventory"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-session.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-avatar.js"></script>
@@ -9096,7 +9098,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.079';
+const APP_VERSION = 'v3.080';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -11838,6 +11840,15 @@ function _authValid() {
   } catch { return false; }
 }
 
+// The ONE place a session is written — the password sign-in and the portal hand-off both call it, so
+// the two can never store different shapes. displayName/avatarConfig come back from GX Core's login and
+// were once discarded; a nested sub-app needs them to draw a real user chip instead of the slug.
+function _saveAuth(auth, fallbackUser) {
+  localStorage.setItem(GC_AUTH_KEY, JSON.stringify({ user: auth.user || fallbackUser, token: auth.token,
+    displayName: auth.displayName || '', role: auth.role || '', avatarConfig: auth.avatarConfig || null,
+    expiresAt: auth.expiresAt || '', ts: Date.now() }));
+}
+
 async function attemptLogin(e) {
   if (e) e.preventDefault();
   const user = document.getElementById('loginUser').value.trim().toLowerCase();
@@ -11860,11 +11871,7 @@ async function attemptLogin(e) {
     }
     if (!auth || !auth.ok || !auth.token) throw new Error(auth && auth.error ? auth.error : 'Login failed');
     try {
-      // displayName/avatarConfig come back from GX Core's login and were being discarded. A nested
-      // sub-app needs them to draw a real user chip instead of falling back to the slug.
-      localStorage.setItem(GC_AUTH_KEY, JSON.stringify({ user: auth.user || user, token: auth.token,
-        displayName: auth.displayName || '', role: auth.role || '', avatarConfig: auth.avatarConfig || null,
-        expiresAt: auth.expiresAt || '', ts: Date.now() }));
+      _saveAuth(auth, user);
     } catch (err) {
       console.warn('Login session could not be persisted in this browser context.', err);
     }
@@ -11894,6 +11901,14 @@ async function attemptLogin(e) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Opened from a staff-portal tile (#gxcode=, already wiped from the address bar by gx-handoff.js):
+  // trade it once for this person's normal Inventory session and reload signed in. Any refusal leaves
+  // the password form exactly as it is.
+  if (window.GXHandoff && GXHandoff.code) GXHandoff.run({
+    app: 'inventory',
+    save: auth => _saveAuth(auth, auth.user),
+    current: () => { try { return _authValid() ? (JSON.parse(localStorage.getItem(GC_AUTH_KEY)) || {}).user : null; } catch { return null; } },
+  });
   if (_authValid()) {
     document.getElementById('loginScreen')?.remove();
     init();
