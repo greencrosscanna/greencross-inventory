@@ -4639,10 +4639,10 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v11'; // v11: no-year FATTYs counted as FATTY_UNKNOWN_VINTAGE
-// FATTYs with no harvest year (sold out before it was looked up, or no lab date) are counted as this year
-// instead of a separate 'Unknown' band — Sky's call, 2026-11-16. Shake is NOT affected: its no-date batches
-// are a fix-it list for Tawny and stay 'Unknown'.
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v12'; // v12: only SOLD-OUT no-year FATTYs count as 2025
+// Weekly-history FATTYs with no harvest year — SKUs that sold out before their year was looked up — count
+// as this year instead of a separate 'Unknown' band (Sky's call, 2026-11-16). Today's in-stock FATTYs
+// with no date stay 'Unknown', and shake's no-date batches stay a fix-it list for Tawny.
 const FATTY_UNKNOWN_VINTAGE = '2025';
 
 // Bulk shake rows: Dutchie category "Cannabis Bulk Shake", or a name ending "| Shake" filed under flower
@@ -4723,7 +4723,8 @@ function isoWeekStart_(dateStr) {
 
 // Weekly on-hand history for FATTY by store × vintage, from the Inv Snapshot. For each (store, week) we take
 // the LATEST snapshot date in that week (point-in-time on-hand, not a sum of days). skuVintage maps sku→year.
-function buildFattyWeekly_(skuVintage) {
+function buildFattyWeekly_(skuVintage, undatedInStock) {
+  undatedInStock = undatedInStock || {};
   // dailyTotals: ALL FATTY on hand (every SKU, vintage known or not) per store per snapshot DATE over the
   // last 40 days — the supply card's "change in on-hand" input, picked at exact 7-day steps so it lines up
   // with the 7/14/21/28-day sales windows. Kept separate from byStore, which only counts SKUs whose vintage
@@ -4755,7 +4756,7 @@ function buildFattyWeekly_(skuVintage) {
       // A SKU's harvest year is only known while some of it is still in stock (skuVintage comes from today's
       // packages), so a product that has since sold out has no year. Dropping it made every older week read
       // low; Sky's call (2026-11-16) is to count it as 2025, the year almost all of that sold-out stock was.
-      const v = skuVintage[sku] || FATTY_UNKNOWN_VINTAGE;
+      const v = skuVintage[sku] || (undatedInStock[sku] ? 'Unknown' : FATTY_UNKNOWN_VINTAGE);
       (byKeyDate[k] || (byKeyDate[k] = {}))[v] = (byKeyDate[k][v] || 0) + qty;
     }
     const latestDate = {}; // store|week -> dateStr
@@ -4816,6 +4817,7 @@ function buildFattyTracker_(force) {
   });
   const resps = UrlFetchApp.fetchAll(reqs);
   const skuVintage = {};            // sku -> 'YYYY'
+  const undatedInStock = {};        // sku -> true: on the shelf today with no harvest date
   const current = {};               // store -> { vintage -> qty }
   const vintagesSet = {};
   const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
@@ -4863,14 +4865,17 @@ function buildFattyTracker_(force) {
       ln.cost += qty * (Number(it.unitCost || 0) || 0);
       const hd = hmap[String(it.batchName || '')] || '';
       if (!hd) unresolved += qty;             // still reported, so a growing no-date pile stays visible
-      const vintage = hd ? hd.slice(0, 4) : FATTY_UNKNOWN_VINTAGE;
+      // In-stock FATTYs with no date stay 'Unknown': they are usually NEW batches whose date isn't entered
+      // yet, and calling them 2025 would put them ahead of 2026 in the FIFO tiles (Sky, 2026-11-16).
+      const vintage = hd ? hd.slice(0, 4) : 'Unknown';
       current[store][vintage] = (current[store][vintage] || 0) + qty;
       vintagesSet[vintage] = true;
       const sku = String(it.sku || '').trim();
       if (sku && hd) skuVintage[sku] = vintage;
+      else if (sku) undatedInStock[sku] = true;   // still on the shelf, so not 'sold out': keep it Unknown in history too
     });
   });
-  const weekly = buildFattyWeekly_(skuVintage);
+  const weekly = buildFattyWeekly_(skuVintage, undatedInStock);
   const vintages = Object.keys(vintagesSet).filter(function (v) { return v !== 'Unknown'; }).sort();
   const weeklyHasUnknown = Object.keys(weekly.byStore || {}).some(function (st) {
     return Object.keys(weekly.byStore[st]).some(function (wk) { return (weekly.byStore[st][wk].Unknown || 0) > 0; });
