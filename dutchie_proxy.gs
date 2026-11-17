@@ -4634,7 +4634,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v6'; // v6: unnamed sales rows named per store only
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v7'; // v7: names come from GX Core v375, no local fallback
 
 function _getHarvestMap() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
@@ -4735,16 +4735,12 @@ function buildFattyWeekly_(skuVintage) {
 // FATTY has many product ids sharing one name (Bend especially). getVelocityMap keys by name and keeps only
 // the last id, which showed Bend selling ~124 in 4 weeks when Dutchie says 503 (2026-11-16).
 // Shape: lineQ[store][productName] = [qty7, qty14, qty21, qty28]. Math lives in index.html.
-// NAMES: Core writes product_name '' for a product missing from its /products dict (its "Product #id"
-// gap), so those rows never matched /fatty/ — at Bend that hid Divine Banana, Pineapple Bigbud and Cali
-// Burger, ~3/4 of Bend's FATTY sales (2026-11-16). The row still carries product_id, so the name is taken
-// from idNames, keyed STORE|productId from this run's live inventory. Never match an id across stores and
-// never use the cross-store ProductCatalog here: product ids are not unique across stores, and doing
-// either credited Bend with Capri Skunk and Runtz Buttonz sales it never had (+22% chain-wide).
-// Unnamed rows that still can't be resolved are counted in unnamedQty28 rather than guessed.
-function readFattySales_(idNames) {
-  const out = { source: 'gxcore-velocity', lineQ: {}, namedByUs: 0, unnamedQty28: 0 };
-  idNames = idNames || {};
+// NAMES: since GX Core v375 (hub PR 112, 2026-11-16) Core names every velocity row, including products
+// missing from a store's /products list (before that ~3/4 of Bend's FATTY sales had a blank name). Rows
+// Core still can't name are counted in unnamedQty28, never guessed. Don't re-add a local naming fallback:
+// one keyed per store (v3.071) undercounted Bend's FATTYs by ~120 a month.
+function readFattySales_() {
+  const out = { source: 'gxcore-velocity', lineQ: {}, unnamedQty28: 0 };
   try {
     const slugToName = {};
     (GXCore.getStores() || []).forEach(function (s) {
@@ -4754,12 +4750,8 @@ function readFattySales_(idNames) {
     (GXCore.getVelocity('') || []).forEach(function (r) {
       const store = slugToName[String(r.store || '').trim().toLowerCase()];
       if (!store || !(Number(r.qty28) > 0)) return;
-      var name = String(r.product_name || '').trim();
-      if (!name || name === 'Unknown' || /^Product #/i.test(name)) {
-        const pid = String(r.product_id || '').trim();
-        name = (pid && idNames[store + '|' + pid]) || '';
-        if (name) out.namedByUs++; else { out.unnamedQty28 += Number(r.qty28) || 0; return; }
-      }
+      const name = String(r.product_name || '').trim();
+      if (!name || name === 'Unknown' || /^Product #/i.test(name)) { out.unnamedQty28 += Number(r.qty28) || 0; return; }
       if (!/fatty/i.test(name)) return;
       const st = out.lineQ[store] || (out.lineQ[store] = {});
       const q = st[name] || (st[name] = [0, 0, 0, 0]);
@@ -4781,7 +4773,6 @@ function buildFattyTracker_(force) {
   const current = {};               // store -> { vintage -> qty }
   const vintagesSet = {};
   const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
-  const idNames = {};               // 'Store|productId' -> FATTY product name, from live inventory (ids repeat across stores)
   var unresolved = 0;
   stores.forEach(function (store, i) {
     var items = [];
@@ -4794,7 +4785,6 @@ function buildFattyTracker_(force) {
     current[store] = {};
     fatties.forEach(function (it) {
       const lname = String(it.productName || it.name || '').trim();
-      if (it.productId != null && it.productId !== '') idNames[store + '|' + it.productId] = lname;  // names Core's unnamed sales rows
       const qty = Number(it.quantityAvailable || it.quantity || 0) || 0;
       if (qty <= 0) return;
       const lk = store + '|' + lname;
@@ -4817,7 +4807,7 @@ function buildFattyTracker_(force) {
   const supply = {
     today: todayPT_(),
     lines: Object.keys(lines).map(function (k) { const l = lines[k]; return { store: l.store, name: l.name, qty: l.qty, cost: Math.round(l.cost * 100) / 100 }; }),
-    sales: readFattySales_(idNames),
+    sales: readFattySales_(),
     snapDaily: weekly.dailyTotals || {}
   };
   delete weekly.dailyTotals;
