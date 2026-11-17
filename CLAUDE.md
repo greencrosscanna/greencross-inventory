@@ -31,6 +31,13 @@ calling anything done** — `python3 serve.py`, or the deployed page with a `?cb
 `app=pricecards, tab=pricetags` (`TAB_TO_APP` in `dutchie_proxy.gs`); everything else, the SPIFF tab
 included, files as `app=inventory`. Add a sub-app to that map when it gets its own key.
 
+**GX Core reads one of our tabs.** Since GX Core v377 (hub PRs 113/114, 2026-11-16) Core reads the
+`Product SKU Dict` tab in the "Green Cross — Inventory Data" spreadsheet, read-only and by name, to name
+sales of retired products it can't name any other way. Don't rename or move that tab, reorder its
+`productName, sku` columns, or prune its rows without telling core-admin first: nothing would error, and
+those sales would silently drop out of every app's name-matched counts (Inventory's FATTY supply card
+undercounted by ~40 a week before this existed).
+
 **Shared files** (`deploy.sh`, `serve.py`, `gx-preflight.sh`, `.claude/gx-brain-notes.sh`) come from
 **gx-theme** via `./gx-sync.sh`, filled from `.gx_app`. Edit them **there**, not here, then re-sync — a
 local edit is overwritten on the next sync. This CLAUDE.md is intentionally **not** synced.
