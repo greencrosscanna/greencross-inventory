@@ -9096,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.067';
+const APP_VERSION = 'v3.068';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10425,49 +10425,58 @@ function fattyHoverLeave() {
 // == FATTY supply math =========================================================================
 // Answers "how many FATTYs could we sell in one week before something runs out?" for door-buster
 // planning. FATTYs are rolled from end-of-jar flower and Dutchie records neither the flower nor the
-// rolling, so production is IMPLIED: made = sold + change in on-hand, between two weekly Inv Snapshot
-// points. A snapshot dated D runs at 02:00 and reflects close of D-1, so the sales between snapshots
-// a and b are the days a <= day < b. Transfers move stock between stores and net out only at chain
-// level — chain is the headline, per-store implied output is a rough guide. Pure: no DOM, no state;
+// rolling, so production is IMPLIED: made = sold + change in on-hand, per week, over the last 4 weeks.
+// Sales come from GX Core's velocity summary as trailing 7/14/21/28-day totals per product (lineQ),
+// differenced into weekly buckets. On-hand comes from the daily Inv Snapshot, read at today, today-7,
+// -14, -21, -28 (or up to 2 days earlier if a night was missed). A snapshot dated D runs at 02:00 and
+// reflects close of D-1, so the two windows sit about a day apart — fine for a weekly rate, which is all
+// this claims. Transfers move stock between stores and net out only at chain level, so chain is the
+// headline and per-store implied output is a rough guide. Pure: no DOM, no state;
 // tests/fatty_supply_test.js runs it. Dates are YYYY-MM-DD text; day arithmetic is calendar-only.
 const FATTY_COVER_FLAG_DAYS = 14;
 const FATTY_TOP_LINES = 40;
 function fattyDayNum(ymd) { return Math.round(Date.UTC(+ymd.slice(0, 4), +ymd.slice(5, 7) - 1, +ymd.slice(8, 10)) / 86400000); }
 function fattyNumYmd(n) { const d = new Date(n * 86400000), m = d.getUTCMonth() + 1, dd = d.getUTCDate(); return d.getUTCFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (dd < 10 ? '0' : '') + dd; }
-function fattyWeekStartNum(ymd) { const n = fattyDayNum(ymd); return n - ((new Date(n * 86400000).getUTCDay() + 6) % 7); }
 function computeFattySupply(sup, stores) {
-  if (!sup || !Array.isArray(sup.lines) || !sup.sales) return null;
-  const daily = sup.sales.daily || {}, line28 = sup.sales.line28 || {}, snaps = sup.snapTotals || {};
-  const salesFromN = sup.sales.from ? fattyDayNum(sup.sales.from) : -Infinity;
+  if (!sup || !Array.isArray(sup.lines) || !sup.sales || !sup.today) return null;
+  const lineQ = sup.sales.lineQ || {}, snaps = sup.snapDaily || {};
   const storeList = (stores && stores.length) ? stores.slice() : Object.keys(snaps);
+  const todayN = fattyDayNum(sup.today);
+  const line28 = {};
+  Object.keys(lineQ).forEach(s => { line28[s] = {}; Object.keys(lineQ[s]).forEach(n => { line28[s][n] = Number(lineQ[s][n][3]) || 0; }); });
 
-  // 1 · implied weekly output, per store and chain
-  const storeOut = {}, chainByWeek = {};
+  // 1 · implied weekly output, per store and chain. Week 1 = the most recent 7 days.
+  const buckets = s => {
+    const b = [0, 0, 0, 0];
+    Object.values(lineQ[s] || {}).forEach(q => {
+      const c = [0, 1, 2, 3].map(i => Number(q[i]) || 0);
+      b[0] += c[0]; b[1] += c[1] - c[0]; b[2] += c[2] - c[1]; b[3] += c[3] - c[2];
+    });
+    return b;
+  };
+  const snapAt = (s, n) => {
+    for (let k = 0; k <= 2; k++) { const v = (snaps[s] || {})[fattyNumYmd(n - k)]; if (v != null) return { n: n - k, qty: Number(v) || 0 }; }
+    return null;
+  };
+  const storeOut = {};
+  const byAge = [1, 2, 3, 4].map(w => ({ age: w, end: fattyNumYmd(todayN - 7 * (w - 1)), sold: 0, delta: 0, made: 0, stores: [] }));
   storeList.forEach(s => {
-    const pts = Object.keys(snaps[s] || {}).sort().map(w => snaps[s][w]).filter(p => p && p.date);
-    const ds = daily[s] || {};
+    const b = buckets(s);
     storeOut[s] = [];
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1], b = pts[i];
-      const an = fattyDayNum(a.date), bn = fattyDayNum(b.date), days = bn - an;
-      if (days < 5 || days > 9) continue;     // snapshot gap, or a short hop into the current week
-      if (an < salesFromN) continue;           // sales history doesn't reach back to this interval
-      let sold = 0;
-      Object.keys(ds).forEach(day => { const n = fattyDayNum(day); if (n >= an && n < bn) sold += Number(ds[day]) || 0; });
-      const k = 7 / days;
-      const rec = { week: fattyNumYmd(fattyWeekStartNum(b.date)), end: b.date, sold: sold * k, delta: (b.qty - a.qty) * k };
+    for (let w = 1; w <= 4; w++) {
+      const hi = snapAt(s, todayN - 7 * (w - 1)), lo = snapAt(s, todayN - 7 * w);
+      if (!hi || !lo || hi.n - lo.n < 5) continue;   // a missing snapshot: skip this store-week
+      const rec = { age: w, end: fattyNumYmd(hi.n), sold: b[w - 1], delta: (hi.qty - lo.qty) * 7 / (hi.n - lo.n) };
       rec.made = rec.sold + rec.delta;
       storeOut[s].push(rec);
-      const c = chainByWeek[rec.week] || (chainByWeek[rec.week] = { week: rec.week, end: rec.end, sold: 0, delta: 0, made: 0, stores: [] });
+      const c = byAge[w - 1];
       c.sold += rec.sold; c.delta += rec.delta; c.made += rec.made; c.stores.push(s);
-      if (rec.end > c.end) c.end = rec.end;
     }
   });
-  const storesWithHistory = storeList.filter(s => storeOut[s].length);
-  const chainWeeks = Object.keys(chainByWeek).sort().map(w => {
-    const c = chainByWeek[w]; c.complete = c.stores.length === storesWithHistory.length; return c;
-  });
-  const full = chainWeeks.filter(c => c.complete).slice(-4);
+  const storesWithHistory = storeList.filter(s => Object.keys(snaps[s] || {}).length);
+  const chainWeeks = byAge.filter(c => c.stores.length).reverse()   // oldest first, for display
+    .map(c => Object.assign(c, { complete: c.stores.length === storesWithHistory.length }));
+  const full = chainWeeks.filter(c => c.complete);
   const avg = (arr, f) => arr.length ? arr.reduce((a, x) => a + f(x), 0) / arr.length : null;
   const chainMadePerWk = avg(full, c => c.made);
 
