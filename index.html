@@ -9096,7 +9096,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.066';
+const APP_VERSION = 'v3.067';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10422,6 +10422,139 @@ function fattyHoverLeave() {
   const tip = document.getElementById('fattyTip'); if (tip) tip.style.opacity = '0';
 }
 
+// == FATTY supply math =========================================================================
+// Answers "how many FATTYs could we sell in one week before something runs out?" for door-buster
+// planning. FATTYs are rolled from end-of-jar flower and Dutchie records neither the flower nor the
+// rolling, so production is IMPLIED: made = sold + change in on-hand, between two weekly Inv Snapshot
+// points. A snapshot dated D runs at 02:00 and reflects close of D-1, so the sales between snapshots
+// a and b are the days a <= day < b. Transfers move stock between stores and net out only at chain
+// level — chain is the headline, per-store implied output is a rough guide. Pure: no DOM, no state;
+// tests/fatty_supply_test.js runs it. Dates are YYYY-MM-DD text; day arithmetic is calendar-only.
+const FATTY_COVER_FLAG_DAYS = 14;
+const FATTY_TOP_LINES = 40;
+function fattyDayNum(ymd) { return Math.round(Date.UTC(+ymd.slice(0, 4), +ymd.slice(5, 7) - 1, +ymd.slice(8, 10)) / 86400000); }
+function fattyNumYmd(n) { const d = new Date(n * 86400000), m = d.getUTCMonth() + 1, dd = d.getUTCDate(); return d.getUTCFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (dd < 10 ? '0' : '') + dd; }
+function fattyWeekStartNum(ymd) { const n = fattyDayNum(ymd); return n - ((new Date(n * 86400000).getUTCDay() + 6) % 7); }
+function computeFattySupply(sup, stores) {
+  if (!sup || !Array.isArray(sup.lines) || !sup.sales) return null;
+  const daily = sup.sales.daily || {}, line28 = sup.sales.line28 || {}, snaps = sup.snapTotals || {};
+  const salesFromN = sup.sales.from ? fattyDayNum(sup.sales.from) : -Infinity;
+  const storeList = (stores && stores.length) ? stores.slice() : Object.keys(snaps);
+
+  // 1 · implied weekly output, per store and chain
+  const storeOut = {}, chainByWeek = {};
+  storeList.forEach(s => {
+    const pts = Object.keys(snaps[s] || {}).sort().map(w => snaps[s][w]).filter(p => p && p.date);
+    const ds = daily[s] || {};
+    storeOut[s] = [];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      const an = fattyDayNum(a.date), bn = fattyDayNum(b.date), days = bn - an;
+      if (days < 5 || days > 9) continue;     // snapshot gap, or a short hop into the current week
+      if (an < salesFromN) continue;           // sales history doesn't reach back to this interval
+      let sold = 0;
+      Object.keys(ds).forEach(day => { const n = fattyDayNum(day); if (n >= an && n < bn) sold += Number(ds[day]) || 0; });
+      const k = 7 / days;
+      const rec = { week: fattyNumYmd(fattyWeekStartNum(b.date)), end: b.date, sold: sold * k, delta: (b.qty - a.qty) * k };
+      rec.made = rec.sold + rec.delta;
+      storeOut[s].push(rec);
+      const c = chainByWeek[rec.week] || (chainByWeek[rec.week] = { week: rec.week, end: rec.end, sold: 0, delta: 0, made: 0, stores: [] });
+      c.sold += rec.sold; c.delta += rec.delta; c.made += rec.made; c.stores.push(s);
+      if (rec.end > c.end) c.end = rec.end;
+    }
+  });
+  const storesWithHistory = storeList.filter(s => storeOut[s].length);
+  const chainWeeks = Object.keys(chainByWeek).sort().map(w => {
+    const c = chainByWeek[w]; c.complete = c.stores.length === storesWithHistory.length; return c;
+  });
+  const full = chainWeeks.filter(c => c.complete).slice(-4);
+  const avg = (arr, f) => arr.length ? arr.reduce((a, x) => a + f(x), 0) / arr.length : null;
+  const chainMadePerWk = avg(full, c => c.made);
+
+  // 2 · weeks of cover, per line / store / chain (trailing 28 full days of sales)
+  const lines = sup.lines.filter(l => Number(l.qty) > 0).map(l => {
+    const sold28 = Number((line28[l.store] || {})[l.name]) || 0, perWk = sold28 / 4;
+    return { store: l.store, name: l.name, qty: Number(l.qty), cost: Number(l.cost) || 0, sold28, perWk,
+      coverDays: perWk > 0 ? Number(l.qty) / (perWk / 7) : Infinity };
+  });
+  const storeRows = storeList.map(s => {
+    const ls = lines.filter(l => l.store === s);
+    const onHand = ls.reduce((a, l) => a + l.qty, 0), cost = ls.reduce((a, l) => a + l.cost, 0);
+    // Store demand counts every line sold in the window, including ones now sold out — customers switch strains.
+    const perWk = Object.values(line28[s] || {}).reduce((a, q) => a + (Number(q) || 0), 0) / 4;
+    return { store: s, onHand, cost, perWk, coverWeeks: perWk > 0 ? onHand / perWk : Infinity,
+      madePerWk: avg(storeOut[s].slice(-4), r => r.made) };
+  });
+  const chainOnHand = storeRows.reduce((a, r) => a + r.onHand, 0);
+  const chainCost = storeRows.reduce((a, r) => a + r.cost, 0);
+  const chainPerWk = storeRows.reduce((a, r) => a + r.perWk, 0);
+
+  // 3 · door-buster ceiling: lift demand evenly everywhere until the first store (or top strain) is empty
+  const selling = storeRows.filter(r => r.perWk > 0);
+  const limitStore = selling.length ? selling.reduce((m, r) => r.coverWeeks < m.coverWeeks ? r : m) : null;
+  const top = lines.filter(l => l.perWk > 0).sort((a, b) => b.sold28 - a.sold28).slice(0, FATTY_TOP_LINES);
+  const limitLine = top.length ? top.reduce((m, l) => l.coverDays < m.coverDays ? l : m) : null;
+  const storeLift = limitStore ? limitStore.coverWeeks : null;
+  const lineLift = limitLine ? limitLine.coverDays / 7 : null;
+  const flagged = lines.filter(l => l.perWk > 0 && l.coverDays < FATTY_COVER_FLAG_DAYS).sort((a, b) => a.coverDays - b.coverDays);
+  const topKeys = new Set(top.map(l => l.store + '|' + l.name));
+
+  return {
+    chain: { onHand: chainOnHand, cost: chainCost, perWk: chainPerWk, coverWeeks: chainPerWk > 0 ? chainOnHand / chainPerWk : Infinity,
+      madePerWk: chainMadePerWk, weeksAveraged: full.length },
+    chainWeeks, storeRows, storeOut,
+    ceiling: {
+      byStore: storeLift != null ? Math.floor(chainPerWk * storeLift) : null, storeLift, limitStore: limitStore ? limitStore.store : null,
+      byLine: lineLift != null ? Math.floor(chainPerWk * lineLift) : null, lineLift, limitLine,
+    },
+    flagged, flaggedTop: flagged.filter(l => topKeys.has(l.store + '|' + l.name)).length, topCount: top.length,
+  };
+}
+// == end FATTY supply math =====================================================================
+
+function fattySupplyCard(d) {
+  const s = computeFattySupply(d.supply, d.stores || []);
+  const box = inner => `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px">${inner}</div>`;
+  const head = `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">FATTY supply · door-buster planning</span><span style="font-size:11px;color:var(--muted)">all stores · last 4 weeks · from sales + snapshot history</span></div>`;
+  if (!s) return box(head + '<div style="font-size:12px;color:var(--muted)">Supply numbers arrive on the next tracker refresh.</div>');
+  const fmt = fattyFmt, money = n => '$' + Math.round(n).toLocaleString();
+  const wk = n => (n == null || !isFinite(n)) ? '—' : n.toFixed(1);
+  const sd = n => storeDisplay(n);
+  const c = s.chain, cl = s.ceiling;
+  const tile = (label, big, sub, accent) => `<div style="background:rgba(255,255,255,.03);border:1px solid ${accent || 'var(--border)'};border-radius:10px;padding:12px 14px;min-width:0">
+      <div style="font-size:11px;color:var(--muted)">${label}</div>
+      <div style="font-size:24px;font-weight:700;line-height:1.15;margin:4px 0 2px;font-variant-numeric:tabular-nums">${big}</div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.4">${sub}</div></div>`;
+  const madeSub = c.madePerWk == null ? 'needs two weeks of snapshots'
+    : `sold + change in on hand · ${c.weeksAveraged}-wk avg` + (c.madePerWk < c.perWk ? ' · <span style="color:var(--red)">making less than we sell</span>' : '');
+  const ceilSub = cl.byStore == null ? 'no recent sales to measure against'
+    : `${wk(cl.storeLift)}× a normal week before ${escapeHtml(sd(cl.limitStore))} runs out`
+      + (cl.limitLine ? `<br>first top-${s.topCount} line out at <b style="color:var(--text)">${fmt(cl.byLine)}</b>: ${escapeHtml(cl.limitLine.name)} @ ${escapeHtml(sd(cl.limitLine.store))}` : '');
+  const tiles = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+      ${tile('Selling', fmt(c.perWk) + '<span style="font-size:13px;color:var(--muted);font-weight:400">/wk</span>', '28-day average')}
+      ${tile('Making (implied)', c.madePerWk == null ? '—' : fmt(c.madePerWk) + '<span style="font-size:13px;color:var(--muted);font-weight:400">/wk</span>', madeSub)}
+      ${tile('On hand', fmt(c.onHand), `${money(c.cost)} at cost · ${wk(c.coverWeeks)} wks of cover`)}
+      ${tile('Door-buster ceiling', cl.byStore == null ? '—' : fmt(cl.byStore), ceilSub, 'var(--green)')}
+    </div>`;
+  const th = 'text-align:right;font-weight:600;color:var(--muted);padding:4px 8px;white-space:nowrap';
+  const td = 'text-align:right;padding:4px 8px;font-variant-numeric:tabular-nums;white-space:nowrap';
+  const storeTable = `<div style="overflow-x:auto;margin-top:12px"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr style="border-bottom:1px solid var(--border)"><th style="${th};text-align:left">Store</th><th style="${th}">On hand</th><th style="${th}">Sold/wk</th><th style="${th}">Wks cover</th><th style="${th}" title="Rough per store: transfers between stores show up here as made or lost">Made/wk*</th></tr>
+      ${s.storeRows.map(r => `<tr style="border-bottom:1px solid rgba(255,255,255,.05)"><td style="${td};text-align:left;color:${storeColor(r.store)}">${escapeHtml(sd(r.store))}</td><td style="${td}">${fmt(r.onHand)}</td><td style="${td}">${fmt(r.perWk)}</td><td style="${td};color:${r.coverWeeks < 2 ? 'var(--red)' : 'inherit'}">${wk(r.coverWeeks)}</td><td style="${td};color:var(--muted)">${r.madePerWk == null ? '—' : fmt(r.madePerWk)}</td></tr>`).join('')}
+    </table><div style="font-size:11px;color:var(--muted);margin-top:4px">* Per-store "made" includes transfers in and out; only the chain total is reliable.</div></div>`;
+  const recent = s.chainWeeks.slice(-6);
+  const weekTable = recent.length ? `<div style="overflow-x:auto;margin-top:12px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Chain implied output by week</div><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr style="border-bottom:1px solid var(--border)"><th style="${th};text-align:left">Week ending</th><th style="${th}">Sold</th><th style="${th}">Change on hand</th><th style="${th}">Made</th></tr>
+      ${recent.map(w => `<tr style="border-bottom:1px solid rgba(255,255,255,.05)"><td style="${td};text-align:left">${fattyDateLabel(fattyDayNum(w.end) * FATTY_DAY)}${w.complete ? '' : ' <span style="color:var(--muted)" title="Not every store had snapshots this week">(partial)</span>'}</td><td style="${td}">${fmt(w.sold)}</td><td style="${td};color:${w.delta >= 0 ? 'var(--green)' : 'var(--red)'}">${w.delta >= 0 ? '+' : '−'}${fmt(Math.abs(w.delta))}</td><td style="${td};font-weight:600">${fmt(w.made)}</td></tr>`).join('')}
+    </table></div>` : '';
+  const flagList = s.flagged.length ? `<details style="margin-top:12px"><summary style="cursor:pointer;font-size:12px"><b style="color:var(--red)">${s.flagged.length}</b> product-store lines under ${FATTY_COVER_FLAG_DAYS} days of cover <span style="color:var(--muted)">(${s.flaggedTop} of the top ${s.topCount} sellers)</span></summary>
+      <div style="overflow-x:auto;margin-top:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr style="border-bottom:1px solid var(--border)"><th style="${th};text-align:left">Product</th><th style="${th};text-align:left">Store</th><th style="${th}">On hand</th><th style="${th}">Sold/wk</th><th style="${th}">Days</th></tr>
+      ${s.flagged.map(l => `<tr style="border-bottom:1px solid rgba(255,255,255,.05)"><td style="${td};text-align:left;white-space:normal">${escapeHtml(l.name)}</td><td style="${td};text-align:left">${escapeHtml(sd(l.store))}</td><td style="${td}">${fmt(l.qty)}</td><td style="${td}">${l.perWk.toFixed(1)}</td><td style="${td};color:var(--red)">${Math.floor(l.coverDays)}</td></tr>`).join('')}
+      </table></div></details>` : `<div style="margin-top:12px;font-size:12px;color:var(--muted)">No product-store line is under ${FATTY_COVER_FLAG_DAYS} days of cover.</div>`;
+  return box(head + tiles + storeTable + weekTable + flagList);
+}
+
 function renderFatty() {
   const d = state.fattyData;
   const el = document.getElementById('fattyContent');
@@ -10542,7 +10675,8 @@ function renderFatty() {
       <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${pills}${compareBtn}</div>
     </div>
     <div class="fatty-grid2">${hero}${fifoCard}</div>
-    ${chartCard}
+    ${fattySupplyCard(d)}
+    <div style="margin-top:12px">${chartCard}</div>
     ${compareRow}`;
 
   fattyAnimateHero(total);

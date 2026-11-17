@@ -4634,7 +4634,7 @@ function labResultsProbe(params) {
 // current on-hand per store × vintage from RAW inventory (per-package, so mixed-batch products split
 // correctly), and reconstruct weekly history from the Inv Snapshot via a sku→vintage map.
 const HARVEST_BY_BATCH_KEY = 'gc_harvest_by_batch';
-const FATTY_TRACKER_CACHE  = 'fatty_tracker_v1';
+const FATTY_TRACKER_CACHE  = 'fatty_tracker_v2'; // v2: payload gained .supply
 
 function _getHarvestMap() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(HARVEST_BY_BATCH_KEY) || '{}'); }
@@ -4680,7 +4680,10 @@ function isoWeekStart_(dateStr) {
 // Weekly on-hand history for FATTY by store × vintage, from the Inv Snapshot. For each (store, week) we take
 // the LATEST snapshot date in that week (point-in-time on-hand, not a sum of days). skuVintage maps sku→year.
 function buildFattyWeekly_(skuVintage) {
-  const out = { weeks: [], byStore: {} };
+  // totalsByStore: ALL FATTY on hand (every SKU, vintage known or not) at the latest snapshot date of each
+  // week — the supply card's "change in on-hand" input. Kept separate from byStore, which only counts SKUs
+  // whose vintage resolved, so the supply math is not shrunk by unresolved harvest dates.
+  const out = { weeks: [], byStore: {}, totalsByStore: {} };
   try {
     const ss = SpreadsheetApp.openById(getInvDataSpreadsheetId());
     const sheet = ss.getSheetByName(SNAPSHOT_SHEET_NAME);
@@ -4688,20 +4691,33 @@ function buildFattyWeekly_(skuVintage) {
     const width = Math.max(9, sheet.getLastColumn());
     const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
     const byKeyDate = {}; // store|week|date -> {vintage -> qty}
+    const totalByDate = {}; // store|week|date -> all-FATTY qty
     for (var r = 0; r < data.length; r++) {
       const row = data[r];
       const name = String(row[2] || '');
       if (!/fatty/i.test(name)) continue;
+      const store = String(row[1] || '').trim();
+      const dateStr = _velDateToYMD(row[0]);
+      if (!dateStr) continue;
+      const week = isoWeekStart_(dateStr);
+      const k = store + '|' + week + '|' + dateStr;
+      const qty = Number(row[6] || 0) || 0;
+      totalByDate[k] = (totalByDate[k] || 0) + qty;
       const sku = String(row[5] || '').trim();
       const v = skuVintage[sku];
       if (!v) continue;
-      const store = String(row[1] || '').trim();
-      const dateRaw = row[0];
-      const dateStr = _velDateToYMD(dateRaw);
-      const week = isoWeekStart_(dateStr);
-      const k = store + '|' + week + '|' + dateStr;
-      (byKeyDate[k] || (byKeyDate[k] = {}))[v] = (byKeyDate[k][v] || 0) + (Number(row[6] || 0) || 0);
+      (byKeyDate[k] || (byKeyDate[k] = {}))[v] = (byKeyDate[k][v] || 0) + qty;
     }
+    const latestAny = {}; // store|week -> dateStr, over ALL FATTY rows
+    Object.keys(totalByDate).forEach(function (k) {
+      const parts = k.split('|'), sw = parts[0] + '|' + parts[1], date = parts[2];
+      if (!latestAny[sw] || date > latestAny[sw]) latestAny[sw] = date;
+    });
+    Object.keys(latestAny).forEach(function (sw) {
+      const parts = sw.split('|'), store = parts[0], week = parts[1];
+      out.totalsByStore[store] = out.totalsByStore[store] || {};
+      out.totalsByStore[store][week] = { date: latestAny[sw], qty: totalByDate[sw + '|' + latestAny[sw]] || 0 };
+    });
     const latestDate = {}; // store|week -> dateStr
     Object.keys(byKeyDate).forEach(function (k) {
       const parts = k.split('|'), sw = parts[0] + '|' + parts[1], date = parts[2];
@@ -4719,6 +4735,37 @@ function buildFattyWeekly_(skuVintage) {
   return out;
 }
 
+// FATTY units sold, from the Vel Cache (one row per day × store × product). Returns per-store daily totals
+// over the last `days` Pacific days, plus per (store, product) totals over the trailing 28 full days
+// (yesterday back 28 — today is partial). Raw inputs only; the supply math lives in index.html
+// (computeFattySupply) where tests can run it.
+function readFattySales_(days) {
+  const out = { from: daysAgoPT_(days), last28From: daysAgoPT_(28), last28To: daysAgoPT_(1), daily: {}, line28: {} };
+  try {
+    const sheet = getVelSheet();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return out;
+    const data = sheet.getRange(2, 1, lastRow - 1, VEL_COLS.length).getValues();
+    for (var r = 0; r < data.length; r++) {
+      const row = data[r];
+      const name = String(row[3] || '').trim();
+      if (!/fatty/i.test(name)) continue;
+      const date = _velDateToYMD(row[0]);
+      if (!date || date < out.from) continue;
+      const store = String(row[1] || '').trim();
+      const qty = parseFloat(row[7]) || 0;
+      if (!store || qty <= 0) continue;
+      const d = out.daily[store] || (out.daily[store] = {});
+      d[date] = (d[date] || 0) + qty;
+      if (date >= out.last28From && date <= out.last28To) {
+        const l = out.line28[store] || (out.line28[store] = {});
+        l[name] = (l[name] || 0) + qty;
+      }
+    }
+  } catch (e) { _logGasError('readFattySales_', e && e.message); }
+  return out;
+}
+
 function buildFattyTracker_(force) {
   const scriptCache = CacheService.getScriptCache();
   if (!force) { const c = scriptCache.get(FATTY_TRACKER_CACHE); if (c) { try { return JSON.parse(c); } catch (e) {} } }
@@ -4730,6 +4777,7 @@ function buildFattyTracker_(force) {
   const skuVintage = {};            // sku -> 'YYYY'
   const current = {};               // store -> { vintage -> qty }
   const vintagesSet = {};
+  const lines = {};                 // store|productName -> { store, name, qty, cost } — current on hand per line
   var unresolved = 0;
   stores.forEach(function (store, i) {
     var items = [];
@@ -4743,6 +4791,11 @@ function buildFattyTracker_(force) {
     fatties.forEach(function (it) {
       const qty = Number(it.quantityAvailable || it.quantity || 0) || 0;
       if (qty <= 0) return;
+      const lname = String(it.productName || it.name || '').trim();
+      const lk = store + '|' + lname;
+      const ln = lines[lk] || (lines[lk] = { store: store, name: lname, qty: 0, cost: 0 });
+      ln.qty += qty;
+      ln.cost += qty * (Number(it.unitCost || 0) || 0);
       const hd = hmap[String(it.batchName || '')] || '';
       const vintage = hd ? hd.slice(0, 4) : 'Unknown';
       if (vintage === 'Unknown') unresolved += qty;
@@ -4755,7 +4808,15 @@ function buildFattyTracker_(force) {
   const weekly = buildFattyWeekly_(skuVintage);
   const vintages = Object.keys(vintagesSet).filter(function (v) { return v !== 'Unknown'; }).sort();
   if (vintagesSet['Unknown']) vintages.push('Unknown');
-  const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
+  // Supply card inputs (raw; math in index.html computeFattySupply). 70 days = 8 full weeks + slack.
+  const supply = {
+    today: todayPT_(),
+    lines: Object.keys(lines).map(function (k) { const l = lines[k]; return { store: l.store, name: l.name, qty: l.qty, cost: Math.round(l.cost * 100) / 100 }; }),
+    sales: readFattySales_(70),
+    snapTotals: weekly.totalsByStore || {}
+  };
+  delete weekly.totalsByStore;
+  const result = { ok: true, generatedAt: new Date().toISOString(), stores: stores, vintages: vintages, current: current, weekly: weekly, supply: supply, unresolvedUnits: unresolved, skuMapped: Object.keys(skuVintage).length };
   try { scriptCache.put(FATTY_TRACKER_CACHE, JSON.stringify(result), 60 * 60); } catch (e) {}
   return result;
 }
