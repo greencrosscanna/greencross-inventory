@@ -1505,6 +1505,7 @@
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-bugreport.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-updatecheck.js"></script>
 <script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-maintenance.js"></script>
+<script src="https://greencrosscanna.github.io/greencross-gx-theme/gx-jointloader.js?v=1"></script>
 </head>
 <body>
 
@@ -4625,7 +4626,25 @@ function renderStorePills() {
   });
 }
 
+// Shared burning-joint loading screen (gx-jointloader.js, gx-theme): covers the app from sign-in until the
+// first inventory load really finishes. _bootLoader(true) burns to 100% and fades; (false) drops it at
+// once so an error message underneath is visible. Never throws if the script failed to load.
+let _bootLoaderH = null, _bootLoaderTimer = null;
+function _bootLoader(finish) {
+  if (finish === undefined) {
+    if (_bootLoaderH || !window.GXJointLoader) return;
+    try { _bootLoaderH = GXJointLoader.screen({ appName: 'Inventory' }); } catch (e) { return; }
+    _bootLoaderTimer = setTimeout(() => _bootLoader(false), 90000);   // never trap the screen
+    return;
+  }
+  clearTimeout(_bootLoaderTimer);
+  const h = _bootLoaderH; _bootLoaderH = null;
+  if (!h) return;
+  try { finish ? h.done() : h.cancel(); } catch (e) {}
+}
+
 function init() {
+  _bootLoader();
   // Restore density preference
   const savedDensity = localStorage.getItem(LS.DENSITY);
   if (savedDensity === 'compact') document.body.classList.add('density-compact');
@@ -5343,6 +5362,7 @@ async function loadInventoryData() {
     if (cartPatched) saveOrderCart();
 
     renderInventory();
+    _bootLoader(true);
     scheduleBetaDecisionsForInventory(900);
     if (state.tab === 'flags') renderFlags();
 
@@ -5435,6 +5455,7 @@ async function loadInventoryData() {
     })();
   } catch (err) {
     clearInterval(_quoteTimer);
+    _bootLoader(false);
     el.innerHTML = `<div class="state-msg error-msg">Error: ${err.message}</div>`;
   } finally {
     state.forceServerRefresh = false;
@@ -9098,7 +9119,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.080';
+const APP_VERSION = 'v3.081';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
