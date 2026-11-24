@@ -9119,7 +9119,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.081';
+const APP_VERSION = 'v3.082';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -11845,7 +11845,13 @@ if (window.GXSession) {
     } catch (e) { return null; }
   });
 }
-const GC_AUTH_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
+/* 30 days — Sky, 2026-11-23: "my computers are private, 30 days is okay." Was 7 days, which made
+   staff sign in again every week on the store's own machines. GX Core's GX_SESSION_TTL_MS moved to 30
+   days in the same change; the engine checks the expiry baked into the token itself, so this constant
+   only decides when THIS page stops trusting the saved session. If Core still mints a shorter token,
+   the engine answers "Session expired" and engineFetch clears the session and reloads to the sign-in
+   form — nobody is stranded. Gated by tests/auth_ttl_test.js. */
+const GC_AUTH_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 function _isLocalDevAuthBypass() {
   return false;
