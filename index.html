@@ -9119,7 +9119,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.082';
+const APP_VERSION = 'v3.083';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
@@ -10581,6 +10581,23 @@ function computeFattySupply(sup, stores) {
     flagged, flaggedTop: flagged.filter(l => topKeys.has(l.store + '|' + l.name)).length, topCount: top.length,
   };
 }
+
+// The hero tile's "selling / adding per week". The chart's own rates (fattyBurn / fattyProduction) only see
+// the NET weekly change inside each vintage, so a week that rolls 550 and sells 600 of the same year reads
+// as "sold 50, made 0" — on 2026-11-24 the hero said 322 sold / 248 added while real sales were 585 and
+// implied output 562, and weeks of supply read 11.1 instead of 6.1. Real sales (GX Core velocity) and the
+// implied output from computeFattySupply win whenever they exist; the chart rates are only the fallback for
+// an older payload. sel is 'All stores' or a store name. Pure.
+function fattyHeadlineRates(s, sel, fallbackSold, fallbackMade) {
+  const out = { sold: fallbackSold, made: fallbackMade, real: false };
+  if (!s) return out;
+  const src = sel === 'All stores' ? { perWk: s.chain.perWk, madePerWk: s.chain.madePerWk }
+    : (s.storeRows || []).find(r => r.store === sel);
+  if (!src || !(src.perWk > 0)) return out;
+  out.sold = src.perWk; out.real = true;
+  if (src.madePerWk != null) out.made = Math.max(0, src.madePerWk);
+  return out;
+}
 // == end FATTY supply math =====================================================================
 
 function fattySupplyCard(d) {
@@ -10697,7 +10714,8 @@ function renderFatty() {
   const rows = fattySeriesFor(sel, d, svints);
   const last = rows[rows.length - 1], prev = rows[rows.length - 2] || last;
   const total = last.total, totalPrev = total - (last.step || 0); // step: same-source change, 0 across a seam
-  const burn = fattyBurn(rows, svints, WIN);
+  const rates = fattyHeadlineRates(computeFattySupply(d.supply, stores), sel, fattyBurn(rows, svints, WIN), fattyProduction(rows, svints, WIN));
+  const burn = rates.sold;
   const runWeeks = burn > 0 ? total / burn : Infinity;
   const wowChip = (delta, sz) => `<span style="font-size:${sz || 12}px;font-weight:600;white-space:nowrap;color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲ +' : '▼ −'}${fmt(Math.abs(delta))} wk</span>`;
 
@@ -10708,9 +10726,9 @@ function renderFatty() {
   }).join('');
   const compareBtn = `<button onclick="toggleFattyCompare()" style="flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid ${cmp ? 'var(--green)' : 'var(--border)'};background:${cmp ? 'rgba(74,222,128,.12)' : 'transparent'};color:${cmp ? 'var(--green)' : 'var(--muted)'};font-size:12px;cursor:pointer;margin-left:4px">⊞ Compare</button>`;
 
-  const made = fattyProduction(rows, svints, WIN);
+  const made = rates.made;
   const burnLabel = (burn > 0 ? `selling ${fmt(burn)}/wk` : 'no depletion')
-    + ' · ' + (made > 0 ? `adding ${fmt(made)}/wk` : 'nothing added') + ` (${WIN}-wk avg)`;
+    + ' · ' + (made > 0 ? `${rates.real ? 'making' : 'adding'} ${fmt(made)}/wk${rates.real && sel !== 'All stores' ? '*' : ''}` : 'nothing added') + ` (${WIN}-wk avg)`;
   const weeksSupply = burn > 0 ? runWeeks.toFixed(1) : '—';
   const runOut = (burn > 0 && runWeeks < 60) ? fattyDateLabel(last.t + runWeeks * 7 * FATTY_DAY) : '—';
   // In production mode the two footer stats answer "are we making more than we're selling?" instead.

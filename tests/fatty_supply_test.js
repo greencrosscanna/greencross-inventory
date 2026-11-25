@@ -25,7 +25,7 @@ if (!m) {
   console.error('The source moved or changed shape. Update the pattern here -- do not delete the test.');
   process.exit(2);
 }
-const computeFattySupply = new Function(m[0] + '\nreturn computeFattySupply;')();
+const { computeFattySupply, fattyHeadlineRates } = new Function(m[0] + '\nreturn { computeFattySupply, fattyHeadlineRates };')();
 
 let fails = 0;
 function check(label, cond, detail) {
@@ -124,6 +124,23 @@ console.log('door-buster ceiling and flags');
 
 console.log('missing payload');
 check('no supply → null (card shows "arrives on next refresh")', computeFattySupply(undefined, []) === null);
+
+console.log('hero tile rates (2026-11-24: hero said 322 sold / 248 added, real was 585 / 562)');
+{
+  const s = { chain: { perWk: 585, madePerWk: 562 }, storeRows: [{ store: 'Bend', perWk: 167, madePerWk: 228 }, { store: 'Quiet', perWk: 0, madePerWk: null }] };
+  const all = fattyHeadlineRates(s, 'All stores', 322, 248);
+  check('All stores uses real chain sales and implied output', all.real && all.sold === 585 && all.made === 562, JSON.stringify(all));
+  const bend = fattyHeadlineRates(s, 'Bend', 50, 40);
+  check('a store uses its own row', bend.real && bend.sold === 167 && bend.made === 228, JSON.stringify(bend));
+  const quiet = fattyHeadlineRates(s, 'Quiet', 5, 3);
+  check('a store with no sales keeps the chart fallback', !quiet.real && quiet.sold === 5 && quiet.made === 3, JSON.stringify(quiet));
+  const none = fattyHeadlineRates(null, 'All stores', 322, 248);
+  check('older payload (no supply) keeps the chart fallback', !none.real && none.sold === 322 && none.made === 248);
+  const noMade = fattyHeadlineRates({ chain: { perWk: 585, madePerWk: null }, storeRows: [] }, 'All stores', 322, 248);
+  check('real sales with no implied output keeps fallback made', noMade.sold === 585 && noMade.made === 248, JSON.stringify(noMade));
+  const neg = fattyHeadlineRates({ chain: { perWk: 100, madePerWk: -30 }, storeRows: [] }, 'All stores', 0, 0);
+  check('negative implied output (write-offs) reads as 0, not "adding −30"', neg.made === 0);
+}
 
 if (fails) { console.log('\n' + fails + ' FAILED'); process.exit(1); }
 console.log('\nall passed');
