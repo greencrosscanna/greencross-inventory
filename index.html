@@ -6176,9 +6176,13 @@ function getKilledObj() {
 function saveKilledSet(obj) { localStorage.setItem(LS.KILLED, JSON.stringify(obj)); }
 function isKilled(killedObj, key, product) {
   if (!(key in killedObj)) return false;
-  // Auto-resurrect: if product has qty > 0 and lastMod is after kill timestamp
+  // Auto-resurrect: if product has stock again and lastMod is after kill timestamp.
+  // Count Distro stock too: p.qty excludes it, and River Rd (the DC) receives everything into
+  // Distro, so a qty-only check left restocked River items hidden forever (Tawny's Blueberry
+  // Headband bug, 2026-11-25: 2,497 g on hand, floor 0, killed 2026-10-19).
   const killedAt = killedTs(killedObj[key]);
-  if (killedAt > 0 && product && product.qty > 0 && product.lastMod) {
+  const onHand = product ? (product.qty || 0) + (product.qtyDistro || 0) : 0;
+  if (killedAt > 0 && product && onHand > 0 && product.lastMod) {
     if (new Date(product.lastMod).getTime() > killedAt) {
       delete killedObj[key];
       saveKilledSet(killedObj);
@@ -9119,7 +9123,7 @@ function scanNameSelect(name, scannedCode) {
 // The running app version — the app identifying ITSELF (bump on each release). Release-notes DATA
 // now lives in GX Core; this constant is just the version number. Also the source for bug-report
 // appVer and the deploy_version record. Keep in sync with the release you ship.
-const APP_VERSION = 'v3.083';
+const APP_VERSION = 'v3.084';
 const GXCORE_EXEC_URL = 'https://script.google.com/macros/s/AKfycbx9mjeCBbDpxNYaqBv2hyZaO1hpbGG6PZM9AebFdwl0UwkdtRCGSWrH-8ohEtdF1K_6/exec';
 let CHANGELOG_DATA = [];   // [{ v, date, items:[] }], newest first — filled by loadChangelog()
 // Shared, retry-aware GX Core client (window.GXClient from gx-client.js, loaded in <head>). It routes GX
