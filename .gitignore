@@ -7,6 +7,7 @@
 !.claude/launch.json
 !.claude/gx-brain-notes.sh
 !.claude/gx-posttool-tests.sh
+!.claude/gx-session-end.sh
 # stays ignored: local permission grants, and agent worktrees (a 3.8M stale copy of the source
 # lived in .claude/worktrees for three months, marked prunable by git the whole time)
 .last_backend_deploy
